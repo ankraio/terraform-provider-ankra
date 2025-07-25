@@ -1,5 +1,3 @@
-
-
 # Visit https://goreleaser.com for documentation on how to customize this workflow.
 # This workflow triggers GoReleaser to build, package, sign, and release the Terraform provider.
 # All build and release logic is defined in .goreleaser.yml in the repository root.
@@ -39,6 +37,7 @@ jobs:
         with:
           version: latest
           args: release --clean
+          workdir: provider
         env:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
