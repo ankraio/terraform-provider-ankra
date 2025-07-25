@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/hashicorp/terraform-plugin-sdk/v2/plugin"
-	"github.com/ankra-io/terraform-provider-ankra/provider"
+	"github.com/ankraio/terraform-provider-ankra/provider"
 )
 
 func main() {
