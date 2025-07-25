@@ -49,6 +49,9 @@ jobs:
           shasum -a 256 *.zip > SHASUMS
           # Sign SHASUMS file
           gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --output SHASUMS.sig --detach-sign SHASUMS
+          # Copy SHASUMS and SHASUMS.sig to repo root for release upload
+          cp SHASUMS ../../SHASUMS
+          cp SHASUMS.sig ../../SHASUMS.sig
           cd ../..
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
@@ -75,7 +78,7 @@ jobs:
         with:
           files: |
             provider/dist/*.zip
-            provider/dist/SHASUMS
-            provider/dist/SHASUMS.sig
+            SHASUMS
+            SHASUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
