@@ -23,45 +23,54 @@ jobs:
           ls -lR
 
       - name: Import GPG key
-        run: |
-          echo "$GPG_KEY" | gpg --batch --import
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
+        run: |
+          echo "$GPG_KEY" | gpg --batch --import
 
       - name: Build provider binaries
         run: |
+          mkdir -p provider/dist
           cd provider
-          mkdir -p dist
-          GOOS=linux   GOARCH=amd64 go build -o dist/terraform-provider-ankra_linux_amd64   .
-          GOOS=darwin  GOARCH=amd64 go build -o dist/terraform-provider-ankra_darwin_amd64  .
-          GOOS=darwin  GOARCH=arm64 go build -o dist/terraform-provider-ankra_darwin_arm64  .
-          GOOS=windows GOARCH=amd64 go build -o dist/terraform-provider-ankra_windows_amd64.exe .
+          GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-ankra_linux_amd64   .
+          GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-ankra_darwin_amd64  .
+          GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-ankra_darwin_arm64  .
+          GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_windows_amd64.exe .
           cd ..
 
-      - name: Zip provider binaries for release
-        run: |
-          cd provider/dist
-          zip terraform-provider-ankra_linux_amd64.zip terraform-provider-ankra_linux_amd64
-          zip terraform-provider-ankra_darwin_amd64.zip terraform-provider-ankra_darwin_amd64
-          zip terraform-provider-ankra_darwin_arm64.zip terraform-provider-ankra_darwin_arm64
-          zip terraform-provider-ankra_windows_amd64.zip terraform-provider-ankra_windows_amd64.exe
-          # Generate SHASUMS file
-          shasum -a 256 *.zip > SHASUMS
-          # Sign SHASUMS file
-          gpg --batch --yes --pinentry-mode loopback --passphrase "$GPG_PASSPHRASE" --armor --output SHASUMS.sig --detach-sign SHASUMS
-          # Copy SHASUMS and SHASUMS.sig to repo root for release upload
-          cp SHASUMS ../../SHASUMS
-          cp SHASUMS.sig ../../SHASUMS.sig
-          cd ../..
+      - name: Zip binaries & generate + sign checksums
         env:
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          cd provider/dist
 
-      - name: Upload binaries as artifacts
+          # Zip each binary
+          for bin in terraform-provider-ankra_*; do
+            zip "${bin}.zip" "$bin"
+          done
+
+          # Generate the SHA256SUMS file
+          shasum -a 256 *.zip > SHA256SUMS
+
+          # Create an armored detached signature
+          gpg --batch --yes --pinentry-mode loopback \
+            --passphrase "$GPG_PASSPHRASE" \
+            --armor --output SHA256SUMS.sig \
+            --detach-sign SHA256SUMS
+
+          # Copy them up to the repo root so the artifact uploader picks them up
+          cp SHA256SUMS SHA256SUMS.sig ../..
+
+          cd ../..
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: terraform-provider-ankra-binaries
-          path: provider/dist/
-
+          name: provider-artifacts
+          path: |
+            provider/dist/
+            SHA256SUMS
+            SHA256SUMS.sig
 
   release:
     needs: build
@@ -70,15 +79,15 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
-          name: terraform-provider-ankra-binaries
-          path: provider/dist/
+          name: provider-artifacts
+          # omitted `path:` so it unpacks into the repository root
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            SHASUMS
-            SHASUMS.sig
+            SHA256SUMS
+            SHA256SUMS.sig
             provider/dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
