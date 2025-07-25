@@ -9,7 +9,6 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      # passphrase for signing checksums
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - uses: actions/checkout@v4
@@ -21,7 +20,7 @@ jobs:
       - name: Import GPG key
         run: echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
-      - name: Build provider binaries
+      - name: Build binaries
         run: |
           mkdir -p provider/dist
           cd provider
@@ -31,61 +30,34 @@ jobs:
           GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_windows_amd64.exe .
           cd ..
 
-      - name: Zip binaries, generate & sign checksums, create manifest
+      - name: Zip & checksum
         run: |
           cd provider/dist
-
-          # 1) Clean old archives & zip each binary (strip .exe in the ZIP name)
           rm -f terraform-provider-ankra_*.zip
           for bin in terraform-provider-ankra_*; do
             base=$(basename "$bin" .exe)
             zip "${base}.zip" "$bin"
           done
 
-          # 2) Derive the bare tag (e.g. v1.0.0-rc02)
-          TAG="${GITHUB_REF#refs/tags/}"
-
-          # 3) Generate the SHA256SUMS file for all ZIPs **and** the manifest
-          CHECKSUM_FILE="terraform-provider-ankra_${TAG}_SHA256SUMS"
-          shasum -a 256 *.zip > "${CHECKSUM_FILE}"                              #
-
-          # 4) Create a **binary** GPG signature of the checksums (no --armor)
+          # Generate the canonical SHA256SUMS
+          shasum -a 256 *.zip > SHA256SUMS
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
-            --output "${CHECKSUM_FILE}.sig" \
-            --detach-sign "${CHECKSUM_FILE}"                                    #
+            --output SHA256SUMS.sig \
+            --detach-sign SHA256SUMS
 
-          # 5) Build the manifest JSON that tells Terraform Registry which platforms exist
-          cat <<EOF > "terraform-provider-ankra_${TAG}_manifest.json"
-          {
-            "version": 1,
-            "metadata": {
-              "protocol_versions": ["6.0"]
-            },
-            "providers": [
-              { "os": "linux",   "arch": "amd64", "filename": "terraform-provider-ankra_linux_amd64.zip" },
-              { "os": "darwin",  "arch": "amd64", "filename": "terraform-provider-ankra_darwin_amd64.zip" },
-              { "os": "darwin",  "arch": "arm64", "filename": "terraform-provider-ankra_darwin_arm64.zip" },
-              { "os": "windows", "arch": "amd64", "filename": "terraform-provider-ankra_windows_amd64.zip" }
-            ]
-          }
-          EOF                                                                   #
-
-          # 6) Copy everything to the repo root for upload
-          cp *.zip ../..
-          cp "${CHECKSUM_FILE}" "${CHECKSUM_FILE}.sig" ../..
-          cp "terraform-provider-ankra_${TAG}_manifest.json" ../..
+          # Move checksums to root
+          mv SHA256SUMS SHA256SUMS.sig ../..
           cd ../..
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: provider-artifacts
           path: |
             provider/dist/*.zip
-            terraform-provider-ankra_*_SHA256SUMS
-            terraform-provider-ankra_*_SHA256SUMS.sig
-            terraform-provider-ankra_*_manifest.json
+            SHA256SUMS
+            SHA256SUMS.sig
 
   release:
     needs: build
@@ -99,15 +71,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Use the bare tag name so filenames match
           tag_name: ${{ github.ref_name }}
           release_name: ${{ github.ref_name }}
           draft: false
-          prerelease: false                                                 #
+          prerelease: false
           files: |
             provider/dist/*.zip
-            terraform-provider-ankra_*_SHA256SUMS
-            terraform-provider-ankra_*_SHA256SUMS.sig
-            terraform-provider-ankra_*_manifest.json
+            SHA256SUMS
+            SHA256SUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
