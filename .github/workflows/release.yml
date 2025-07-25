@@ -33,18 +33,18 @@ jobs:
 
       - name: Zip provider binaries for release
         run: |
-          cd dist
+          cd provider/dist
           zip terraform-provider-ankra_linux_amd64.zip terraform-provider-ankra_linux_amd64
           zip terraform-provider-ankra_darwin_amd64.zip terraform-provider-ankra_darwin_amd64
           zip terraform-provider-ankra_darwin_arm64.zip terraform-provider-ankra_darwin_arm64
           zip terraform-provider-ankra_windows_amd64.zip terraform-provider-ankra_windows_amd64.exe
-          cd ..
+          cd ../..
 
       - name: Upload binaries as artifacts
         uses: actions/upload-artifact@v4
         with:
           name: terraform-provider-ankra-binaries
-          path: dist/
+          path: provider/dist/
 
   release:
     needs: build
@@ -54,11 +54,11 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: terraform-provider-ankra-binaries
-          path: dist/
+          path: provider/dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: provider/dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
