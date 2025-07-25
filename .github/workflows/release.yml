@@ -6,36 +6,34 @@ on:
       - 'v*.*.*'
 
 env:
-  GPG_KEY: ${{ secrets.GPG_KEY }}
+  GPG_KEY:        ${{ secrets.GPG_KEY }}
   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+  TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}      # Terraform Cloud API token (Manage Registry)
+  ORG_NAME:       ${{ secrets.ORG_NAME }}          # e.g. ankraio
+  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}     # e.g. ankra
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Import GPG private key
-        run: |
-          # import the private key so we can sign later
-          echo "$GPG_KEY" | gpg --batch --import
+        run: echo "$GPG_KEY" | gpg --batch --import
 
       - name: Set up Go
         uses: actions/setup-go@v5
-        with:
-          go-version: '1.22'
+        with: { go-version: '1.22' }
 
       - name: Build provider binaries
         run: |
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p provider/dist
           cd provider
-          # build each platform with versioned binary name
-          GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_linux_amd64   .
-          GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_darwin_amd64  .
-          GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-ankra_${VERSION}_darwin_arm64  .
-          GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_windows_amd64.exe .
+          GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_linux_amd64   .
+          GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_amd64  .
+          GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_arm64  .
+          GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_windows_amd64.exe .
           cd ..
 
       - name: Package, checksum & sign
@@ -43,25 +41,18 @@ jobs:
           cd provider/dist
           VERSION=${GITHUB_REF#refs/tags/}
 
-          # clean any old zips
-          rm -f terraform-provider-ankra_${VERSION}_*.zip
-
-          # zip each binary, stripping .exe for Windows ZIP name
-          for bin in terraform-provider-ankra_${VERSION}_*; do
+          rm -f terraform-provider-${PROVIDER_NAME}_${VERSION}_*.zip
+          for bin in terraform-provider-${PROVIDER_NAME}_${VERSION}_*; do
             base=${bin%.exe}
             zip "${base}.zip" "$bin"
           done
 
-          # generate SHA256SUMS for all ZIPs
-          shasum -a 256 *.zip > SHA256SUMS
-
-          # binary GPG signature of the checksums
+          shasum -a 256 *.zip > SHA256SUMS                            # :contentReference[oaicite:3]{index=3}
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
             --output SHA256SUMS.sig \
-            --detach-sign SHA256SUMS
+            --detach-sign SHA256SUMS                              # :contentReference[oaicite:4]{index=4}
 
-          # move artifacts to root for upload
           mv *.zip SHA256SUMS SHA256SUMS.sig ../..
           cd ../..
 
@@ -80,20 +71,63 @@ jobs:
     steps:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
-        with:
-          name: provider-artifacts
-          path: .
+        with: { name: provider-artifacts, path: . }
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}      # bare tag, e.g. v1.0.0-rc02
+          tag_name:     ${{ github.ref_name }}
           release_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
+          draft:        false
+          prerelease:   false
           files: |
             provider/dist/*.zip
             SHA256SUMS
             SHA256SUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish to Terraform Cloud Private Registry
+        shell: bash
+        env:
+          TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}
+          ORG:            ${{ secrets.ORG_NAME }}
+          PROVIDER:       ${{ secrets.PROVIDER_NAME }}
+          VERSION:        ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          API="https://app.terraform.io/api/v2/organizations/${ORG}/registry-providers/private/${ORG}/${PROVIDER}/versions/${VERSION}"
+
+          # 1) Upload SHASUMS and SIG
+          for ENDPOINT in shasums-upload shasums-signature-upload; do
+            URL=$(curl -sS -H "Authorization: Bearer $TF_API_TOKEN" \
+              "$API" | jq -r \
+              ".data.links[\"${ENDPOINT}\"]")
+            FILE=$( [[ $ENDPOINT == shasums-upload ]] \
+               && echo SHA256SUMS || echo SHA256SUMS.sig )
+            curl -sS -H "Content-Type: application/octet-stream" \
+              --upload-file "$FILE" "$URL"
+          done
+
+          # 2) Register & upload each platform
+          for PA in linux_amd64 darwin_amd64 darwin_arm64 windows_amd64; do
+            OS="${PA%_*}"; ARCH="${PA#*_}"
+            FNAME="terraform-provider-${PROVIDER}_${VERSION}_${OS}_${ARCH}.zip"
+            SHASUM=$(shasum -a 256 "provider/dist/${FNAME}" | cut -d' ' -f1)
+
+            # Create platform record
+            RESP=$(curl -sS -X POST "$API/platforms" \
+              -H "Authorization: Bearer $TF_API_TOKEN" \
+              -H "Content-Type: application/vnd.api+json" \
+              --data @- <<EOF
+{"data":{"type":"registry-provider-version-platforms","attributes":{
+  "os":"$OS","arch":"$ARCH","filename":"$FNAME","shasum":"$SHASUM"
+}}}
+EOF
+            )                                                           #
+
+            # Upload binary to the returned URL
+            UPLOAD_URL=$(echo "$RESP" | jq -r \
+              '.data.links["provider-binary-upload"]')
+            curl -sS --upload-file "provider/dist/${FNAME}" "$UPLOAD_URL"
+          done
