@@ -48,7 +48,7 @@ jobs:
           # Generate SHASUMS file
           shasum -a 256 *.zip > SHASUMS
           # Sign SHASUMS file
-          gpg --armor --output SHASUMS.sig --detach-sign SHASUMS
+          gpg --batch --yes --pinentry-mode loopback --armor --output SHASUMS.sig --detach-sign SHASUMS
           cd ../..
 
       - name: Upload binaries as artifacts
