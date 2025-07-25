@@ -1,0 +1,58 @@
+name: Build and Release Terraform Provider
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build provider binaries
+        run: |
+          mkdir -p dist
+          GOOS=linux   GOARCH=amd64 go build -o dist/terraform-provider-ankra_linux_amd64   ./
+          GOOS=darwin  GOARCH=amd64 go build -o dist/terraform-provider-ankra_darwin_amd64  ./
+          GOOS=darwin  GOARCH=arm64 go build -o dist/terraform-provider-ankra_darwin_arm64  ./
+          GOOS=windows GOARCH=amd64 go build -o dist/terraform-provider-ankra_windows_amd64.exe ./
+
+      - name: Zip provider binaries for release
+        run: |
+          cd dist
+          zip terraform-provider-ankra_linux_amd64.zip terraform-provider-ankra_linux_amd64
+          zip terraform-provider-ankra_darwin_amd64.zip terraform-provider-ankra_darwin_amd64
+          zip terraform-provider-ankra_darwin_arm64.zip terraform-provider-ankra_darwin_arm64
+          zip terraform-provider-ankra_windows_amd64.zip terraform-provider-ankra_windows_amd64.exe
+          cd ..
+
+      - name: Upload binaries as artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-provider-ankra-binaries
+          path: dist/
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: terraform-provider-ankra-binaries
+          path: dist/
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

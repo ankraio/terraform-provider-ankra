@@ -1,0 +1,48 @@
+# .gitignore for Ankra Terraform Provider
+
+# Binaries
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Build output
+/build/
+/bin/
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+.terraform/
+crash.log
+
+# Local env files
+.env
+.envrc
+*.local
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Test output
+/test/project/.terraform/
+/test/project/terraform.tfstate*
+/test/project/crash.log
+
+# Go modules
+/go.sum
+/go.mod
+
+# Coverage
+coverage.out
+
+# Misc
+*.log
