@@ -1,3 +1,8 @@
+      - name: Import GPG key
+        run: |
+          echo "$GPG_KEY" | gpg --batch --import
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
 name: Build and Release Terraform Provider
 
 on:
@@ -38,6 +43,10 @@ jobs:
           zip terraform-provider-ankra_darwin_amd64.zip terraform-provider-ankra_darwin_amd64
           zip terraform-provider-ankra_darwin_arm64.zip terraform-provider-ankra_darwin_arm64
           zip terraform-provider-ankra_windows_amd64.zip terraform-provider-ankra_windows_amd64.exe
+          # Generate SHASUMS file
+          shasum -a 256 *.zip > SHASUMS
+          # Sign SHASUMS file
+          gpg --armor --output SHASUMS.sig --detach-sign SHASUMS
           cd ../..
 
       - name: Upload binaries as artifacts
@@ -59,6 +68,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: provider/dist/*.zip
+          files: |
+            provider/dist/*.zip
+            provider/dist/SHASUMS
+            provider/dist/SHASUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
