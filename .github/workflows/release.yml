@@ -3,11 +3,11 @@ name: Build and Release Terraform Provider
 on:
   push:
     tags:
-      - 'v*.*.*'  # Only fire on semver tags
+      - 'v*.*.*'
 
 env:
-  # GPG key passphrase
-  GPG_PASSPHRASE: ${{ secrets.PASSPHRASE }}
+  GPG_KEY: ${{ secrets.GPG_KEY }}
+  GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
 jobs:
   build:
@@ -16,80 +16,69 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Import GPG private key
+        run: |
+          # import the private key so we can sign later
+          echo "$GPG_KEY" | gpg --batch --import
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
           go-version: '1.22'
 
-      - name: Import GPG Key
-        run: echo "${{ secrets.GPG_PRIVATE_KEY }}" | gpg --batch --import
-
       - name: Build provider binaries
         run: |
-          # Derive bare version (e.g. v1.0.0-rc01)
           VERSION=${GITHUB_REF#refs/tags/}
-
           mkdir -p provider/dist
           cd provider
-
-          # Build each platform binary with versioned name
+          # build each platform with versioned binary name
           GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_linux_amd64   .
           GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_darwin_amd64  .
           GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-ankra_${VERSION}_darwin_arm64  .
           GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_${VERSION}_windows_amd64.exe .
           cd ..
 
-      - name: Package archives, manifest, and checksums
+      - name: Package, checksum & sign
         run: |
           cd provider/dist
+          VERSION=${GITHUB_REF#refs/tags/}
 
-          # 1) Zip each binary (strip .exe suffix from zip name)
+          # clean any old zips
           rm -f terraform-provider-ankra_${VERSION}_*.zip
+
+          # zip each binary, stripping .exe for Windows ZIP name
           for bin in terraform-provider-ankra_${VERSION}_*; do
             base=${bin%.exe}
             zip "${base}.zip" "$bin"
           done
 
-          # 2) Generate the versioned SHA256SUMS file
-          SUMFILE="terraform-provider-ankra_${VERSION}_SHA256SUMS"
-          shasum -a 256 *.zip > "${SUMFILE}"                              #
+          # generate SHA256SUMS for all ZIPs
+          shasum -a 256 *.zip > SHA256SUMS
 
-          # 3) Create a binary GPG signature of that sums file
+          # binary GPG signature of the checksums
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
-            --output "${SUMFILE}.sig" \
-            --detach-sign "${SUMFILE}"                                   #
+            --output SHA256SUMS.sig \
+            --detach-sign SHA256SUMS
 
-          # 4) Create the Terraform Registry manifest JSON
-          cat <<EOF > "terraform-provider-ankra_${VERSION}_manifest.json"
-          {
-            "version": 1,
-            "metadata": {
-              "protocol_versions": ["6.0"]
-            }
-          }
-          EOF                                                           #
-
-          # 5) Move all release assets back to the repo root
-          mv *.zip ../..
-          mv "${SUMFILE}" "${SUMFILE}.sig" terraform-provider-ankra_${VERSION}_manifest.json ../..
+          # move artifacts to root for upload
+          mv *.zip SHA256SUMS SHA256SUMS.sig ../..
           cd ../..
 
-      - name: Upload artifacts
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: provider-artifacts
           path: |
             provider/dist/*.zip
-            terraform-provider-ankra_*_SHA256SUMS
-            terraform-provider-ankra_*_SHA256SUMS.sig
-            terraform-provider-ankra_*_manifest.json
+            SHA256SUMS
+            SHA256SUMS.sig
 
   release:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Download artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: provider-artifacts
@@ -98,15 +87,13 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # Use bare tag name so filenames align
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}      # bare tag, e.g. v1.0.0-rc02
           release_name: ${{ github.ref_name }}
-          draft: false                                                #
-          prerelease: false                                           #
+          draft: false
+          prerelease: false
           files: |
             provider/dist/*.zip
-            terraform-provider-ankra_*_SHA256SUMS
-            terraform-provider-ankra_*_SHA256SUMS.sig
-            terraform-provider-ankra_*_manifest.json
+            SHA256SUMS
+            SHA256SUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
