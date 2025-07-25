@@ -33,29 +33,31 @@ jobs:
           GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_windows_amd64.exe .
           cd ..
 
-      - name: Zip + Generate & Sign Checksums
+      - name: Zip binaries, generate & sign checksums
         run: |
           cd provider/dist
 
-          # Zip each binary
+          # Remove any stale zips, then zip each binary (strip .exe for Windows ZIP name)
+          rm -f terraform-provider-ankra_*.zip
           for bin in terraform-provider-ankra_*; do
-            zip "${bin}.zip" "$bin"
+            base=$(basename "$bin" .exe)
+            zip "${base}.zip" "$bin"
           done
 
-          # Derive the tag name (e.g. v1.0.0-rc01)
+          # Derive tag (e.g. v1.0.0-rc01) and build checksum filenames
           TAG="${GITHUB_REF##*/}"
-
-          # 1) Create the checksums file with the exact Terraform Registry convention
           CHECKSUM_FILE="terraform-provider-ankra_${TAG}_SHA256SUMS"
+
+          # 1) SHA256SUMS file
           shasum -a 256 *.zip > "${CHECKSUM_FILE}"
 
-          # 2) Create a binary (not ASCII‑armored) detached signature :contentReference[oaicite:0]{index=0}
+          # 2) Binary GPG signature (no --armor)
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
             --output "${CHECKSUM_FILE}.sig" \
             --detach-sign "${CHECKSUM_FILE}"
 
-          # 3) Copy everything up to repo root for artifact upload
+          # 3) Copy zips & checksums to repo root for upload
           cp *.zip ../..
           cp "${CHECKSUM_FILE}" "${CHECKSUM_FILE}.sig" ../..
           cd ../..
@@ -65,7 +67,7 @@ jobs:
         with:
           name: provider-artifacts
           path: |
-            provider/dist/
+            provider/dist/*.zip
             terraform-provider-ankra_*_SHA256SUMS
             terraform-provider-ankra_*_SHA256SUMS.sig
 
@@ -85,6 +87,6 @@ jobs:
           files: |
             terraform-provider-ankra_*_SHA256SUMS
             terraform-provider-ankra_*_SHA256SUMS.sig
-            provider/dist/*.zip
+            *.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
