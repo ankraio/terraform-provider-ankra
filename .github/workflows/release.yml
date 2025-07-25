@@ -1,8 +1,3 @@
-      - name: Import GPG key
-        run: |
-          echo "$GPG_KEY" | gpg --batch --import
-        env:
-          GPG_KEY: ${{ secrets.GPG_KEY }}
 name: Build and Release Terraform Provider
 
 on:
@@ -26,6 +21,13 @@ jobs:
         run: |
           pwd
           ls -lR
+
+      - name: Import GPG key
+        run: |
+          echo "$GPG_KEY" | gpg --batch --import
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
+
       - name: Build provider binaries
         run: |
           cd provider
@@ -54,6 +56,7 @@ jobs:
         with:
           name: terraform-provider-ankra-binaries
           path: provider/dist/
+
 
   release:
     needs: build
