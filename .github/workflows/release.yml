@@ -39,16 +39,15 @@ jobs:
             zip "${base}.zip" "$bin"
           done
 
-          # Generate the canonical SHA256SUMS
-          shasum -a 256 *.zip > SHA256SUMS
+          # Generate checksum files
+          shasum -a 256 *.zip > SHA256SUMS                              # :contentReference[oaicite:6]{index=6}
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
             --output SHA256SUMS.sig \
-            --detach-sign SHA256SUMS
+            --detach-sign SHA256SUMS                                   # :contentReference[oaicite:7]{index=7}
 
-          # Move checksums to root
-          mv SHA256SUMS SHA256SUMS.sig ../..
-          cd ../..
+          # Move artifacts to repo root
+          mv *.zip SHA256SUMS SHA256SUMS.sig ../..
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -73,8 +72,8 @@ jobs:
         with:
           tag_name: ${{ github.ref_name }}
           release_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
+          draft: false                                                # :contentReference[oaicite:8]{index=8}
+          prerelease: false                                           # :contentReference[oaicite:9]{index=9}
           files: |
             provider/dist/*.zip
             SHA256SUMS
