@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -17,16 +19,9 @@ jobs:
         with:
           go-version: '1.22'
 
-      - name: Show workspace structure
-        run: |
-          pwd
-          ls -lR
-
       - name: Import GPG key
-        env:
-          GPG_KEY: ${{ secrets.GPG_KEY }}
         run: |
-          echo "$GPG_KEY" | gpg --batch --import
+          echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
       - name: Build provider binaries
         run: |
@@ -38,9 +33,7 @@ jobs:
           GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_windows_amd64.exe .
           cd ..
 
-      - name: Zip binaries & generate + sign checksums
-        env:
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+      - name: Zip + Generate & Sign Checksums
         run: |
           cd provider/dist
 
@@ -49,18 +42,22 @@ jobs:
             zip "${bin}.zip" "$bin"
           done
 
-          # Generate the SHA256SUMS file
-          shasum -a 256 *.zip > SHA256SUMS
+          # Derive the tag name (e.g. v1.0.0-rc01)
+          TAG="${GITHUB_REF##*/}"
 
-          # Create an armored detached signature
+          # 1) Create the checksums file with the exact Terraform Registry convention
+          CHECKSUM_FILE="terraform-provider-ankra_${TAG}_SHA256SUMS"
+          shasum -a 256 *.zip > "${CHECKSUM_FILE}"
+
+          # 2) Create a binary (not ASCII‑armored) detached signature :contentReference[oaicite:0]{index=0}
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
-            --armor --output SHA256SUMS.sig \
-            --detach-sign SHA256SUMS
+            --output "${CHECKSUM_FILE}.sig" \
+            --detach-sign "${CHECKSUM_FILE}"
 
-          # Copy them up to the repo root so the artifact uploader picks them up
-          cp SHA256SUMS SHA256SUMS.sig ../..
-
+          # 3) Copy everything up to repo root for artifact upload
+          cp *.zip ../..
+          cp "${CHECKSUM_FILE}" "${CHECKSUM_FILE}.sig" ../..
           cd ../..
 
       - name: Upload build artifacts
@@ -69,8 +66,8 @@ jobs:
           name: provider-artifacts
           path: |
             provider/dist/
-            SHA256SUMS
-            SHA256SUMS.sig
+            terraform-provider-ankra_*_SHA256SUMS
+            terraform-provider-ankra_*_SHA256SUMS.sig
 
   release:
     needs: build
@@ -80,14 +77,14 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: provider-artifacts
-          # omitted `path:` so it unpacks into the repository root
+          path: .
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            SHA256SUMS
-            SHA256SUMS.sig
+            terraform-provider-ankra_*_SHA256SUMS
+            terraform-provider-ankra_*_SHA256SUMS.sig
             provider/dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
