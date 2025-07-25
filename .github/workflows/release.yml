@@ -77,8 +77,8 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            provider/dist/*.zip
             SHASUMS
             SHASUMS.sig
+            provider/dist/*.zip
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
