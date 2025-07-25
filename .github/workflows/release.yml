@@ -9,6 +9,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
+      # passphrase for signing checksums
       GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
     steps:
       - uses: actions/checkout@v4
@@ -30,61 +31,45 @@ jobs:
           GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-ankra_windows_amd64.exe .
           cd ..
 
-      - name: Zip binaries & generate checksums
+      - name: Zip binaries, generate & sign checksums, create manifest
         run: |
           cd provider/dist
-          rm -f terraform-provider-ankra_*.zip
 
-          # 1) Package each binary, stripping .exe in the ZIP filename
+          # 1) Clean old archives & zip each binary (strip .exe in the ZIP name)
+          rm -f terraform-provider-ankra_*.zip
           for bin in terraform-provider-ankra_*; do
             base=$(basename "$bin" .exe)
             zip "${base}.zip" "$bin"
           done
 
-          # 2) Derive the short tag name
+          # 2) Derive the bare tag (e.g. v1.0.0-rc02)
           TAG="${GITHUB_REF#refs/tags/}"
 
-          # 3) Create checksum file
+          # 3) Generate the SHA256SUMS file for all ZIPs **and** the manifest
           CHECKSUM_FILE="terraform-provider-ankra_${TAG}_SHA256SUMS"
-          shasum -a 256 *.zip > "${CHECKSUM_FILE}"
+          shasum -a 256 *.zip > "${CHECKSUM_FILE}"                              #
 
-          # 4) Sign it (binary signature, no --armor)
+          # 4) Create a **binary** GPG signature of the checksums (no --armor)
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
             --output "${CHECKSUM_FILE}.sig" \
-            --detach-sign "${CHECKSUM_FILE}"
+            --detach-sign "${CHECKSUM_FILE}"                                    #
 
-          # 5) Generate the manifest JSON
+          # 5) Build the manifest JSON that tells Terraform Registry which platforms exist
           cat <<EOF > "terraform-provider-ankra_${TAG}_manifest.json"
           {
+            "version": 1,
+            "metadata": {
+              "protocol_versions": ["6.0"]
+            },
             "providers": [
-              {
-                "os": "linux",
-                "arch": "amd64",
-                "url": "https://github.com/ankraio/terraform-provider-ankra/releases/download/${TAG}/terraform-provider-ankra_linux_amd64.zip",
-                "sha256": "$(shasum -a 256 terraform-provider-ankra_linux_amd64.zip | cut -d' ' -f1)"
-              },
-              {
-                "os": "darwin",
-                "arch": "amd64",
-                "url": "https://github.com/ankraio/terraform-provider-ankra/releases/download/${TAG}/terraform-provider-ankra_darwin_amd64.zip",
-                "sha256": "$(shasum -a 256 terraform-provider-ankra_darwin_amd64.zip | cut -d' ' -f1)"
-              },
-              {
-                "os": "darwin",
-                "arch": "arm64",
-                "url": "https://github.com/ankraio/terraform-provider-ankra/releases/download/${TAG}/terraform-provider-ankra_darwin_arm64.zip",
-                "sha256": "$(shasum -a 256 terraform-provider-ankra_darwin_arm64.zip | cut -d' ' -f1)"
-              },
-              {
-                "os": "windows",
-                "arch": "amd64",
-                "url": "https://github.com/ankraio/terraform-provider-ankra/releases/download/${TAG}/terraform-provider-ankra_windows_amd64.zip",
-                "sha256": "$(shasum -a 256 terraform-provider-ankra_windows_amd64.zip | cut -d' ' -f1)"
-              }
+              { "os": "linux",   "arch": "amd64", "filename": "terraform-provider-ankra_linux_amd64.zip" },
+              { "os": "darwin",  "arch": "amd64", "filename": "terraform-provider-ankra_darwin_amd64.zip" },
+              { "os": "darwin",  "arch": "arm64", "filename": "terraform-provider-ankra_darwin_arm64.zip" },
+              { "os": "windows", "arch": "amd64", "filename": "terraform-provider-ankra_windows_amd64.zip" }
             ]
           }
-          EOF
+          EOF                                                                   #
 
           # 6) Copy everything to the repo root for upload
           cp *.zip ../..
@@ -114,10 +99,11 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
-          release_name: ${{ github.event.release.tag_name }}
+          # Use the bare tag name so filenames match
+          tag_name: ${{ github.ref_name }}
+          release_name: ${{ github.ref_name }}
           draft: false
-          prerelease: false
+          prerelease: false                                                 #
           files: |
             provider/dist/*.zip
             terraform-provider-ankra_*_SHA256SUMS
