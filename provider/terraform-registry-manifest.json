@@ -1,0 +1,7 @@
+{
+  "name": "ankra",
+  "version": "v1.0.0-rc01",
+  "description": "Terraform provider for Ankra platform.",
+  "homepage": "https://github.com/ankraio/terraform-provider-ankra",
+  "repository": "https://github.com/ankraio/terraform-provider-ankra"
+}
