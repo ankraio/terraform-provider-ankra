@@ -37,7 +37,6 @@ jobs:
         with:
           version: latest
           args: release --clean
-          workdir: provider
         env:
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
           GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}

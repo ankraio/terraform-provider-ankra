@@ -20,7 +20,7 @@
 crash.log
 
 # Local env files
-.env
+.envx
 .envrc
 *.local
 
@@ -36,10 +36,6 @@ crash.log
 /test/project/.terraform/
 /test/project/terraform.tfstate*
 /test/project/crash.log
-
-# Go modules
-/go.sum
-/go.mod
 
 # Coverage
 coverage.out
