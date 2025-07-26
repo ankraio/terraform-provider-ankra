@@ -30,3 +30,15 @@ jobs:
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
+      - name: Generate Terraform Registry manifest
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')
+          bash scripts/generate-manifest.sh "$VERSION"
+
+      - name: Upload manifest to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/terraform-provider-ankra_*_manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
