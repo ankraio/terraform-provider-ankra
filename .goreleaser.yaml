@@ -25,7 +25,7 @@ builds:
     ignore:
       - goos: darwin
         goarch: '386'
-    binary: 'terraform-provider-{{ .ProjectName }}_v{{ .Version }}'
+    binary: 'terraform-provider-ankra_v{{ .Version }}'
 
 archives:
   - format: zip
