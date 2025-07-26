@@ -5,6 +5,10 @@ before:
   hooks:
     # this is just an example and not a requirement for provider building/publishing
     - go mod tidy
+after:
+  hooks:
+    # Generate the Terraform Registry manifest with platforms array after archives are built
+    - bash scripts/generate-manifest.sh
 builds:
 - env:
     # goreleaser does not work with CGO, it could also complicate
