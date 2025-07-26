@@ -35,11 +35,12 @@ archives:
 
 
 checksum:
+  name_template: '{{ .ProjectName }}_v{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
+
 after:
   hooks:
     - bash scripts/generate-manifest.sh {{ .Version }}
-  name_template: '{{ .ProjectName }}_v{{ .Version }}_SHA256SUMS'
-  algorithm: sha256
 
 signs:
   - artifacts: checksum
