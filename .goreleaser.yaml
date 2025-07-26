@@ -64,7 +64,3 @@ release:
 
 changelog:
   disable: true
-
-hooks:
-  post_archive:
-    - bash scripts/generate-manifest.sh

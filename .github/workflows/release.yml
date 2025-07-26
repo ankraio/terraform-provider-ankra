@@ -17,11 +17,24 @@ jobs:
         run: |
           echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
-      - name: Run GoReleaser
+      - name: Run GoReleaser (build/archives only)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean
+          args: build --clean
+        env:
+          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+
+      - name: Generate Terraform Registry Manifest
+        run: bash scripts/generate-manifest.sh
+
+      - name: Run GoReleaser (checksums, sign, release)
+        uses: goreleaser/goreleaser-action@v5
+        with:
+          version: v2.11.1
+          args: release --skip-validate --skip-build --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
