@@ -30,9 +30,9 @@ builds:
 archives:
   - format: zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    hooks:
-      post:
-        - bash scripts/generate-manifest.sh
+hooks:
+  post_archive:
+    - bash scripts/generate-manifest.sh
 
 checksum:
   extra_files:
