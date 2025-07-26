@@ -1,8 +1,10 @@
 version: 1
 
+# Global hooks run before any build or archive
 before:
   hooks:
     - go mod tidy
+    - bash scripts/generate-manifest.sh        # ← run manifest generation here
 
 builds:
   - mod_timestamp: '{{ .CommitTimestamp }}'
@@ -30,9 +32,6 @@ builds:
 archives:
   - format: zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-hooks:
-  post_archive:
-    - bash scripts/generate-manifest.sh
 
 checksum:
   extra_files:
@@ -60,9 +59,6 @@ release:
   extra_files:
     - glob: 'provider/terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
-  # no draft/prerelease to ensure immediate publish
-  # draft: true
-  # prerelease: true
 
 changelog:
   disable: true
