@@ -18,30 +18,15 @@ jobs:
 
 
 
-      - name: Run GoReleaser (build, archive, checksums only)
+
+
+      - name: Run GoReleaser (build, archive, checksum, sign, publish, manifest)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean --skip=publish,sign,announce
+          args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-
-      - name: Generate Terraform Registry Manifest
-        run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          bash scripts/generate-manifest.sh "$VERSION"
-
-
-      - name: Run GoReleaser (sign, publish)
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          version: v2.11.1
-          args: release --skip=archive
-        env:
-          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          GORELEASER_ALLOW_DIRTY: "dist/,terraform-provider-ankra_v*_manifest.json"
 
