@@ -38,24 +38,11 @@ checksum:
   name_template: '{{ .ProjectName }}_v{{ .Version }}_SHA256SUMS'
   algorithm: sha256
 
-after:
-  hooks:
-    - bash scripts/generate-manifest.sh {{ .Version }}
 
-signs:
-  - artifacts: checksum
-    args:
-      - "--batch"
-      - "--pinentry-mode"
-      - "loopback"
-      - "--passphrase"
-      - "{{ .Env.GPG_PASSPHRASE }}"
-      - "--local-user"
-      - "{{ .Env.GPG_FINGERPRINT }}"
-      - "--output"
-      - "${signature}"
-      - "--detach-sign"
-      - "${artifact}"
+hooks:
+  - when: after
+    step: checksum
+    command: bash scripts/generate-manifest.sh {{ .Version }}
 
 release:
   github:
