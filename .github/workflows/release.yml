@@ -22,7 +22,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --skip-validate --skip-publish --clean
+          args: release --skip-publish --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
@@ -35,7 +35,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --skip-validate --skip-build --clean
+          args: release --skip-build --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
