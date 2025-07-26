@@ -1,10 +1,9 @@
-# .github/workflows/release.yml
 name: Release Terraform Provider
 
 on:
   push:
     tags:
-      - 'v*.*.*'  # only semantic version tags
+      - 'v*.*.*'
 
 jobs:
   release:
@@ -19,8 +18,6 @@ jobs:
 
 
 
-      - name: Generate Terraform Registry Manifest
-        run: bash scripts/generate-manifest.sh
 
       - name: Run GoReleaser (build, archive, checksum, sign)
         uses: goreleaser/goreleaser-action@v5
@@ -31,6 +28,9 @@ jobs:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+
+      - name: Generate Terraform Registry Manifest
+        run: bash scripts/generate-manifest.sh
 
       - name: Upload release assets to GitHub
         run: |
