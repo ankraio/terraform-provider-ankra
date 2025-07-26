@@ -28,6 +28,7 @@ jobs:
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
+      # Manifest must be generated after archives are created, before checksums/signing
       - name: Generate Terraform Registry Manifest
         run: bash scripts/generate-manifest.sh
 
