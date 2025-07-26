@@ -38,9 +38,10 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --skip=archive --dirty
+          args: release --skip=archive
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          GORELEASER_ALLOW_DIRTY: "true"
 
