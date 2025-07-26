@@ -1,96 +1,66 @@
-# .github/workflows/release.yml
-name: Release Terraform Provider
+version: 2
 
-on:
-  push:
-    tags:
-      - 'v*.*.*'  # only semantic version tags
+before:
+  hooks:
+    - go mod tidy
 
-jobs:
-  release:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+builds:
+  - env:
+      - CGO_ENABLED=0
+    mod_timestamp: '{{ .CommitTimestamp }}'
+    flags:
+      - -trimpath
+    ldflags:
+      - '-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}'
+    goos:
+      - freebsd
+      - windows
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - '386'
+      - arm
+      - arm64
+    ignore:
+      - goos: darwin
+        goarch: '386'
+    binary: 'terraform-provider-ankra_v{{ .Version }}'
 
-      - name: Write GoReleaser config
-        run: |
-          cat << 'EOF' > .goreleaser.yaml
-          version: 2
+archives:
+  - format: zip
+    name_template: 'terraform-provider-ankra_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    files:
+      - LICENSE
 
-          before:
-            hooks:
-              - go mod tidy
-              - bash scripts/generate-manifest.sh
 
-          builds:
-            - env:
-                - CGO_ENABLED=0
-              mod_timestamp: '{{ .CommitTimestamp }}'
-              flags:
-                - -trimpath
-              ldflags:
-                - '-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}'
-              goos:
-                - freebsd
-                - windows
-                - linux
-                - darwin
-              goarch:
-                - amd64
-                - '386'
-                - arm
-                - arm64
-              ignore:
-                - goos: darwin
-                  goarch: '386'
-              binary: 'terraform-provider-ankra_v{{ .Version }}'
+checksum:
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: 'terraform-provider-{{ .ProjectName }}_{{ .Version }}_manifest.json'
+  name_template: 'terraform-provider-{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+  algorithm: sha256
 
-          archives:
-            - format: zip
-              name_template: 'terraform-provider-ankra_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-              files:
-                - 'LICENSE'
+signs:
+  - artifacts: checksum
+    args:
+      - "--batch"
+      - "--local-user"
+      - "{{ .Env.GPG_FINGERPRINT }}"
+      - "--output"
+      - "${signature}"
+      - "--detach-sign"
+      - "${artifact}"
 
-          checksum:
-            extra_files:
-              - glob: 'terraform-registry-manifest.json'
-                name_template: 'terraform-provider-ankra_{{ .Version }}_manifest.json'
-            name_template: 'terraform-provider-ankra_{{ .Version }}_SHA256SUMS'
-            algorithm: sha256
+release:
+  github:
+    owner: ankraio
+    name: terraform-provider-ankra
+  draft: false
+  prerelease: false
+  extra_files:
+    - glob: 'terraform-registry-manifest.json'
+      name_template: 'terraform-provider-{{ .ProjectName }}_{{ .Version }}_manifest.json'
 
-          signs:
-            - artifacts: checksum
-              args:
-                - '--batch'
-                - '--local-user'
-                - '{{ .Env.GPG_FINGERPRINT }}'
-                - '--output'
-                - '${signature}'
-                - '--detach-sign'
-                - '${artifact}'
-
-          release:
-            github:
-              owner: ankraio
-              name: terraform-provider-ankra
-            draft: false
-            prerelease: false
-
-          changelog:
-            disable: true
-          EOF
-
-      - name: Import GPG private key
-        run: |
-          echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
-
-      - name: Run GoReleaser
-        uses: goreleaser/goreleaser-action@v5
-        with:
-          version: v2.11.1
-          args: release --clean
-        env:
-          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+changelog:
+  disable: true
