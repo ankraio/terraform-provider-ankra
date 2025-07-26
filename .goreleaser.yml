@@ -33,10 +33,11 @@ jobs:
           VERSION=${GITHUB_REF#refs/tags/}
           mkdir -p provider/dist
           cd provider
-          GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_linux_amd64   .
-          GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_amd64  .
-          GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_arm64  .
-          GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_windows_amd64.exe .
+          # Build static binaries
+          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_linux_amd64   .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_amd64  .
+          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_arm64  .
+          CGO_ENABLED=0 GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_windows_amd64.exe .
           cd ..
 
       - name: Package, checksum & sign
@@ -44,20 +45,22 @@ jobs:
           cd provider/dist
           VERSION=${GITHUB_REF#refs/tags/}
 
+          # Zip each binary (strip .exe for ZIP filename)
           rm -f terraform-provider-${PROVIDER_NAME}_${VERSION}_*.zip
           for bin in terraform-provider-${PROVIDER_NAME}_${VERSION}_*; do
             base=${bin%.exe}
             zip "${base}.zip" "$bin"
           done
 
+          # Generate checksums and sign
           shasum -a 256 *.zip > SHA256SUMS
           gpg --batch --yes --pinentry-mode loopback \
             --passphrase "$GPG_PASSPHRASE" \
             --output SHA256SUMS.sig \
             --detach-sign SHA256SUMS
 
-          # copy checksums to repo root; leave zips in provider/dist
-          cp SHA256SUMS SHA256SUMS.sig ../..
+          # Copy artifacts to repo root
+          mv *.zip SHA256SUMS SHA256SUMS.sig ../..
           cd ../..
 
       - name: Upload build artifacts
@@ -104,27 +107,28 @@ jobs:
           set -euo pipefail
           API="https://app.terraform.io/api/v2/organizations/${ORG}/registry-providers/private/${ORG}/${PROVIDER}/versions/${VERSION}"
 
-          # 1) Upload checksums
+          # 1) Upload checksums and signature
           for END in shasums-upload shasums-signature-upload; do
             URL=$(curl -sS -H "Authorization: Bearer $TF_API_TOKEN" \
               "$API" | jq -r ".data.links[\"${END}\"]")
-            FILE=$([[ "$END" == "shasums-upload" ]] && echo SHA256SUMS || echo SHA256SUMS.sig)
+            FILE="$([[ "$END" == "shasums-upload" ]] && echo SHA256SUMS || echo SHA256SUMS.sig)"
             curl -sS -H "Content-Type: application/octet-stream" \
               --upload-file "$FILE" "$URL"
           done
 
-          # 2) Register & upload each platform
+          # 2) Register and upload each platform binary
           for PA in linux_amd64 darwin_amd64 darwin_arm64 windows_amd64; do
             OS="${PA%_*}"; ARCH="${PA#*_}"
             FNAME="terraform-provider-${PROVIDER}_${VERSION}_${OS}_${ARCH}.zip"
             SHASUM=$(shasum -a 256 "provider/dist/${FNAME}" | cut -d' ' -f1)
 
-            # register platform
+            # Create platform record
             RESP=$(curl -sS -X POST "$API/platforms" \
               -H "Authorization: Bearer $TF_API_TOKEN" \
               -H "Content-Type: application/vnd.api+json" \
               --data "{\"data\":{\"type\":\"registry-provider-version-platforms\",\"attributes\":{\"os\":\"${OS}\",\"arch\":\"${ARCH}\",\"filename\":\"${FNAME}\",\"shasum\":\"${SHASUM}\"}}}")
 
+            # Upload binary
             UPLOAD_URL=$(echo "$RESP" | jq -r '.data.links["provider-binary-upload"]')
             curl -sS --upload-file "provider/dist/${FNAME}" "$UPLOAD_URL"
           done
