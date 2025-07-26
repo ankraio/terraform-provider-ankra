@@ -17,11 +17,12 @@ jobs:
           echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
 
+
       - name: Run GoReleaser (build, archive, checksums only)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean
+          args: release --clean --skip=publish,sign,announce
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
@@ -32,11 +33,12 @@ jobs:
           VERSION="${GITHUB_REF_NAME#v}"
           bash scripts/generate-manifest.sh "$VERSION"
 
-      - name: Run GoReleaser (checksums, sign, release)
+
+      - name: Run GoReleaser (sign, publish)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean
+          args: release --skip=build,archive,checksum
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
