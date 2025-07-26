@@ -32,12 +32,7 @@ archives:
     name_template: 'terraform-provider-{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
     files:
       - LICENSE
-changelog:
-  disable: true
 
-hooks:
-  post_archive:
-    - bash scripts/generate-manifest.sh
 
 checksum:
   extra_files:
