@@ -6,9 +6,11 @@ set -euo pipefail
 
 PROVIDER_NAME="ankra"
 VERSION="$1"
-MANIFEST_PATH="terraform-provider-${PROVIDER_NAME}_v${VERSION}_manifest.json"
+MANIFEST_PATH="dist/terraform-provider-${PROVIDER_NAME}_v${VERSION}_manifest.json"
 SHA256SUMS_FILE="dist/terraform-provider-${PROVIDER_NAME}_v${VERSION}_SHA256SUMS"
 
+
+mkdir -p dist
 if [[ ! -f "$SHA256SUMS_FILE" ]]; then
   echo "SHA256SUMS file not found: $SHA256SUMS_FILE"
   exit 1

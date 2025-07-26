@@ -43,5 +43,5 @@ jobs:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-          GORELEASER_ALLOW_DIRTY: "true"
+          GORELEASER_ALLOW_DIRTY: "dist/,terraform-provider-ankra_v*_manifest.json"
 

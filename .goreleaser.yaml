@@ -63,8 +63,7 @@ release:
   draft: false
   prerelease: false
   extra_files:
-    - glob: 'terraform-registry-manifest.json'
-      name_template: 'terraform-provider-{{ .ProjectName }}_{{ .Version }}_manifest.json'
+    - glob: 'dist/terraform-provider-ankra_*_manifest.json'
 
 changelog:
   disable: true
