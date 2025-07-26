@@ -24,6 +24,8 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
       - name: Generate Terraform Registry Manifest
         run: |
