@@ -38,7 +38,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --skip=build,archive,checksum
+          args: release --skip=archive,checksum
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
