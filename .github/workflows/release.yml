@@ -26,8 +26,3 @@ jobs:
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
-      - name: Upload release assets to GitHub
-        run: |
-          gh release upload "$GITHUB_REF_NAME" dist/* terraform-registry-manifest.json dist/*.sig
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
