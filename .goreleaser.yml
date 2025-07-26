@@ -9,8 +9,8 @@ env:
   GPG_KEY:        ${{ secrets.GPG_KEY }}
   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
   TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}
-  ORG_NAME:       ${{ secrets.ORG_NAME }}   # e.g. ankraio
-  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}  # e.g. ankra
+  ORG_NAME:       ${{ secrets.ORG_NAME }}
+  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}
 
 jobs:
   build:
