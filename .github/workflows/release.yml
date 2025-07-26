@@ -18,11 +18,11 @@ jobs:
           echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
 
-      - name: Run GoReleaser (build/archives only)
+      - name: Run GoReleaser (build/archives only, snapshot)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean
+          args: release --snapshot --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
@@ -36,7 +36,7 @@ jobs:
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --skip-build --clean
+          args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
