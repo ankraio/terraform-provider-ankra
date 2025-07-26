@@ -16,7 +16,7 @@ jobs:
       - name: Write GoReleaser config
         run: |
           cat << 'EOF' > .goreleaser.yaml
-          version: 2
+          version: 1
 
           before:
             hooks:
@@ -59,21 +59,22 @@ jobs:
           signs:
             - artifacts: checksum
               args:
-                - --batch
-                - --local-user
-                - '{{ .Env.GPG_FINGERPRINT }}'
-                - --output
-                - '${signature}'
-                - --detach-sign
-                - '${artifact}'
+                - "--batch"
+                - "--pinentry-mode"
+                - "loopback"
+                - "--passphrase"
+                - "{{ .Env.GPG_PASSPHRASE }}"
+                - "--local-user"
+                - "{{ .Env.GPG_FINGERPRINT }}"
+                - "--output"
+                - "${signature}"
+                - "--detach-sign"
+                - "${artifact}"
 
           release:
             github:
               owner: ankraio
               name: terraform-provider-ankra
-            extra_files:
-              - glob: 'terraform-registry-manifest.json'
-                name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
             draft: false
             prerelease: false
 
@@ -83,14 +84,13 @@ jobs:
 
       - name: Import GPG private key
         run: |
-          echo "${{ secrets.GPG_KEY }}" \
-            | gpg --batch --import
+          echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:
           version: latest
-          args: release --clean --rm-dist
+          args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
