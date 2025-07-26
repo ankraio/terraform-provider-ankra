@@ -3,7 +3,7 @@ set -euo pipefail
 
 # Directory where GoReleaser outputs archives (default is dist/)
 DIST_DIR="dist"
-MANIFEST_PATH="provider/terraform-registry-manifest.json"
+MANIFEST_PATH="terraform-registry-manifest.json"
 
 # Provider metadata (edit as needed)
 PROVIDER_NAME="ankra"
