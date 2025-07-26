@@ -3,6 +3,7 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    - bash scripts/generate-manifest.sh {{ .Version }}
 
 builds:
   - env:
@@ -34,15 +35,12 @@ archives:
       - LICENSE
 
 
+
 checksum:
   name_template: '{{ .ProjectName }}_v{{ .Version }}_SHA256SUMS'
   algorithm: sha256
 
 
-hooks:
-  - when: after
-    step: checksum
-    command: bash scripts/generate-manifest.sh {{ .Version }}
 
 release:
   github:
