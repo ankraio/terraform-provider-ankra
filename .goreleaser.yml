@@ -3,14 +3,14 @@ name: Build, Release & Sync Terraform Provider
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*.*.*'  # only semantic version tags
 
 env:
   GPG_KEY:        ${{ secrets.GPG_KEY }}
   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
   TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}
-  ORG_NAME:       ${{ secrets.ORG_NAME }}
-  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}
+  ORG_NAME:       ${{ secrets.ORG_NAME }}   # e.g. ankraio
+  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }} # e.g. ankra
 
 jobs:
   build:
@@ -20,7 +20,8 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Import GPG private key
-        run: echo "$GPG_KEY" | gpg --batch --import
+        run: |
+          echo "$GPG_KEY" | gpg --batch --import
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -55,7 +56,8 @@ jobs:
             --output SHA256SUMS.sig \
             --detach-sign SHA256SUMS
 
-          mv *.zip SHA256SUMS SHA256SUMS.sig ../..
+          # copy checksums to repo root; leave zips in provider/dist
+          cp SHA256SUMS SHA256SUMS.sig ../..
           cd ../..
 
       - name: Upload build artifacts
@@ -106,7 +108,7 @@ jobs:
           for END in shasums-upload shasums-signature-upload; do
             URL=$(curl -sS -H "Authorization: Bearer $TF_API_TOKEN" \
               "$API" | jq -r ".data.links[\"${END}\"]")
-            FILE=$([[ $END == shasums-upload ]] && echo SHA256SUMS || echo SHA256SUMS.sig)
+            FILE=$([[ "$END" == "shasums-upload" ]] && echo SHA256SUMS || echo SHA256SUMS.sig)
             curl -sS -H "Content-Type: application/octet-stream" \
               --upload-file "$FILE" "$URL"
           done
