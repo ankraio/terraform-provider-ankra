@@ -1,135 +1,97 @@
 # .github/workflows/release.yml
-name: Build, Release & Sync Terraform Provider
+name: Release Terraform Provider
 
 on:
   push:
     tags:
       - 'v*.*.*'  # only semantic version tags
 
-env:
-  GPG_KEY:        ${{ secrets.GPG_KEY }}
-  GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-  TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}
-  ORG_NAME:       ${{ secrets.ORG_NAME }}   # e.g. ankraio
-  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }} # e.g. ankra
-
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Write GoReleaser config
+        run: |
+          cat << 'EOF' > .goreleaser.yaml
+          version: 2
+
+          before:
+            hooks:
+              - go mod tidy
+
+          builds:
+            - env:
+                - CGO_ENABLED=0
+              mod_timestamp: '{{ .CommitTimestamp }}'
+              flags:
+                - -trimpath
+              ldflags:
+                - '-s -w -X main.version={{.Version}} -X main.commit={{.Commit}}'
+              goos:
+                - freebsd
+                - windows
+                - linux
+                - darwin
+              goarch:
+                - amd64
+                - '386'
+                - arm
+                - arm64
+              ignore:
+                - goos: darwin
+                  goarch: '386'
+              binary: '{{ .ProjectName }}_v{{ .Version }}'
+
+          archives:
+            - format: zip
+              name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+
+          checksum:
+            extra_files:
+              - glob: 'terraform-registry-manifest.json'
+                name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+            name_template: '{{ .ProjectName }}_{{ .Version }}_SHA256SUMS'
+            algorithm: sha256
+
+          signs:
+            - artifacts: checksum
+              args:
+                - --batch
+                - --local-user
+                - '{{ .Env.GPG_FINGERPRINT }}'
+                - --output
+                - '${signature}'
+                - --detach-sign
+                - '${artifact}'
+
+          release:
+            github:
+              owner: ankraio
+              name: terraform-provider-ankra
+            extra_files:
+              - glob: 'terraform-registry-manifest.json'
+                name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'
+            draft: false
+            prerelease: false
+
+          changelog:
+            disable: true
+          EOF
+
       - name: Import GPG private key
         run: |
-          echo "$GPG_KEY" | gpg --batch --import
+          echo "${{ secrets.GPG_KEY }}" \
+            | gpg --batch --import
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v5
         with:
-          go-version: '1.22'
-
-      - name: Build provider binaries
-        run: |
-          set -euo pipefail
-          VERSION=${GITHUB_REF#refs/tags/}
-          mkdir -p provider/dist
-          cd provider
-          CGO_ENABLED=0 GOOS=linux   GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_linux_amd64   .
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_amd64  .
-          CGO_ENABLED=0 GOOS=darwin  GOARCH=arm64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_darwin_arm64  .
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64  go build -o dist/terraform-provider-${PROVIDER_NAME}_${VERSION}_windows_amd64.exe .
-          cd ..
-
-      - name: Package, checksum & sign
-        run: |
-          set -euo pipefail
-          cd provider/dist
-          VERSION=${GITHUB_REF#refs/tags/}
-
-          # Zip binaries
-          rm -f terraform-provider-${PROVIDER_NAME}_${VERSION}_*.zip
-          for bin in terraform-provider-${PROVIDER_NAME}_${VERSION}_*; do
-            base=${bin%.exe}
-            zip "${base}.zip" "$bin"
-          done
-
-          # Create checksum and signature
-          shasum -a 256 *.zip > SHA256SUMS
-          gpg --batch --yes --pinentry-mode loopback \
-            --passphrase "$GPG_PASSPHRASE" \
-            --output SHA256SUMS.sig \
-            --detach-sign SHA256SUMS
-
-          # Copy artifacts to repo root
-          mv *.zip SHA256SUMS SHA256SUMS.sig ../..
-          cd ../..
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: provider-artifacts
-          path: |
-            provider/dist/*.zip
-            SHA256SUMS
-            SHA256SUMS.sig
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download build artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: provider-artifacts
-          path: .
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name:     ${{ github.ref_name }}
-          release_name: ${{ github.ref_name }}
-          draft:        false
-          prerelease:   false
-          files: |
-            provider/dist/*.zip
-            SHA256SUMS
-            SHA256SUMS.sig
+          version: latest
+          args: release --clean --rm-dist
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Publish to Terraform Cloud Private Registry
-        shell: bash
-        env:
-          TF_API_TOKEN: ${{ secrets.TF_API_TOKEN }}
-          ORG:          ${{ secrets.ORG_NAME }}
-          PROVIDER:     ${{ secrets.PROVIDER_NAME }}
-          VERSION:      ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          API="https://app.terraform.io/api/v2/organizations/${ORG}/registry-providers/private/${ORG}/${PROVIDER}/versions/${VERSION}"
-
-          # Upload SHA256SUMS and its signature
-          for END in shasums-upload shasums-signature-upload; do
-            URL=$(curl -sS -H "Authorization: Bearer $TF_API_TOKEN" \
-              "$API" | jq -r ".data.links[\"${END}\"]")
-            FILE="$([[ "$END" == "shasums-upload" ]] && echo SHA256SUMS || echo SHA256SUMS.sig)"
-            curl -sS -H "Content-Type: application/octet-stream" \
-              --upload-file "$FILE" "$URL"
-          done
-
-          # Register & upload platform binaries
-          for PA in linux_amd64 darwin_amd64 darwin_arm64 windows_amd64; do
-            OS="${PA%_*}"; ARCH="${PA#*_}"
-            FNAME="terraform-provider-${PROVIDER}_${VERSION}_${OS}_${ARCH}.zip"
-            SHASUM=$(shasum -a 256 "provider/dist/${FNAME}" | cut -d' ' -f1)
-
-            # POST platform record
-            RESP=$(curl -sS -X POST "$API/platforms" \
-              -H "Authorization: Bearer $TF_API_TOKEN" \
-              -H "Content-Type: application/vnd.api+json" \
-              --data "{\"data\":{\"type\":\"registry-provider-version-platforms\",\"attributes\":{\"os\":\"${OS}\",\"arch\":\"${ARCH}\",\"filename\":\"${FNAME}\",\"shasum\":\"${SHASUM}\"}}}")
-
-            UPLOAD_URL=$(echo "$RESP" | jq -r '.data.links["provider-binary-upload"]')
-            curl -sS --upload-file "provider/dist/${FNAME}" "$UPLOAD_URL"
-          done
+          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
+          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
