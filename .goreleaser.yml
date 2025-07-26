@@ -1,10 +1,8 @@
 version: 1
 
 before:
-  # global hooks run before any build/archives
   hooks:
     - go mod tidy
-    - bash scripts/generate-manifest.sh   # move your manifest generation here
 
 builds:
   - mod_timestamp: '{{ .CommitTimestamp }}'
@@ -32,7 +30,9 @@ builds:
 archives:
   - format: zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
-    # removed invalid hooks stanza
+    hooks:
+      post:
+        - bash scripts/generate-manifest.sh
 
 checksum:
   extra_files:
