@@ -9,14 +9,15 @@ env:
   GPG_KEY:        ${{ secrets.GPG_KEY }}
   GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
   TF_API_TOKEN:   ${{ secrets.TF_API_TOKEN }}
-  ORG_NAME:       ${{ secrets.ORG_NAME }}
-  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}
+  ORG_NAME:       ${{ secrets.ORG_NAME }}   # e.g. ankraio
+  PROVIDER_NAME:  ${{ secrets.PROVIDER_NAME }}  # e.g. ankra
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Import GPG private key
         run: echo "$GPG_KEY" | gpg --batch --import
