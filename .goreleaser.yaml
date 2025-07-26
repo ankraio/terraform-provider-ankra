@@ -25,11 +25,11 @@ builds:
     ignore:
       - goos: darwin
         goarch: '386'
-    binary: 'terraform-provider-ankra_v{{ .Version }}'
+    binary: '{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}'
 
 archives:
   - format: zip
-    name_template: 'terraform-provider-ankra_{{ .Version }}_{{ .Os }}_{{ .Arch }}'
+    name_template: '{{ .ProjectName }}_v{{ .Version }}_{{ .Os }}_{{ .Arch }}'
     files:
       - LICENSE
 
