@@ -1,41 +1,73 @@
-name: Release Terraform Provider
-
-# trigger on any semver tag
-on:
-  push:
-    tags:
-      - 'v*.*.*'
+name: Publish Release
 
 permissions:
   contents: write
 
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+on:
+  push:
+    tags:
+      - "v*"
+
 jobs:
-  release:
+  goreleaser:
     runs-on: ubuntu-latest
     env:
       PROVIDER_NAME: ankra
+      NAMESPACE:     ankraio
 
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Setup GPG for CI signing
-        env:
-          GPG_KEY: ${{ secrets.GPG_KEY }}
+      - name: Cleanup unused directories and tools
         run: |
-          mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
-          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-          echo "$GPG_KEY" | gpg --batch --import
+          df -h /
+          sudo apt-get remove -y '^aspnetcore-.*' '^dotnet-.*' '^llvm-.*' 'php.*' '^mongodb-.*' '^mysql-.*' azure-cli google-chrome-stable firefox powershell mono-devel google-cloud-sdk google-cloud-cli microsoft-edge-stable snapd --fix-missing
+          sudo apt-get autoremove -y
+          sudo apt-get clean
+          sudo docker image prune --all --force
+          sudo rm -rf \
+            "$AGENT_TOOLSDIRECTORY" \
+            /opt/google/chrome \
+            /opt/microsoft/msedge \
+            /opt/microsoft/powershell \
+            /opt/pipx \
+            /usr/lib/mono \
+            /usr/local/julia* \
+            /usr/local/lib/android \
+            /usr/local/lib/node_modules \
+            /usr/local/share/chromium \
+            /usr/local/share/powershell \
+            /usr/share/dotnet \
+            /usr/share/swift
+          df -h /
 
-      - name: Build & sign artifacts (skip publish)
-        uses: goreleaser/goreleaser-action@v5
+      - name: Checkout
+        uses: actions/checkout@v4
         with:
-          version: v2.11.1
-          args: release --clean --skip=publish       # ← don't create or upload GH release :contentReference[oaicite:0]{index=0}
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Import GPG key
+        id: import_gpg
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase:      ${{ secrets.GPG_PASSPHRASE }}
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6.0.0
+        with:
+          version: latest
+          args: "release --clean --timeout 3h -p 3"
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
 
       - name: Determine version
         id: vars
@@ -45,7 +77,7 @@ jobs:
       - name: Write static Terraform Registry manifest
         run: |
           mkdir -p dist
-          cat > dist/terraform-provider-${{ env.PROVIDER_NAME }}_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
+          cat > dist/terraform-provider-${PROVIDER_NAME}_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
           {
             "version": 1,
             "metadata": {
@@ -58,10 +90,38 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          name: terraform-provider-${{ env.PROVIDER_NAME }} v${{ steps.vars.outputs.VERSION }}
+          name: terraform-provider-${PROVIDER_NAME} v${{ steps.vars.outputs.VERSION }}
           tag_name: v${{ steps.vars.outputs.VERSION }}
           files: |
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_*.zip
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS.sig
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_manifest.json
+            dist/terraform-provider-${PROVIDER_NAME}_v${{ steps.vars.outputs.VERSION }}_*.zip
+            dist/terraform-provider-${PROVIDER_NAME}_v${{ steps.vars.outputs.VERSION }}_SHA256SUMS
+            dist/terraform-provider-${PROVIDER_NAME}_v${{ steps.vars.outputs.VERSION }}_SHA256SUMS.sig
+            dist/terraform-provider-${PROVIDER_NAME}_v${{ steps.vars.outputs.VERSION }}_manifest.json
+
+      - name: Trigger Registry Sync
+        env:
+          TFC_API_TOKEN: ${{ secrets.TFC_API_TOKEN }}
+          NAMESPACE:     ${{ env.NAMESPACE }}
+          PROVIDER:      terraform-provider-${{ env.PROVIDER_NAME }}
+        run: |
+          set -euo pipefail
+
+          echo "Fetching provider ID for ${NAMESPACE}/${PROVIDER}…"
+          PROVIDER_ID=$(
+            curl -s "https://registry.terraform.io/v3/providers?filter[namespace]=${NAMESPACE}&filter[name]=${PROVIDER}" \
+              -H 'Accept: application/json' \
+              -H "Authorization: Bearer ${TFC_API_TOKEN}"
+            | jq -r '.data[0].id'
+          )
+
+          if [[ -z "$PROVIDER_ID" || "$PROVIDER_ID" == "null" ]]; then
+            echo "ERROR: could not find provider ID for ${NAMESPACE}/${PROVIDER}"
+            exit 1
+          fi
+          echo "Found provider ID: $PROVIDER_ID"
+
+          echo "Triggering registry resync…"
+          curl -X POST "https://registry.terraform.io/v3/providers/${PROVIDER_ID}/actions/sync" \
+            -H 'Accept: application/json' \
+            -H "Authorization: Bearer ${TFC_API_TOKEN}" \
+          && echo "✅ Registry resync requested"
