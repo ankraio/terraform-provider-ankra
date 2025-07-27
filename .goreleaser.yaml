@@ -1,17 +1,12 @@
-# .goreleaser.yml
 version: 2
 
 before:
   hooks:
-    # ensure we allow loopback pinentry
     - |
-      # create gpg config dir if needed
       mkdir -p ~/.gnupg
-      # allow GPG_TTY-less passphrase
-      echo "allow-loopback-pinentry" >> ~/.gnupg/gpg.conf
-    # import the key in batch mode
-    - |
-      echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
+      chmod 700 ~/.gnupg
+      echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+      echo "${GPG_KEY}" | gpg --batch --import
 
 builds:
   - env:
