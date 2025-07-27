@@ -17,7 +17,7 @@ cat > "$MANIFEST_PATH" <<EOF
 {
   "version": 1,
   "metadata": {
-    "protocol_versions": ["5.0"]
+    "protocol_versions": ["6.0"]
   }
 }
 EOF
