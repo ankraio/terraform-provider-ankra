@@ -8,6 +8,9 @@ before:
       echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
       echo "${GPG_KEY}" | gpg --batch --import
 
+before_publish:
+  - cmd: bash scripts/generate-manifest.sh {{ .Version }}
+
 builds:
   - env:
       - CGO_ENABLED=0
@@ -61,6 +64,8 @@ release:
   github:
     owner: ankraio
     name: terraform-provider-ankra
+    extra_files:
+      - glob: dist/terraform-provider-ankra_v{{ .Version }}_manifest.json
   draft: false
   prerelease: false
 

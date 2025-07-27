@@ -9,42 +9,22 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup GPG for CI signing
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
         run: |
-          mkdir -p ~/.gnupg
-          chmod 700 ~/.gnupg
-          # configure loopback pinentry
+          mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-          # import the private key
           echo "$GPG_KEY" | gpg --batch --import
 
-      - name: Run GoReleaser (build, archive, checksum, sign, publish, manifest)
+      - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
           args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-          GPG_KEY:         ${{ secrets.GPG_KEY }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-
-      - name: Generate Terraform Registry manifest
-        run: |
-          VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')
-          bash scripts/generate-manifest.sh "$VERSION"
-
-      - name: Upload manifest to GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: |
-            dist/terraform-provider-ankra_*_manifest.json
-            dist/terraform-provider-ankra_*_SHA256SUMS
-            dist/terraform-provider-ankra_*_SHA256SUMS.sig
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
