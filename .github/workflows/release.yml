@@ -13,7 +13,7 @@ jobs:
 
       - name: Setup GPG for CI signing
         env:
-          GPG_KEY: ${{ secrets.GPG_KEY }}
+          GPG_KEY:         ${{ secrets.GPG_KEY }}
         run: |
           mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
@@ -28,3 +28,19 @@ jobs:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
+
+      - name: Generate Terraform Registry manifest
+        run: |
+          VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')
+          bash scripts/generate-manifest.sh "$VERSION"
+
+      - name: Upload all release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/terraform-provider-ankra_*_*.zip
+            dist/terraform-provider-ankra_*_SHA256SUMS
+            dist/terraform-provider-ankra_*_SHA256SUMS.sig
+            dist/terraform-provider-ankra_*_manifest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
