@@ -6,7 +6,7 @@ on:
     tags:
       - 'v*.*.*'
 
-# give the ACTIONS token write‑access to releases/assets
+# give the ACTIONS token write‑access to release assets
 permissions:
   contents: write
 
@@ -15,7 +15,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
       - name: Setup GPG for CI signing
         env:
@@ -40,14 +41,21 @@ jobs:
         run: |
           echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_OUTPUT
 
-      - name: Generate Terraform Registry manifest
+      - name: Write static Terraform Registry manifest
         run: |
-          bash scripts/generate-manifest.sh "${{ steps.vars.outputs.VERSION }}"
+          mkdir -p dist
+          cat > dist/terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
+          {
+            "version": 1,
+            "metadata": {
+              "protocol_versions": ["5.0"]
+            }
+          }
+          EOF
 
       - name: Upload all release assets (including manifest)
         uses: softprops/action-gh-release@v2
         with:
-          # explicitly pass the token that has contents: write
           token: ${{ secrets.GITHUB_TOKEN }}
           files: |
             dist/terraform-provider-ankra_*_*.zip
