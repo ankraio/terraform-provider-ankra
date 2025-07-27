@@ -11,10 +11,19 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ github.ref_name }}
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
+
+      - name: Setup GitHub CLI
+        uses: actions/setup-gh-cli@v2
+
+      - name: Delete existing GitHub Release (if any)
+        run: |
+          gh release delete "${VERSION}" --yes || echo "no existing release, ok"
 
       - name: Setup GPG for CI signing
         env:
@@ -25,7 +34,6 @@ jobs:
           echo "$GPG_KEY" | gpg --batch --import
 
       - name: Run GoReleaser
-        id: goreleaser
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
@@ -35,15 +43,15 @@ jobs:
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
-      - name: Determine version
+      - name: Determine stripped version
         id: vars
         run: |
-          echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_OUTPUT
+          echo "STRIPPED=${VERSION#v}" >> $GITHUB_OUTPUT
 
       - name: Write static Terraform Registry manifest
         run: |
           mkdir -p dist
-          cat > dist/terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
+          cat > dist/terraform-provider-ankra_v${{ steps.vars.outputs.STRIPPED }}_manifest.json <<EOF
           {
             "version": 1,
             "metadata": {
@@ -52,26 +60,12 @@ jobs:
           }
           EOF
 
-      - name: Find existing GitHub Release
-        id: find_release
-        uses: actions/github-script@v6
+      - name: Upload all release assets (including manifest)
+        uses: softprops/action-gh-release@v2
         with:
-          result-encoding: string
-          script: |
-            const tag = context.ref.replace('refs/tags/', '');
-            const { data: release } = await github.rest.repos.getReleaseByTag({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              tag,
-            });
-            return release.upload_url;
-
-      - name: Upload manifest to existing release
-        uses: actions/upload-release-asset@v1
-        with:
-          upload_url: ${{ steps.find_release.outputs.result }}
-          asset_path: dist/terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
-          asset_name: terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
-          asset_content_type: application/json
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          files: |
+            dist/terraform-provider-ankra_*_*.zip
+            dist/terraform-provider-ankra_*_SHA256SUMS
+            dist/terraform-provider-ankra_*_SHA256SUMS.sig
+            dist/terraform-provider-ankra_*_manifest.json
