@@ -1,12 +1,10 @@
 name: Release Terraform Provider
 
-# trigger on any semver tag
 on:
   push:
     tags:
       - 'v*.*.*'
 
-# give the ACTIONS token write‑access to release assets
 permissions:
   contents: write
 
@@ -15,8 +13,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Setup GPG for CI signing
         env:
@@ -27,6 +24,7 @@ jobs:
           echo "$GPG_KEY" | gpg --batch --import
 
       - name: Run GoReleaser
+        id: goreleaser
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
@@ -53,12 +51,24 @@ jobs:
           }
           EOF
 
-      - name: Upload all release assets (including manifest)
-        uses: softprops/action-gh-release@v2
+      - name: Find existing GitHub Release
+        id: find_release
+        uses: actions/github-script@v6
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          files: |
-            dist/terraform-provider-ankra_*_*.zip
-            dist/terraform-provider-ankra_*_SHA256SUMS
-            dist/terraform-provider-ankra_*_SHA256SUMS.sig
-            dist/terraform-provider-ankra_*_manifest.json
+          result-encoding: string
+          script: |
+            const tag = context.ref.replace('refs/tags/', '');
+            const { data: release } = await github.rest.repos.getReleaseByTag({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: tag,
+            });
+            return release.upload_url;
+
+      - name: Upload manifest to existing release
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.find_release.outputs.result }}
+          asset_path: dist/terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
+          asset_name: terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
+          asset_content_type: application/json
