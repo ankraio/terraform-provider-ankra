@@ -16,10 +16,14 @@ jobs:
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
         run: |
-          # 1) Create ~/.gnupg and disable tty prompts
+          # 1) Create ~/.gnupg and secure its permissions
           mkdir -p ~/.gnupg
-          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg.conf
-          # 2) Import the private key in batch mode
+          chmod 700 ~/.gnupg
+
+          # 2) Tell GPG to allow loopback pinentry in non‑TTY contexts
+          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
+
+          # 3) Import the private key in batch mode
           echo "$GPG_KEY" | gpg --batch --import
 
       - name: Run GoReleaser (build, archive, checksum, sign, publish, manifest)
