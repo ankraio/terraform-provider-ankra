@@ -40,6 +40,21 @@ checksum:
   algorithm: sha256
 
 
+signs:
+  - artifacts: checksum
+    args:
+      - --output
+      - ${{ .ArtifactPath }}.sig
+      - --detach-sign
+      - --armor
+      - ${{ .ArtifactPath }}
+    cmd: gpg
+    signature: ${{ .ArtifactPath }}.sig
+    env:
+      - GPG_PASSPHRASE
+      - GPG_FINGERPRINT
+
+
 
 release:
   github:
@@ -47,8 +62,6 @@ release:
     name: terraform-provider-ankra
   draft: false
   prerelease: false
-  extra_files:
-    - glob: 'dist/terraform-provider-ankra_*_manifest.json'
 
 changelog:
   disable: true

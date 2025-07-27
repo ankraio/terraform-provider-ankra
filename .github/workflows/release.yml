@@ -38,7 +38,10 @@ jobs:
       - name: Upload manifest to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/terraform-provider-ankra_*_manifest.json
+          files: |
+            dist/terraform-provider-ankra_*_manifest.json
+            dist/terraform-provider-ankra_*_SHA256SUMS
+            dist/terraform-provider-ankra_*_SHA256SUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
