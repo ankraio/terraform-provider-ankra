@@ -1,6 +1,3 @@
-# See https://goreleaser.com/customization/ for all options
-# This config is modeled after the Cloudflare provider's .goreleaser.yml
-
 schema: https://goreleaser.com/static/schema.json
 version: 2
 builds:
