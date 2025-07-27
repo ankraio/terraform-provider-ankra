@@ -16,14 +16,11 @@ jobs:
         env:
           GPG_KEY: ${{ secrets.GPG_KEY }}
         run: |
-          # 1) Create ~/.gnupg and secure its permissions
           mkdir -p ~/.gnupg
           chmod 700 ~/.gnupg
-
-          # 2) Tell GPG to allow loopback pinentry in non‑TTY contexts
+          # configure loopback pinentry
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-
-          # 3) Import the private key in batch mode
+          # import the private key
           echo "$GPG_KEY" | gpg --batch --import
 
       - name: Run GoReleaser (build, archive, checksum, sign, publish, manifest)
@@ -33,6 +30,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
+          GPG_KEY:         ${{ secrets.GPG_KEY }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
