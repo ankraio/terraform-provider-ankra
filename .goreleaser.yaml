@@ -44,12 +44,12 @@ signs:
   - artifacts: checksum
     args:
       - --output
-      - ${{ .Path }}.sig
+      - '{{ .Path }}.sig'
       - --detach-sign
       - --armor
-      - ${{ .Path }}
+      - '{{ .Path }}'
     cmd: gpg
-    signature: ${{ .Path }}.sig
+    signature: '{{ .Path }}.sig'
     env:
       - GPG_PASSPHRASE
       - GPG_FINGERPRINT
