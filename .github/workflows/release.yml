@@ -1,5 +1,6 @@
 name: Release Terraform Provider
 
+# trigger on any semver tag
 on:
   push:
     tags:
@@ -12,18 +13,11 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      VERSION: ${{ github.ref_name }}
+      PROVIDER_NAME: ankra
 
     steps:
       - name: Check out code
         uses: actions/checkout@v4
-
-      - name: Setup GitHub CLI
-        uses: actions/setup-gh-cli@v2
-
-      - name: Delete existing GitHub Release (if any)
-        run: |
-          gh release delete "${VERSION}" --yes || echo "no existing release, ok"
 
       - name: Setup GPG for CI signing
         env:
@@ -33,25 +27,25 @@ jobs:
           echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
           echo "$GPG_KEY" | gpg --batch --import
 
-      - name: Run GoReleaser
+      - name: Build & sign artifacts (skip publish)
         uses: goreleaser/goreleaser-action@v5
         with:
           version: v2.11.1
-          args: release --clean
+          args: release --clean --skip=publish       # ← don't create or upload GH release :contentReference[oaicite:0]{index=0}
         env:
           GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
           GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
           GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
 
-      - name: Determine stripped version
+      - name: Determine version
         id: vars
         run: |
-          echo "STRIPPED=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_OUTPUT
 
       - name: Write static Terraform Registry manifest
         run: |
           mkdir -p dist
-          cat > dist/terraform-provider-ankra_v${{ steps.vars.outputs.STRIPPED }}_manifest.json <<EOF
+          cat > dist/terraform-provider-${{ env.PROVIDER_NAME }}_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
           {
             "version": 1,
             "metadata": {
@@ -60,12 +54,14 @@ jobs:
           }
           EOF
 
-      - name: Upload all release assets (including manifest)
+      - name: Publish GitHub Release & assets
         uses: softprops/action-gh-release@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          name: terraform-provider-${{ env.PROVIDER_NAME }} v${{ steps.vars.outputs.VERSION }}
+          tag_name: v${{ steps.vars.outputs.VERSION }}
           files: |
-            dist/terraform-provider-ankra_*_*.zip
-            dist/terraform-provider-ankra_*_SHA256SUMS
-            dist/terraform-provider-ankra_*_SHA256SUMS.sig
-            dist/terraform-provider-ankra_*_manifest.json
+            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_*.zip
+            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS
+            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS.sig
+            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_manifest.json
