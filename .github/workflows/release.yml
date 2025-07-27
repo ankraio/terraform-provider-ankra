@@ -13,7 +13,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out code
+        uses: actions/checkout@v4
 
       - name: Setup GPG for CI signing
         env:
@@ -61,7 +62,7 @@ jobs:
             const { data: release } = await github.rest.repos.getReleaseByTag({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              tag_name: tag,
+              tag,
             });
             return release.upload_url;
 
@@ -72,3 +73,5 @@ jobs:
           asset_path: dist/terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
           asset_name: terraform-provider-ankra_v${{ steps.vars.outputs.VERSION }}_manifest.json
           asset_content_type: application/json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
