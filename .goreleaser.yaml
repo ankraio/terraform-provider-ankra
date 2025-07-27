@@ -1,8 +1,17 @@
+# .goreleaser.yml
 version: 2
 
 before:
   hooks:
-    - go mod tidy
+    # ensure we allow loopback pinentry
+    - |
+      # create gpg config dir if needed
+      mkdir -p ~/.gnupg
+      # allow GPG_TTY-less passphrase
+      echo "allow-loopback-pinentry" >> ~/.gnupg/gpg.conf
+    # import the key in batch mode
+    - |
+      echo "${GPG_PRIVATE_KEY}" | gpg --batch --import
 
 builds:
   - env:
@@ -33,28 +42,25 @@ archives:
     files:
       - LICENSE
 
-
-
 checksum:
   name_template: '{{ .ProjectName }}_v{{ .Version }}_SHA256SUMS'
   algorithm: sha256
 
-
 signs:
   - artifacts: checksum
+    cmd: gpg
     args:
+      - --batch
+      - --yes
+      - --pinentry-mode
+      - loopback
+      - --passphrase
+      - "${GPG_PASSPHRASE}"
       - --output
       - "${signature}"
       - --detach-sign
       - --armor
       - "${artifact}"
-    cmd: gpg
-    signature: "${artifact}.sig"
-    env:
-      - GPG_PASSPHRASE
-      - GPG_FINGERPRINT
-
-
 
 release:
   github:

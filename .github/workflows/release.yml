@@ -12,13 +12,15 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Import GPG private key
+      - name: Setup GPG for CI signing
+        env:
+          GPG_KEY: ${{ secrets.GPG_KEY }}
         run: |
-          echo "${{ secrets.GPG_KEY }}" | gpg --batch --import
-
-
-
-
+          # 1) Create ~/.gnupg and disable tty prompts
+          mkdir -p ~/.gnupg
+          echo "allow-loopback-pinentry" >> ~/.gnupg/gpg.conf
+          # 2) Import the private key in batch mode
+          echo "$GPG_KEY" | gpg --batch --import
 
       - name: Run GoReleaser (build, archive, checksum, sign, publish, manifest)
         uses: goreleaser/goreleaser-action@v5
@@ -44,4 +46,3 @@ jobs:
             dist/terraform-provider-ankra_*_SHA256SUMS.sig
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
