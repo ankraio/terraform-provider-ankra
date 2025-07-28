@@ -35,15 +35,7 @@ This folder demonstrates how to use the local Ankra Terraform provider for devel
    ```
 
 3. **Run Terraform:**
-
-   Use the provided `build.sh` script or run Terraform directly:
-
-   ```sh
-   ./build.sh
-   # or
-   terraform init
-   terraform apply -var="ankra_token=$ANKRA_TOKEN"
-   ```
+ [https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf](https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf)
 
 ## Notes
 - The provider is configured for local development using dev_overrides in `.terraformrc`.
