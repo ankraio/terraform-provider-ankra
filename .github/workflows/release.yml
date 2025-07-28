@@ -1,67 +1,41 @@
-name: Release Terraform Provider
+# Terraform Provider release workflow.
+name: Release
 
-# trigger on any semver tag
+# This GitHub action creates a release when a tag that matches the pattern
+# "v*" (e.g. v0.1.0) is created.
 on:
   push:
     tags:
-      - 'v*.*.*'
+      - 'v*'
 
+# Releases need permissions to read and write the repository contents.
+# GitHub considers creating releases and uploading assets as writing contents.
 permissions:
   contents: write
 
 jobs:
-  release:
+  goreleaser:
     runs-on: ubuntu-latest
-    env:
-      PROVIDER_NAME: ankra
-
     steps:
-      - name: Check out code
-        uses: actions/checkout@v4
-
-      - name: Setup GPG for CI signing
-        env:
-          GPG_KEY: ${{ secrets.GPG_KEY }}
-        run: |
-          mkdir -p ~/.gnupg && chmod 700 ~/.gnupg
-          echo "pinentry-mode loopback" > ~/.gnupg/gpg.conf
-          echo "$GPG_KEY" | gpg --batch --import
-
-      - name: Build & sign artifacts (skip publish)
-        uses: goreleaser/goreleaser-action@v5
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          version: v2.11.1
-          args: release --clean --skip=publish       # ← don't create or upload GH release :contentReference[oaicite:0]{index=0}
-        env:
-          GITHUB_TOKEN:    ${{ secrets.GITHUB_TOKEN }}
-          GPG_PASSPHRASE:  ${{ secrets.GPG_PASSPHRASE }}
-          GPG_FINGERPRINT: ${{ secrets.GPG_FINGERPRINT }}
-
-      - name: Determine version
-        id: vars
-        run: |
-          echo "VERSION=$(git describe --tags --abbrev=0 | sed 's/^v//')" >> $GITHUB_OUTPUT
-
-      - name: Write static Terraform Registry manifest
-        run: |
-          mkdir -p dist
-          cat > dist/terraform-provider-${{ env.PROVIDER_NAME }}_v${{ steps.vars.outputs.VERSION }}_manifest.json <<EOF
-          {
-            "version": 1,
-            "metadata": {
-              "protocol_versions": ["5.0"]
-            }
-          }
-          EOF
-
-      - name: Publish GitHub Release & assets
-        uses: softprops/action-gh-release@v2
+          # Allow goreleaser to access older tag information.
+          fetch-depth: 0
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: terraform-provider-${{ env.PROVIDER_NAME }} v${{ steps.vars.outputs.VERSION }}
-          tag_name: v${{ steps.vars.outputs.VERSION }}
-          files: |
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_*.zip
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_SHA256SUMS.sig
-            dist/terraform-provider-${{ env.PROVIDER_NAME }}_*_manifest.json
+          go-version-file: 'go.mod'
+          cache: true
+      - name: Import GPG key
+        uses: crazy-max/ghaction-import-gpg@e89d40939c28e39f97cf32126055eeae86ba74ec # v6.3.0
+        id: import_gpg
+        with:
+          gpg_private_key: ${{ secrets.GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.PASSPHRASE }}
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@9c156ee8a17a598857849441385a2041ef570552 # v6.3.0
+        with:
+          args: release --clean
+        env:
+          # GitHub sets the GITHUB_TOKEN secret automatically.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GPG_FINGERPRINT: ${{ steps.import_gpg.outputs.fingerprint }}
