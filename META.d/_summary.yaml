@@ -1,0 +1,11 @@
+---
+schema: 1.1
+
+
+partition: ankra
+
+summary:
+  owner: ankra
+  description: |
+    Terraform provider for ankra, enabling integration and management of ankra resources.
+  visibility: public
