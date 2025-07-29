@@ -18,21 +18,111 @@ func resourceAnkraCluster() *schema.Resource {
 		ReadContext:   resourceAnkraClusterRead,
 		UpdateContext: resourceAnkraClusterUpdate,
 		DeleteContext: resourceAnkraClusterDelete,
-		Schema: map[string]*schema.Schema{
-			"environment":            {Type: schema.TypeString, Required: true, ForceNew: true},
-			"github_credential_name": {Type: schema.TypeString, Required: true, ForceNew: false},
-			"github_branch":          {Type: schema.TypeString, Required: true, ForceNew: false},
-			"github_repository":      {Type: schema.TypeString, Required: true, ForceNew: false},
-			"ankra_token":            {Type: schema.TypeString, Required: true, Sensitive: true, ForceNew: true},
-			"cluster_id":             {Type: schema.TypeString, Computed: true},
-		},
+	   Schema: map[string]*schema.Schema{
+			   "cluster_name":            {Type: schema.TypeString, Required: true, ForceNew: true},
+			   "github_credential_name": {Type: schema.TypeString, Required: true, ForceNew: false},
+			   "github_branch":          {Type: schema.TypeString, Required: true, ForceNew: false},
+			   "github_repository":      {Type: schema.TypeString, Required: true, ForceNew: false},
+			   "ankra_token":            {Type: schema.TypeString, Required: true, Sensitive: true, ForceNew: true},
+			   "stacks": {
+					   Type:     schema.TypeList,
+					   Optional: true,
+					   Elem: &schema.Resource{
+							   Schema: map[string]*schema.Schema{
+									   "name": {
+											   Type:     schema.TypeString,
+											   Required: true,
+									   },
+									   "description": {
+											   Type:     schema.TypeString,
+											   Optional: true,
+									   },
+									   "manifests": {
+											   Type:     schema.TypeList,
+											   Optional: true,
+											   Elem: &schema.Resource{
+													   Schema: map[string]*schema.Schema{
+															   "name": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "namespace": {
+																	   Type:     schema.TypeString,
+																	   Optional: true,
+															   },
+															   "manifest_base64": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "parents": {
+																	   Type:     schema.TypeList,
+																	   Optional: true,
+																	   Elem: &schema.Schema{Type: schema.TypeString},
+															   },
+															   "from_file": {
+																	   Type:     schema.TypeString,
+																	   Optional: true,
+															   },
+													   },
+											   },
+									   },
+									   "addons": {
+											   Type:     schema.TypeList,
+											   Optional: true,
+											   Elem: &schema.Resource{
+													   Schema: map[string]*schema.Schema{
+															   "name": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "chart_name": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "chart_version": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "repository_url": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "namespace": {
+																	   Type:     schema.TypeString,
+																	   Required: true,
+															   },
+															   "configuration_type": {
+																	   Type:     schema.TypeString,
+																	   Optional: true,
+															   },
+															   "configuration": {
+																	   Type:     schema.TypeString,
+																	   Optional: true,
+															   },
+															   "parents": {
+																	   Type:     schema.TypeList,
+																	   Optional: true,
+																	   Elem: &schema.Schema{Type: schema.TypeString},
+															   },
+															   "job_configuration": {
+																	   Type:     schema.TypeString,
+																	   Optional: true,
+															   },
+													   },
+											   },
+									   },
+							   },
+					   },
+			   },
+			   "cluster_id":             {Type: schema.TypeString, Computed: true},
+	   },
 	}
 }
 
 func resourceAnkraClusterCreate(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {
-	   environment, ok := d.Get("environment").(string)
+	   clusterName, ok := d.Get("cluster_name").(string)
 	   if !ok {
-			   return diag.Errorf("environment must be a string")
+			   return diag.Errorf("cluster_name must be a string")
 	   }
 	   githubCredentialName, ok := d.Get("github_credential_name").(string)
 	   if !ok {
@@ -50,8 +140,14 @@ func resourceAnkraClusterCreate(ctx context.Context, d *schema.ResourceData, m i
 	   if !ok {
 			   return diag.Errorf("ankra_token must be a string")
 	   }
+	   var stacks []interface{}
+	   if v, ok := d.GetOk("stacks"); ok {
+			   stacks = v.([]interface{})
+	   } else {
+			   stacks = []interface{}{}
+	   }
 	   payload := map[string]interface{}{
-			   "name":        environment,
+			   "name":        clusterName,
 			   "description": "Managed by Terraform",
 			   "spec": map[string]interface{}{
 					   "git_repository": map[string]interface{}{
@@ -60,7 +156,7 @@ func resourceAnkraClusterCreate(ctx context.Context, d *schema.ResourceData, m i
 							   "branch":          githubBranch,
 							   "repository":      githubRepository,
 					   },
-					   "stacks": []interface{}{},
+					   "stacks": stacks,
 			   },
 	   }
 	jsonPayload, err := json.Marshal(payload)
@@ -105,9 +201,9 @@ func resourceAnkraClusterUpdate(ctx context.Context, d *schema.ResourceData, m i
 	   if !ok {
 			   return diag.Errorf("ankra_token must be a string")
 	   }
-	   environment, ok := d.Get("environment").(string)
+	   clusterName, ok := d.Get("cluster_name").(string)
 	   if !ok {
-			   return diag.Errorf("environment must be a string")
+			   return diag.Errorf("cluster_name must be a string")
 	   }
 	   githubCredentialName, ok := d.Get("github_credential_name").(string)
 	   if !ok {
@@ -121,8 +217,14 @@ func resourceAnkraClusterUpdate(ctx context.Context, d *schema.ResourceData, m i
 	   if !ok {
 			   return diag.Errorf("github_repository must be a string")
 	   }
+	   var stacks []interface{}
+	   if v, ok := d.GetOk("stacks"); ok {
+			   stacks = v.([]interface{})
+	   } else {
+			   stacks = []interface{}{}
+	   }
 	   payload := map[string]interface{}{
-			   "name":        environment,
+			   "name":        clusterName,
 			   "description": "Managed by Terraform",
 			   "spec": map[string]interface{}{
 					   "git_repository": map[string]interface{}{
@@ -131,7 +233,7 @@ func resourceAnkraClusterUpdate(ctx context.Context, d *schema.ResourceData, m i
 							   "branch":          githubBranch,
 							   "repository":      githubRepository,
 					   },
-					   "stacks": []interface{}{},
+					   "stacks": stacks,
 			   },
 	   }
 	jsonPayload, err := json.Marshal(payload)
@@ -171,11 +273,11 @@ func resourceAnkraClusterDelete(ctx context.Context, d *schema.ResourceData, m i
 	   if !ok {
 			   return diag.Errorf("ankra_token must be a string")
 	   }
-	   environment, ok := d.Get("environment").(string)
+	   clusterNameRaw, ok := d.Get("cluster_name").(string)
 	   if !ok {
-			   return diag.Errorf("environment must be a string")
+			   return diag.Errorf("cluster_name must be a string")
 	   }
-	   clusterName := strings.TrimSpace(environment)
+	   clusterName := strings.TrimSpace(clusterNameRaw)
 	   if clusterName == "" {
 			   return nil
 	   }

@@ -12,6 +12,11 @@ func dataSourceAnkraClusters() *schema.Resource {
 	return &schema.Resource{
 		ReadContext: dataSourceAnkraClustersRead,
 		Schema: map[string]*schema.Schema{
+			"ankra_token": {
+				Type:     schema.TypeString,
+				Required: true,
+				Sensitive: true,
+			},
 			"clusters": {
 				Type:     schema.TypeList,
 				Computed: true,

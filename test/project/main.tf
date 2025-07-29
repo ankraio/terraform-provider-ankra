@@ -7,14 +7,30 @@ terraform {
   }
 }
 
-provider "ankra" {}
 
 resource "ankra_cluster" "example" {
-  environment             = "dev"
+  cluster_name            = "dev"
   github_credential_name  = "my-github-cred"
   github_branch           = "main"
   github_repository       = "ankra-io/my-repo"
   ankra_token             = var.ankra_token
+
+  stacks {
+    name        = "create-ns-test"
+    description = "Test stack for creating a namespace"
+
+    manifests {
+      name            = "test-namespace"
+      manifest_base64 = base64encode(<<YAML
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ns
+YAML
+      )
+    }
+    # Optionally add more manifests or addons blocks here
+  }
 }
 
 output "ankra_cluster_id" {
