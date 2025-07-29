@@ -13,6 +13,111 @@ This data source retrieves a list of clusters from the ankra platform.
 
 ## Example Usage
 
+### Realistic Monitoring Stack Example
+
+Suppose you have these files in your module directory:
+
+`manifests/grafana-namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: grafana
+```
+
+`manifests/prometheus-namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: prometheus
+```
+
+`manifests/loki-namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: loki
+```
+
+And values files for each addon, e.g. `add-ons/grafana/values.yaml`, `add-ons/prometheus/values.yaml`, etc.
+
+Example resource:
+
+```hcl
+resource "ankra_cluster" "monitoring" {
+  cluster_name            = "monitoring"
+  github_credential_name  = "my-github-cred"
+  github_branch           = "main"
+  github_repository       = "ankra-io/monitoring"
+  ankra_token             = var.ankra_token
+
+  stacks {
+    name        = "monitoring infrastructure"
+    description = "Monitor our entire infra in this kubernetes."
+
+    manifests {
+      name      = "grafana-namespace"
+      from_file = "${path.module}/manifests/grafana-namespace.yaml"
+      parents   = []
+    }
+    manifests {
+      name      = "prometheus-namespace"
+      from_file = "${path.module}/manifests/prometheus-namespace.yaml"
+      parents   = []
+    }
+    manifests {
+      name      = "loki-namespace"
+      from_file = "${path.module}/manifests/loki-namespace.yaml"
+      parents   = []
+    }
+
+    addons {
+      name           = "grafana"
+      chart_name     = "grafana"
+      chart_version  = "9.3.0"
+      repository_url = "https://grafana.github.io/helm-charts"
+      namespace      = "grafana"
+      configuration_type = "standalone"
+      # configuration = filebase64("${path.module}/add-ons/grafana/values.yaml")
+      from_file      = "${path.module}/add-ons/grafana/values.yaml"
+      parents        = ["grafana-namespace"]
+    }
+    addons {
+      name           = "prometheus"
+      chart_name     = "prometheus"
+      chart_version  = "27.28.2"
+      repository_url = "https://prometheus-community.github.io/helm-charts"
+      namespace      = "prometheus"
+      configuration_type = "standalone"
+      from_file      = "${path.module}/add-ons/prometheus/values.yaml"
+      parents        = ["prometheus-namespace"]
+    }
+    addons {
+      name           = "loki"
+      chart_name     = "loki"
+      chart_version  = "6.33.0"
+      repository_url = "https://grafana.github.io/helm-charts"
+      namespace      = "loki"
+      configuration_type = "standalone"
+      from_file      = "${path.module}/add-ons/loki/values.yaml"
+      parents        = ["loki-namespace"]
+    }
+    addons {
+      name           = "fluent-bit"
+      chart_name     = "fluent-bit"
+      chart_version  = "2.6.0"
+      repository_url = "https://grafana.github.io/helm-charts"
+      namespace      = "loki"
+      configuration_type = "standalone"
+      from_file      = "${path.module}/add-ons/fluent-bit/values.yaml"
+      parents        = ["loki"]
+    }
+  }
+}
+```
+
 
 ```hcl
 data "ankra_clusters" "all" {
@@ -20,16 +125,66 @@ data "ankra_clusters" "all" {
 }
 ```
 
-### Output all cluster names
 
-```hcl
-output "all_cluster_names" {
-  value = [for c in data.ankra_clusters.all.clusters : c.name]
-}
+### Complete Example: Using from_file for Manifests and an Addon
+
+Suppose you have these files in your module directory:
+
+`namespace.yaml`:
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ns
 ```
 
-### Use the first cluster in a resource
+`secret.yaml`:
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: test-secret
+  namespace: test-ns
+type: Opaque
+data:
+  username: dXNlcm5hbWU=
+  password: cGFzc3dvcmQ=
+```
 
+And your Terraform resource:
+
+```hcl
+resource "ankra_cluster" "example" {
+  cluster_name            = "dev"
+  github_credential_name  = "my-github-cred"
+  github_branch           = "main"
+  github_repository       = "ankra-io/my-repo"
+  ankra_token             = var.ankra_token
+
+  stacks {
+    name        = "create-ns-test"
+    description = "Test stack for creating a namespace and secret"
+
+    manifests {
+      name      = "test-namespace"
+      from_file = "${path.module}/namespace.yaml"
+      parents    = [] # No parents for the namespace
+    }
+    manifests {
+      name      = "test-secret"
+      from_file = "${path.module}/secret.yaml"
+      parents    = ["test-namespace"] # This secret depends on the namespace
+    }
+    addons {
+      name           = "my-addon"
+      chart_name     = "nginx"
+      chart_version  = "1.2.3"
+      repository_url = "https://charts.example.com"
+      namespace      = "test-ns"
+      parents        = ["test-namespace", "test-secret"] # This addon depends on both
+    }
+  }
+}
 ### Import a cluster if changes are made outside Terraform (GitOps, CLI, or UI)
 
 If a cluster is created or modified outside of Terraform (for example, via GitOps, CLI, or the Ankra UI), you can import it into your Terraform state:
