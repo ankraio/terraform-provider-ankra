@@ -18,7 +18,7 @@ terraform {
   required_providers {
     ankra = {
       source  = "ankraio/ankra"
-      version = "0.1.0"
+      version = "0.1.4"
     }
   }
 }
@@ -34,3 +34,70 @@ provider "ankra" {
 ### Required
 
 - `ankra_token` (String) The API token for authenticating with ankra.
+
+
+## Pre-configured stack
+```hcl
+terraform {
+  required_providers {
+    ankra = {
+      source  = "local/ankra"
+      version = "0.1.4"
+    }
+  }
+}
+
+
+resource "ankra_cluster" "example" {
+  cluster_name            = "dev"
+  github_credential_name  = "my-github-cred"
+  github_branch           = "main"
+  github_repository       = "ankra-io/my-repo"
+  ankra_token             = var.ankra_token
+
+  stacks {
+    name        = "create-ns-test"
+    description = "Test stack for creating a namespace"
+
+    manifests {
+      name            = "test-namespace"
+      manifest_base64 = base64encode(<<YAML
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: test-ns
+YAML
+      )
+    }
+    manifests {
+      name            = "test-configmap"
+      manifest_base64 = base64encode(<<YAML
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: test-config
+  namespace: test-ns
+data:
+  key: value
+YAML
+      )
+    }
+    addons {
+      name                 = "test-addon"
+      chart_name           = "nginx"
+      chart_version        = "1.2.3"
+      repository_url       = "https://charts.example.com"
+      namespace            = "test-ns"
+      # Optional fields:
+      # configuration_type  = "values"
+      # configuration       = "{}"
+      # parents             = []
+      # job_configuration   = "{}"
+    }
+  }
+}
+
+output "ankra_cluster_id" {
+  value = ankra_cluster.example.cluster_id
+}
+```
