@@ -18,7 +18,7 @@ func resourceAnkraCluster() *schema.Resource {
 		ReadContext:   resourceAnkraClusterRead,
 		UpdateContext: resourceAnkraClusterUpdate,
 		DeleteContext: resourceAnkraClusterDelete,
-	   Schema: map[string]*schema.Schema{
+   Schema: map[string]*schema.Schema{
 			   "cluster_name":            {Type: schema.TypeString, Required: true, ForceNew: true},
 			   "github_credential_name": {Type: schema.TypeString, Required: true, ForceNew: false},
 			   "github_branch":          {Type: schema.TypeString, Required: true, ForceNew: false},
@@ -115,6 +115,7 @@ func resourceAnkraCluster() *schema.Resource {
 					   },
 			   },
 			   "cluster_id":             {Type: schema.TypeString, Computed: true},
+	   "helm_command":           {Type: schema.TypeString, Computed: true},
 	   },
 	}
 }
@@ -175,20 +176,24 @@ func resourceAnkraClusterCreate(ctx context.Context, d *schema.ResourceData, m i
 		return diag.FromErr(err)
 	}
 	defer resp.Body.Close()
-	var respData struct {
-		ClusterID string `json:"cluster_id"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
-		return diag.FromErr(err)
-	}
-	if respData.ClusterID == "" {
-		return diag.Errorf("Failed to create cluster: missing cluster_id")
-	}
-	   d.SetId(respData.ClusterID)
-	   if err := d.Set("cluster_id", respData.ClusterID); err != nil {
-			   return diag.FromErr(err)
-	   }
-	   return nil
+   var respData struct {
+	   ClusterID     string `json:"cluster_id"`
+	   ImportCommand string `json:"import_command"`
+   }
+   if err := json.NewDecoder(resp.Body).Decode(&respData); err != nil {
+	   return diag.FromErr(err)
+   }
+   if respData.ClusterID == "" {
+	   return diag.Errorf("Failed to create cluster: missing cluster_id")
+   }
+   d.SetId(respData.ClusterID)
+   if err := d.Set("cluster_id", respData.ClusterID); err != nil {
+	   return diag.FromErr(err)
+   }
+   if err := d.Set("helm_command", respData.ImportCommand); err != nil {
+	   return diag.FromErr(err)
+   }
+   return nil
 }
 
 func resourceAnkraClusterRead(ctx context.Context, d *schema.ResourceData, m interface{}) diag.Diagnostics {

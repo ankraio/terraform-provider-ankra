@@ -36,3 +36,7 @@ YAML
 output "ankra_cluster_id" {
   value = ankra_cluster.example.cluster_id
 }
+
+output "ankra_cluster_helm_command" {
+  value = ankra_cluster.example.helm_command
+}

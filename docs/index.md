@@ -18,7 +18,7 @@ terraform {
   required_providers {
     ankra = {
       source  = "ankraio/ankra"
-      version = "0.1.5"
+      version = "0.1.6"
     }
   }
 }
@@ -42,7 +42,7 @@ terraform {
   required_providers {
     ankra = {
       source  = "local/ankra"
-      version = "0.1.5"
+      version = "0.1.6"
     }
   }
 }
@@ -100,4 +100,33 @@ YAML
 output "ankra_cluster_id" {
   value = ankra_cluster.example.cluster_id
 }
+output "ankra_cluster_helm_command" {
+  value = ankra_cluster.example.helm_command
+}
 ```
+
+## Running the Helm command remotely
+
+After creating your cluster, you can use Terraform's `remote-exec` provisioner to run the Helm command on a remote Kubernetes host (e.g., provisioned by kubepray):
+
+```hcl
+resource "null_resource" "run_helm_command" {
+  provisioner "remote-exec" {
+    connection {
+      type        = "ssh"
+      host        = var.kubepray_host
+      user        = var.kubepray_user
+      private_key = file(var.kubepray_private_key)
+    }
+
+    inline = [
+      ankra_cluster.example.helm_command
+    ]
+  }
+}
+```
+
+Make sure the remote host has `kubectl` and `helm` installed, and that your connection variables (`kubepray_host`, `kubepray_user`, `kubepray_private_key`) are set appropriately.
+```
+
+

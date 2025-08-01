@@ -2,7 +2,7 @@ terraform {
   required_providers {
     ankra = {
       source  = "ankraio/ankra"
-      version = "0.1.2"
+      version = "0.1.6"
     }
   }
 }
