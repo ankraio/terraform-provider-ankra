@@ -31,5 +31,13 @@ website/vendor
 !command/test-fixtures/**/*.tfstate
 !command/test-fixtures/**/.terraform/
 
+# Locally built provider binaries and local dev overrides
+terraform-provider-ankra
+local-providers/dev-bin/*
+test/**/terraform-provider-ankra
+test/**/terraform.tfstate*
+test/**/.terraform/
+test/**/.terraform.lock.hcl
+
 # Keep windows files with windows line endings
 *.winfile eol=crlf
