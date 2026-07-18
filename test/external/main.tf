@@ -1,3 +1,6 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 terraform {
   required_providers {
     ankra = {
@@ -7,14 +10,15 @@ terraform {
   }
 }
 
-provider "ankra" {}
+provider "ankra" {
+  token = var.ankra_token
+}
 
 resource "ankra_cluster" "example" {
-  environment             = "dev"
-  github_credential_name  = "my-github-cred"
-  github_branch           = "main"
-  github_repository       = "ankra-io/my-repo"
-  ankra_token             = var.ankra_token
+  cluster_name           = "dev"
+  github_credential_name = "my-github-cred"
+  github_branch          = "main"
+  github_repository      = "ankra-io/my-repo"
 }
 
 output "ankra_cluster_id" {

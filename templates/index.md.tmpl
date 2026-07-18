@@ -1,0 +1,42 @@
+---
+page_title: "{{.RenderedProviderName}} Provider"
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.RenderedProviderName}} Provider
+
+The Ankra provider manages clusters on the [Ankra platform](https://ankra.app).
+
+Authenticate with an Ankra API token, supplied either on the provider block or
+via the `ANKRA_TOKEN` environment variable. The API endpoint can be overridden
+with `base_url` or the `ANKRA_BASE_URL` environment variable.
+
+## Example Usage
+
+{{ tffile "examples/provider/provider.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Running the Helm command remotely
+
+After a cluster is created, `ankra_cluster.<name>.helm_command` holds the Helm
+command that bootstraps the cluster agent. It can be run on a remote host with
+Terraform's `remote-exec` provisioner:
+
+```hcl
+resource "null_resource" "run_helm_command" {
+  provisioner "remote-exec" {
+    connection {
+      type        = "ssh"
+      host        = var.host
+      user        = var.user
+      private_key = file(var.private_key)
+    }
+
+    inline = [
+      ankra_cluster.example.helm_command
+    ]
+  }
+}
+```

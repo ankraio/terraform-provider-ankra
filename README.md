@@ -22,17 +22,27 @@ This folder demonstrates how to use the local Ankra Terraform provider for devel
    ```
    This will automatically export `ANKRA_TOKEN` in your shell when you `cd` into this folder.
 
-2. **Configure Terraform variables:**
+2. **Configure authentication:**
 
-   The Terraform config expects a variable `ankra_token`. You can pass it from the environment:
+   The provider reads the token from the provider block or, preferably, the
+   `ANKRA_TOKEN` environment variable. The API endpoint can be overridden with
+   `base_url` or `ANKRA_BASE_URL`.
+
+   ```hcl
+   provider "ankra" {
+     token = var.ankra_token # optional; falls back to ANKRA_TOKEN
+   }
+   ```
+
+   With `ANKRA_TOKEN` exported you can simply run:
 
    ```sh
-   terraform apply -var="ankra_token=$ANKRA_TOKEN"
+   terraform apply
+   terraform destroy
    ```
-   or, for destroy:
-   ```sh
-   terraform destroy -var="ankra_token=$ANKRA_TOKEN"
-   ```
+
+   > The per-resource `ankra_token` attribute still works but is deprecated in
+   > favour of provider-level configuration.
 
 3. **Run Terraform:**
  [https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf](https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf)
