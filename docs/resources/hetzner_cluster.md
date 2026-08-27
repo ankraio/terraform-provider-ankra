@@ -53,6 +53,7 @@ output "hetzner_cluster_id" {
 - `etcd_server_type` (String) Hetzner server type for dedicated etcd nodes.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
 - `external_cloud_provider` (Boolean) Install the Hetzner cloud controller manager and CSI.
+- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's cloud resources without its usual guards. Defaults to `true` for backwards compatibility; set it to `false` to take the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
 - `gitops_branch` (String) GitOps branch to commit the generated stack to.
 - `gitops_credential_name` (String) GitOps GitHub credential name; commits the generated stack to Git when set with `gitops_repository`.
 - `gitops_repository` (String) GitOps repository (`owner/name`) to commit the generated stack to.

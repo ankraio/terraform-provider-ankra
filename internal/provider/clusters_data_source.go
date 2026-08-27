@@ -100,6 +100,10 @@ func (clustersDataSourceInstance *clustersDataSource) Read(ctx context.Context, 
 	}
 
 	apiClient := clustersDataSourceInstance.client
+	if apiClient == nil {
+		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
+		return
+	}
 	if !config.AnkraToken.IsNull() && !config.AnkraToken.IsUnknown() && config.AnkraToken.ValueString() != "" {
 		override := *apiClient
 		override.Token = config.AnkraToken.ValueString()

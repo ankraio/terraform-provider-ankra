@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -22,6 +23,11 @@ const (
 	tokenDeprecationMessage = "Configure the token on the provider block (or the ANKRA_TOKEN environment variable) instead of per resource."
 	missingTokenDetail      = "Set an API token on the provider block, the ANKRA_TOKEN environment variable, or the deprecated per-resource ankra_token attribute."
 )
+
+// errMissingToken signals that no usable API token reached the resource. Its
+// text is never surfaced: callers pair it with missingTokenDetail, which is
+// the sentence the operator actually reads in the diagnostic.
+var errMissingToken = errors.New("no ankra api token configured")
 
 var (
 	_ resource.Resource                = (*clusterResource)(nil)
@@ -119,9 +125,11 @@ func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ reso
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"helm_command": schema.StringAttribute{
-				MarkdownDescription: "Helm command emitted by the platform to bootstrap the cluster agent.",
-				Computed:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+				MarkdownDescription: "Helm command emitted by the platform to bootstrap the cluster agent. " +
+					"Contains a live cluster agent token, so the value is sensitive.",
+				Computed:      true,
+				Sensitive:     true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
 		Blocks: map[string]schema.Block{
@@ -196,8 +204,9 @@ func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ reso
 										Optional:            true,
 									},
 									"configuration": schema.StringAttribute{
-										MarkdownDescription: "Addon configuration payload.",
+										MarkdownDescription: "Addon configuration payload. Treated as sensitive because Helm values commonly carry credentials.",
 										Optional:            true,
+										Sensitive:           true,
 									},
 									"parents": schema.ListAttribute{
 										MarkdownDescription: "Names of resources this addon depends on.",
@@ -205,8 +214,9 @@ func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ reso
 										ElementType:         types.StringType,
 									},
 									"job_configuration": schema.StringAttribute{
-										MarkdownDescription: "Job configuration payload for the addon.",
+										MarkdownDescription: "Job configuration payload for the addon. Treated as sensitive because it commonly carries credentials.",
 										Optional:            true,
+										Sensitive:           true,
 									},
 								},
 							},
@@ -253,8 +263,9 @@ func (clusterResourceInstance *clusterResource) Read(ctx context.Context, reques
 		return
 	}
 
-	apiClient := clusterResourceInstance.clientForToken(state.AnkraToken)
-	if apiClient.Token == "" {
+	apiClient, clientError := clusterResourceInstance.clientForToken(state.AnkraToken)
+	if clientError != nil {
+		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
 
@@ -306,8 +317,8 @@ func (clusterResourceInstance *clusterResource) Delete(ctx context.Context, requ
 		return
 	}
 
-	apiClient := clusterResourceInstance.clientForToken(state.AnkraToken)
-	if apiClient.Token == "" {
+	apiClient, clientError := clusterResourceInstance.clientForToken(state.AnkraToken)
+	if clientError != nil {
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
@@ -323,8 +334,8 @@ func (clusterResourceInstance *clusterResource) ImportState(ctx context.Context,
 // importCluster builds the import payload from the plan, calls the API, and
 // writes the computed attributes back into the plan.
 func (clusterResourceInstance *clusterResource) importCluster(ctx context.Context, plan *clusterResourceModel, diagnostics *diag.Diagnostics) {
-	apiClient := clusterResourceInstance.clientForToken(plan.AnkraToken)
-	if apiClient.Token == "" {
+	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
+	if clientError != nil {
 		diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
@@ -359,14 +370,21 @@ func (clusterResourceInstance *clusterResource) importCluster(ctx context.Contex
 }
 
 // clientForToken returns the configured client, or a copy overridden with the
-// deprecated per-resource token when one is supplied.
-func (clusterResourceInstance *clusterResource) clientForToken(token types.String) *client.Client {
+// deprecated per-resource token when one is supplied. It reports an error
+// rather than dereferencing a client the provider never configured.
+func (clusterResourceInstance *clusterResource) clientForToken(token types.String) (*client.Client, error) {
+	if clusterResourceInstance.client == nil {
+		return nil, errMissingToken
+	}
 	if token.IsNull() || token.IsUnknown() || token.ValueString() == "" {
-		return clusterResourceInstance.client
+		if clusterResourceInstance.client.Token == "" {
+			return nil, errMissingToken
+		}
+		return clusterResourceInstance.client, nil
 	}
 	override := *clusterResourceInstance.client
 	override.Token = token.ValueString()
-	return &override
+	return &override, nil
 }
 
 func stacksToAPI(stacks []stackModel) []client.Stack {

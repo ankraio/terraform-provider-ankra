@@ -63,7 +63,7 @@ resource "ankra_cluster" "example" {
 ### Read-Only
 
 - `cluster_id` (String) Identifier assigned to the cluster by the Ankra platform.
-- `helm_command` (String) Helm command emitted by the platform to bootstrap the cluster agent.
+- `helm_command` (String, Sensitive) Helm command emitted by the platform to bootstrap the cluster agent. Contains a live cluster agent token, so the value is sensitive.
 - `id` (String) Identifier of the cluster (mirrors `cluster_id`).
 
 <a id="nestedblock--stacks"></a>
@@ -92,9 +92,9 @@ Required:
 
 Optional:
 
-- `configuration` (String) Addon configuration payload.
+- `configuration` (String, Sensitive) Addon configuration payload. Treated as sensitive because Helm values commonly carry credentials.
 - `configuration_type` (String) Type of the supplied configuration.
-- `job_configuration` (String) Job configuration payload for the addon.
+- `job_configuration` (String, Sensitive) Job configuration payload for the addon. Treated as sensitive because it commonly carries credentials.
 - `parents` (List of String) Names of resources this addon depends on.
 
 

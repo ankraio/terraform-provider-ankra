@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -79,6 +80,17 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 	baseURL := strings.TrimSpace(os.Getenv(baseURLEnvironmentVariable))
 	if !config.BaseURL.IsNull() && !config.BaseURL.IsUnknown() {
 		baseURL = strings.TrimSpace(config.BaseURL.ValueString())
+	}
+
+	// A token that is still unknown at configure time resolves before apply,
+	// so the provider is wired up and the check is left to the resources.
+	if token == "" && !config.Token.IsUnknown() {
+		response.Diagnostics.AddAttributeError(
+			path.Root("token"),
+			"Missing API token",
+			missingTokenDetail,
+		)
+		return
 	}
 
 	userAgent := "terraform-provider-ankra/" + providerInstance.version

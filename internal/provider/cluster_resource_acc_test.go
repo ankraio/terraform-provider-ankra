@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 
@@ -37,7 +38,7 @@ func newMockPlatformServer(t *testing.T) *httptest.Server {
 			platform.deleted = false
 			_, _ = fmt.Fprintf(writer, `{"cluster_id":%q,"import_command":"helm install ankra-agent"}`, id)
 		case request.Method == http.MethodGet && request.URL.Path == "/api/v1/clusters":
-			_, _ = writer.Write([]byte(platform.listBody()))
+			_, _ = writer.Write([]byte(platform.listBody(request.URL.Query())))
 		case request.Method == http.MethodDelete:
 			platform.clusters = map[string]string{}
 			platform.deleted = true
@@ -49,17 +50,8 @@ func newMockPlatformServer(t *testing.T) *httptest.Server {
 	}))
 }
 
-func (platform *mockPlatform) listBody() string {
-	body := `{"clusters":[`
-	first := true
-	for id, name := range platform.clusters {
-		if !first {
-			body += ","
-		}
-		body += fmt.Sprintf(`{"id":%q,"name":%q}`, id, name)
-		first = false
-	}
-	return body + "]}"
+func (platform *mockPlatform) listBody(query url.Values) string {
+	return writeClusterListing(platform.clusters, query)
 }
 
 func TestAccClusterResourceLifecycle(t *testing.T) {
