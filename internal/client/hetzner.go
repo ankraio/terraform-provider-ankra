@@ -3,12 +3,7 @@
 
 package client
 
-import (
-	"context"
-	"net/http"
-	"net/url"
-	"strconv"
-)
+import "context"
 
 // HetznerClusterRequest is the payload for POST /api/v1/clusters/hetzner.
 // Fields with a server-side default are always sent; nullable fields are
@@ -41,16 +36,11 @@ type HetznerClusterRequest struct {
 
 // CreateHetznerCluster provisions a new Hetzner-backed cluster.
 func (client *Client) CreateHetznerCluster(ctx context.Context, request HetznerClusterRequest) (ImportClusterResponse, error) {
-	var response ImportClusterResponse
-	if err := client.doRequest(ctx, http.MethodPost, "/api/v1/clusters/hetzner", request, &response); err != nil {
-		return ImportClusterResponse{}, err
-	}
-	return response, nil
+	return client.CreateProvisionedCluster(ctx, LaneHetzner, request)
 }
 
 // DeleteHetznerCluster deprovisions a Hetzner cluster by id, releasing its
 // cloud resources. A 404 is treated as success so deletes are idempotent.
 func (client *Client) DeleteHetznerCluster(ctx context.Context, clusterID string, force bool) error {
-	path := "/api/v1/clusters/hetzner/" + url.PathEscape(clusterID) + "?force=" + strconv.FormatBool(force)
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.DeleteProvisionedCluster(ctx, LaneHetzner, clusterID, force)
 }

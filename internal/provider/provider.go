@@ -104,6 +104,10 @@ func (providerInstance *ankraProvider) Resources(_ context.Context) []func() res
 	return []func() resource.Resource{
 		NewClusterResource,
 		NewHetznerClusterResource,
+		NewDigitalOceanClusterResource,
+		NewOVHClusterResource,
+		NewScalewayClusterResource,
+		NewUpCloudClusterResource,
 	}
 }
 

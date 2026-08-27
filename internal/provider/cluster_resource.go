@@ -8,10 +8,12 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -67,15 +69,19 @@ type stackModel struct {
 }
 
 type clusterResourceModel struct {
-	ID                   types.String `tfsdk:"id"`
-	ClusterName          types.String `tfsdk:"cluster_name"`
-	GithubCredentialName types.String `tfsdk:"github_credential_name"`
-	GithubBranch         types.String `tfsdk:"github_branch"`
-	GithubRepository     types.String `tfsdk:"github_repository"`
-	AnkraToken           types.String `tfsdk:"ankra_token"`
-	Stacks               []stackModel `tfsdk:"stacks"`
-	ClusterID            types.String `tfsdk:"cluster_id"`
-	HelmCommand          types.String `tfsdk:"helm_command"`
+	ID                   types.String   `tfsdk:"id"`
+	ClusterName          types.String   `tfsdk:"cluster_name"`
+	GithubCredentialName types.String   `tfsdk:"github_credential_name"`
+	GithubBranch         types.String   `tfsdk:"github_branch"`
+	GithubRepository     types.String   `tfsdk:"github_repository"`
+	AnkraToken           types.String   `tfsdk:"ankra_token"`
+	Stacks               []stackModel   `tfsdk:"stacks"`
+	ClusterID            types.String   `tfsdk:"cluster_id"`
+	HelmCommand          types.String   `tfsdk:"helm_command"`
+	State                types.String   `tfsdk:"state"`
+	Kind                 types.String   `tfsdk:"kind"`
+	WaitForOnline        types.Bool     `tfsdk:"wait_for_online"`
+	Timeouts             timeouts.Value `tfsdk:"timeouts"`
 }
 
 // NewClusterResource returns a new ankra_cluster resource.
@@ -87,7 +93,7 @@ func (clusterResourceInstance *clusterResource) Metadata(_ context.Context, requ
 	response.TypeName = request.ProviderTypeName + "_cluster"
 }
 
-func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Imports and manages a cluster on the Ankra platform.",
 		Attributes: map[string]schema.Attribute{
@@ -124,6 +130,26 @@ func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ reso
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
+			"state": schema.StringAttribute{
+				MarkdownDescription: "Lifecycle state the platform reports for the cluster, refreshed on every " +
+					"read (`offline` until the agent checks in, then `online`).",
+				Computed:      true,
+				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"kind": schema.StringAttribute{
+				MarkdownDescription: "Cluster kind the platform reports.",
+				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			},
+			"wait_for_online": schema.BoolAttribute{
+				MarkdownDescription: "Wait for the cluster agent to check in before the resource is considered " +
+					"created. Defaults to `false`, because importing a cluster only registers it - somebody still " +
+					"has to run `helm_command` against the cluster, which Terraform cannot do. Set it to `true` " +
+					"when that happens out of band and dependent resources need a live cluster.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
 			"helm_command": schema.StringAttribute{
 				MarkdownDescription: "Helm command emitted by the platform to bootstrap the cluster agent. " +
 					"Contains a live cluster agent token, so the value is sensitive.",
@@ -133,6 +159,7 @@ func (clusterResourceInstance *clusterResource) Schema(_ context.Context, _ reso
 			},
 		},
 		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true}),
 			"stacks": schema.ListNestedBlock{
 				MarkdownDescription: "Stacks of manifests and addons to apply to the cluster.",
 				NestedObject: schema.NestedBlockObject{
@@ -253,7 +280,59 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 	if response.Diagnostics.HasError() {
 		return
 	}
+	plan.State = types.StringUnknown()
+	plan.Kind = types.StringUnknown()
+
+	// Persist the import result before any wait, so a timeout cannot lose the
+	// cluster the platform has already registered.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
+	cluster := clusterResourceInstance.settleImported(ctx, &plan, &response.Diagnostics)
+	if cluster == nil {
+		return
+	}
+	applyClusterIdentity(&plan.State, &plan.Kind, cluster)
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+}
+
+// settleImported waits for the cluster agent to check in when the practitioner
+// opted in, and otherwise resolves the row once so state and kind are recorded.
+func (clusterResourceInstance *clusterResource) settleImported(ctx context.Context, plan *clusterResourceModel, diagnostics *diag.Diagnostics) *client.Cluster {
+	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
+	if clientError != nil {
+		diagnostics.AddError("Missing API token", missingTokenDetail)
+		return nil
+	}
+	clusterID := plan.ClusterID.ValueString()
+
+	if plan.WaitForOnline.IsNull() || plan.WaitForOnline.IsUnknown() || !plan.WaitForOnline.ValueBool() {
+		cluster, readError := apiClient.GetClusterByID(ctx, clusterID)
+		if readError != nil {
+			diagnostics.AddError("Unable to read cluster", readError.Error())
+			return nil
+		}
+		if cluster == nil {
+			return &client.Cluster{ID: clusterID}
+		}
+		return cluster
+	}
+
+	wait := resolveTimeout(ctx, plan.Timeouts.Create, defaultCreateTimeout, diagnostics)
+	if diagnostics.HasError() {
+		return nil
+	}
+	waitContext, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	cluster, waitError := apiClient.WaitForImportedCluster(waitContext, clusterID, 0)
+	if waitError != nil {
+		diagnostics.AddError("Cluster agent did not check in", waitError.Error())
+		return nil
+	}
+	return cluster
 }
 
 func (clusterResourceInstance *clusterResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -289,6 +368,7 @@ func (clusterResourceInstance *clusterResource) Read(ctx context.Context, reques
 	if cluster.Name != "" {
 		state.ClusterName = types.StringValue(cluster.Name)
 	}
+	applyClusterIdentity(&state.State, &state.Kind, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 

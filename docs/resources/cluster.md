@@ -59,12 +59,16 @@ resource "ankra_cluster" "example" {
 
 - `ankra_token` (String, Sensitive, Deprecated) Deprecated per-resource API token. Configure the token on the provider block (or the ANKRA_TOKEN environment variable) instead of per resource.
 - `stacks` (Block List) Stacks of manifests and addons to apply to the cluster. (see [below for nested schema](#nestedblock--stacks))
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `wait_for_online` (Boolean) Wait for the cluster agent to check in before the resource is considered created. Defaults to `false`, because importing a cluster only registers it - somebody still has to run `helm_command` against the cluster, which Terraform cannot do. Set it to `true` when that happens out of band and dependent resources need a live cluster.
 
 ### Read-Only
 
 - `cluster_id` (String) Identifier assigned to the cluster by the Ankra platform.
 - `helm_command` (String, Sensitive) Helm command emitted by the platform to bootstrap the cluster agent. Contains a live cluster agent token, so the value is sensitive.
 - `id` (String) Identifier of the cluster (mirrors `cluster_id`).
+- `kind` (String) Cluster kind the platform reports.
+- `state` (String) Lifecycle state the platform reports for the cluster, refreshed on every read (`offline` until the agent checks in, then `online`).
 
 <a id="nestedblock--stacks"></a>
 ### Nested Schema for `stacks`
@@ -111,6 +115,15 @@ Optional:
 - `from_file` (String) Source file the manifest was generated from.
 - `namespace` (String) Namespace the manifest is applied to.
 - `parents` (List of String) Names of resources this manifest depends on.
+
+
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
 
 ## Import
 
