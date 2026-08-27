@@ -20,6 +20,12 @@ import (
 // provider could not see a cluster. One shared renderer keeps the fakes honest
 // about the contract.
 func writeClusterListing(clusters map[string]string, query url.Values) string {
+	return writeClusterListingWithState(clusters, query, "running")
+}
+
+// writeClusterListingWithState renders the listing with an explicit lifecycle
+// state, so a fake can hold a cluster in "creating" to exercise the wait.
+func writeClusterListingWithState(clusters map[string]string, query url.Values, state string) string {
 	ids := make([]string, 0, len(clusters))
 	for id := range clusters {
 		ids = append(ids, id)
@@ -36,7 +42,7 @@ func writeClusterListing(clusters map[string]string, query url.Values) string {
 			continue
 		}
 		rows = append(rows, fmt.Sprintf(
-			`{"id":%q,"name":%q,"kind":"hetzner","state":"running"}`, id, name))
+			`{"id":%q,"name":%q,"kind":"hetzner","state":%q}`, id, name, state))
 	}
 
 	return fmt.Sprintf(
