@@ -1,0 +1,19 @@
+{
+  "result": [
+    {
+      "id": "3f2b1a90-0c4d-4e5f-8a7b-1c2d3e4f5a6b",
+      "name": "production",
+      "kind": "hetzner",
+      "state": "running",
+      "managed_provenance": null,
+      "ownership": null
+    }
+  ],
+  "pagination": {
+    "total_count": 1,
+    "total_pages": 1,
+    "page": 1,
+    "page_size": 25
+  },
+  "metrics": {}
+}

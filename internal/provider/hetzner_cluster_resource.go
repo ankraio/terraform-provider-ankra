@@ -57,6 +57,7 @@ type hetznerClusterResourceModel struct {
 	GitopsRepository       types.String `tfsdk:"gitops_repository"`
 	SSHKeyCredentialID     types.String `tfsdk:"ssh_key_credential_id"`
 	Description            types.String `tfsdk:"description"`
+	ForceDestroy           types.Bool   `tfsdk:"force_destroy"`
 	ClusterID              types.String `tfsdk:"cluster_id"`
 }
 
@@ -153,6 +154,15 @@ func (hetznerResource *hetznerClusterResource) Schema(_ context.Context, _ resou
 			"gitops_repository":         optionalReplaceString("GitOps repository (`owner/name`) to commit the generated stack to."),
 			"ssh_key_credential_id":     optionalReplaceString("SSH key credential id to attach to the cluster nodes."),
 			"description":               optionalReplaceString("Description of the cluster."),
+			"force_destroy": schema.BoolAttribute{
+				MarkdownDescription: "Send `force=true` when deprovisioning, which makes the platform tear down " +
+					"the cluster's cloud resources without its usual guards. Defaults to `true` for backwards " +
+					"compatibility; set it to `false` to take the guarded delete path. Changing this only affects " +
+					"a future destroy, so it never replaces the cluster.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(true),
+			},
 		},
 	}
 }
@@ -179,7 +189,7 @@ func (hetznerResource *hetznerClusterResource) Create(ctx context.Context, reque
 		return
 	}
 
-	if hetznerResource.client.Token == "" {
+	if clientError := hetznerResource.requireClient(); clientError != nil {
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
@@ -205,7 +215,8 @@ func (hetznerResource *hetznerClusterResource) Read(ctx context.Context, request
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if hetznerResource.client.Token == "" {
+	if clientError := hetznerResource.requireClient(); clientError != nil {
+		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
 
@@ -232,8 +243,9 @@ func (hetznerResource *hetznerClusterResource) Read(ctx context.Context, request
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 
-// Update is required by the interface but is effectively unreachable: every
-// argument carries RequiresReplace, so any change forces a replace instead.
+// Update carries through the only argument that can change in place:
+// force_destroy affects a future destroy rather than the running cluster.
+// Every other argument carries RequiresReplace, so it forces a replace.
 func (hetznerResource *hetznerClusterResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var plan hetznerClusterResourceModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
@@ -257,17 +269,30 @@ func (hetznerResource *hetznerClusterResource) Delete(ctx context.Context, reque
 	if clusterID == "" {
 		return
 	}
-	if hetznerResource.client.Token == "" {
+	if clientError := hetznerResource.requireClient(); clientError != nil {
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
-	if err := hetznerResource.client.DeleteHetznerCluster(ctx, clusterID, true); err != nil {
+	force := true
+	if !state.ForceDestroy.IsNull() && !state.ForceDestroy.IsUnknown() {
+		force = state.ForceDestroy.ValueBool()
+	}
+	if err := hetznerResource.client.DeleteHetznerCluster(ctx, clusterID, force); err != nil {
 		response.Diagnostics.AddError("Unable to deprovision Hetzner cluster", err.Error())
 	}
 }
 
 func (hetznerResource *hetznerClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
+}
+
+// requireClient reports whether the resource has a usable API client, rather
+// than dereferencing one the provider never configured.
+func (hetznerResource *hetznerClusterResource) requireClient() error {
+	if hetznerResource.client == nil || hetznerResource.client.Token == "" {
+		return errMissingToken
+	}
+	return nil
 }
 
 func hetznerRequestFromModel(plan *hetznerClusterResourceModel) client.HetznerClusterRequest {
