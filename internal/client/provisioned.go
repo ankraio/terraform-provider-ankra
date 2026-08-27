@@ -87,6 +87,15 @@ func (client *Client) WaitForClusterState(ctx context.Context, clusterID string,
 	for {
 		cluster, err := client.GetClusterByID(ctx, clusterID)
 		if err != nil {
+			// A poll that failed because the caller's deadline expired mid-request
+			// is a timeout, not an API error. Without this the raw "context
+			// deadline exceeded" escapes whenever the clock runs out during the
+			// request rather than between polls, and the practitioner loses the
+			// one detail that makes the timeout actionable: how far the cluster
+			// actually got.
+			if ctx.Err() != nil {
+				return nil, waitTimeoutError(clusterID, options.ReadyStates, lastState, ctx.Err())
+			}
 			return nil, err
 		}
 		if cluster != nil {
@@ -107,12 +116,18 @@ func (client *Client) WaitForClusterState(ctx context.Context, clusterID string,
 
 		select {
 		case <-ctx.Done():
-			return nil, fmt.Errorf(
-				"timed out waiting for cluster %s to reach %v (last observed state %q): %w",
-				clusterID, options.ReadyStates, lastState, ctx.Err())
+			return nil, waitTimeoutError(clusterID, options.ReadyStates, lastState, ctx.Err())
 		case <-time.After(interval):
 		}
 	}
+}
+
+// waitTimeoutError renders the one message every timeout path shares, so the
+// last observed state is always reported however the deadline was reached.
+func waitTimeoutError(clusterID string, readyStates []string, lastState string, cause error) error {
+	return fmt.Errorf(
+		"timed out waiting for cluster %s to reach %v (last observed state %q): %w",
+		clusterID, readyStates, lastState, cause)
 }
 
 // WaitForProvisionedCluster waits for a cloud-provisioned cluster to finish

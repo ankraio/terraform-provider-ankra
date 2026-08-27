@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -213,5 +214,47 @@ func TestLaneRequestsMatchContractFieldNames(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWaitReportsTimeoutWhenDeadlineExpiresMidRequest pins the path that used
+// to leak a bare "context deadline exceeded": the clock running out while a
+// poll is in flight, rather than between polls. Both routes must produce the
+// same actionable message naming the last observed state.
+func TestWaitReportsTimeoutWhenDeadlineExpiresMidRequest(t *testing.T) {
+	release := make(chan struct{})
+	var served int32
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&served, 1) == 1 {
+			// First poll answers, establishing the last observed state.
+			_, _ = writer.Write([]byte(clusterListBody(1, 1, 1,
+				`{"id":"`+waitTestClusterID+`","name":"prod","kind":"hetzner","state":"creating"}`)))
+			return
+		}
+		// Every later poll hangs until the test is done, so the caller's
+		// deadline expires while the request is in flight.
+		<-release
+	}))
+	defer func() {
+		close(release)
+		server.Close()
+	}()
+
+	apiClient := NewClient(server.URL, "token", "agent")
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Millisecond)
+	defer cancel()
+
+	_, err := apiClient.WaitForProvisionedCluster(ctx, waitTestClusterID, time.Millisecond)
+	if err == nil {
+		t.Fatal("expected a timeout error")
+	}
+	if !strings.Contains(err.Error(), "timed out waiting for cluster") {
+		t.Errorf("expected the shared timeout message, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "creating") {
+		t.Errorf("timeout must name the last observed state, got %v", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("timeout should wrap the context cause, got %v", err)
 	}
 }
