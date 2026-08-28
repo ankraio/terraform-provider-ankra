@@ -121,8 +121,8 @@ resource %q "test" {
 						Config: config,
 						Check: resource.ComposeAggregateTestCheckFunc(
 							resource.TestCheckResourceAttrSet(address, "cluster_id"),
-							resource.TestCheckResourceAttr(address, "distribution", "k3s"),
-							resource.TestCheckResourceAttr(address, "cni", "flannel"),
+							resource.TestCheckResourceAttr(address, "distribution", "kubeadm"),
+							resource.TestCheckResourceAttr(address, "cni", "cilium"),
 							resource.TestCheckResourceAttr(address, "control_plane_count", "1"),
 							resource.TestCheckResourceAttr(address, "worker_count", "1"),
 							resource.TestCheckResourceAttr(address, "force_destroy", "true"),

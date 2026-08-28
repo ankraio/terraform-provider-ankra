@@ -162,8 +162,8 @@ func commonProvisionedAttributes(_ context.Context) map[string]schema.Attribute 
 	attributes := identityAttributes()
 	attributes["name"] = requiredReplaceString("Name of the cluster.")
 	attributes["credential_id"] = requiredReplaceString("Cloud API credential id used to provision the cluster.")
-	attributes["distribution"] = defaultedReplaceString("Kubernetes distribution: `k3s` or `kubeadm`.", "k3s")
-	attributes["cni"] = defaultedReplaceString("Container network interface.", "flannel")
+	attributes["distribution"] = defaultedReplaceString("Kubernetes distribution: `kubeadm` (default, vanilla upstream Kubernetes) or `k3s`.", "kubeadm")
+	attributes["cni"] = defaultedReplaceString("Container network interface. Defaults to `cilium`, the only CNI kubeadm clusters run; set `flannel` or `calico` for k3s clusters.", "cilium")
 	attributes["kubernetes_version"] = optionalReplaceString(
 		"Kubernetes version. Defaults to the platform's stable version when unset.")
 	attributes["control_plane_count"] = defaultedReplaceInt64("Number of control-plane nodes.", 1)

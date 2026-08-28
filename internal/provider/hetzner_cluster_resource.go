@@ -73,7 +73,7 @@ func (hetznerResource *hetznerClusterResource) Schema(ctx context.Context, _ res
 	attributes["credential_id"] = requiredReplaceString("Hetzner API credential id used to provision the cluster.")
 	attributes["location"] = requiredReplaceString("Hetzner location (e.g. `fsn1`, `nbg1`, `hel1`).")
 	attributes["kubernetes_version"] = optionalReplaceString(
-		"Kubernetes version (see `ankra cluster k3s-versions`). Defaults to the platform's stable version when unset.")
+		"Kubernetes version (see `ankra cluster kubeadm-versions` or `ankra cluster k3s-versions`). Defaults to the platform's stable version when unset.")
 	attributes["control_plane_server_type"] = defaultedReplaceString("Hetzner server type for control-plane nodes.", "cx33")
 	attributes["worker_server_type"] = defaultedReplaceString("Hetzner server type for worker nodes.", "cx23")
 	attributes["bastion_server_type"] = defaultedReplaceString("Hetzner server type for the bastion host.", "cx23")
