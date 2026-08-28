@@ -52,11 +52,11 @@ output "digitalocean_cluster_id" {
 ### Optional
 
 - `bastion_size` (String) Droplet size for the bastion host.
-- `cni` (String) Container network interface.
+- `cni` (String) Container network interface. Defaults to `cilium`, the only CNI kubeadm clusters run; set `flannel` or `calico` for k3s clusters.
 - `control_plane_count` (Number) Number of control-plane nodes.
 - `control_plane_size` (String) Droplet size for control-plane nodes.
 - `description` (String) Description of the cluster.
-- `distribution` (String) Kubernetes distribution: `k3s` or `kubeadm`.
+- `distribution` (String) Kubernetes distribution: `kubeadm` (default, vanilla upstream Kubernetes) or `k3s`.
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_size` (String) Droplet size for dedicated etcd nodes.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.

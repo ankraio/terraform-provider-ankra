@@ -91,7 +91,7 @@ resource "ankra_hetzner_cluster" "test" {
 				Config: config,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("ankra_hetzner_cluster.test", "cluster_id"),
-					resource.TestCheckResourceAttr("ankra_hetzner_cluster.test", "distribution", "k3s"),
+					resource.TestCheckResourceAttr("ankra_hetzner_cluster.test", "distribution", "kubeadm"),
 					resource.TestCheckResourceAttr("ankra_hetzner_cluster.test", "worker_count", "2"),
 					resource.TestCheckResourceAttr("ankra_hetzner_cluster.test", "control_plane_count", "1"),
 					resource.TestCheckResourceAttr("ankra_hetzner_cluster.test", "external_cloud_provider", "true"),

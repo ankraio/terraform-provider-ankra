@@ -44,11 +44,11 @@ output "hetzner_cluster_id" {
 ### Optional
 
 - `bastion_server_type` (String) Hetzner server type for the bastion host.
-- `cni` (String) Container network interface.
+- `cni` (String) Container network interface. Defaults to `cilium`, the only CNI kubeadm clusters run; set `flannel` or `calico` for k3s clusters.
 - `control_plane_count` (Number) Number of control-plane nodes.
 - `control_plane_server_type` (String) Hetzner server type for control-plane nodes.
 - `description` (String) Description of the cluster.
-- `distribution` (String) Kubernetes distribution: `k3s` or `kubeadm`.
+- `distribution` (String) Kubernetes distribution: `kubeadm` (default, vanilla upstream Kubernetes) or `k3s`.
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_server_type` (String) Hetzner server type for dedicated etcd nodes.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
@@ -58,7 +58,7 @@ output "hetzner_cluster_id" {
 - `gitops_credential_name` (String) GitOps GitHub credential name; commits the generated stack to Git when set with `gitops_repository`.
 - `gitops_repository` (String) GitOps repository (`owner/name`) to commit the generated stack to.
 - `include_networking` (Boolean) Install Traefik and cert-manager for ingress.
-- `kubernetes_version` (String) Kubernetes version (see `ankra cluster k3s-versions`). Defaults to the platform's stable version when unset.
+- `kubernetes_version` (String) Kubernetes version (see `ankra cluster kubeadm-versions` or `ankra cluster k3s-versions`). Defaults to the platform's stable version when unset.
 - `network_ip_range` (String) Private network IP range.
 - `ssh_key_credential_id` (String) SSH key credential id to attach to the cluster nodes.
 - `subnet_range` (String) Private subnet range.

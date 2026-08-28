@@ -2,6 +2,7 @@
 
 BREAKING CHANGES:
 
+* resource/ankra_*_cluster: `distribution` now defaults to `kubeadm` and `cni` to `cilium` (the platform default; kubeadm clusters only run Cilium). A configuration that relied on the implicit `k3s`/`flannel` defaults must set them explicitly - both attributes force replacement, so add them before upgrading the provider to keep existing clusters in place.
 * provider: Migrated from `terraform-plugin-sdk/v2` to `terraform-plugin-framework` (Terraform protocol v6).
 
 FEATURES:

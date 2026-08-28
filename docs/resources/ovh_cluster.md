@@ -47,13 +47,13 @@ output "ovh_cluster_id" {
 ### Optional
 
 - `availability_zones` (List of String) 3-AZ regions only: availability zones to spread the cluster across (e.g. `eu-west-par-b`).
-- `cni` (String) Container network interface.
+- `cni` (String) Container network interface. Defaults to `cilium`, the only CNI kubeadm clusters run; set `flannel` or `calico` for k3s clusters.
 - `control_plane_count` (Number) Number of control-plane nodes.
 - `control_plane_flavor_id` (String) OVH flavor for control-plane nodes.
 - `description` (String) Description of the cluster.
 - `dhcp_end` (String) Last address of the private subnet's DHCP range.
 - `dhcp_start` (String) First address of the private subnet's DHCP range.
-- `distribution` (String) Kubernetes distribution: `k3s` or `kubeadm`.
+- `distribution` (String) Kubernetes distribution: `kubeadm` (default, vanilla upstream Kubernetes) or `k3s`.
 - `etcd_flavor_id` (String) OVH flavor for dedicated etcd nodes.
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
