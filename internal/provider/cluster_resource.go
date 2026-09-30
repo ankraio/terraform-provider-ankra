@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -35,7 +37,19 @@ var (
 	_ resource.Resource                = (*clusterResource)(nil)
 	_ resource.ResourceWithConfigure   = (*clusterResource)(nil)
 	_ resource.ResourceWithImportState = (*clusterResource)(nil)
+
+	_ resource.ResourceWithValidateConfig = (*clusterResource)(nil)
 )
+
+// defaultUpdateTimeout bounds a re-import. The platform commits the spec and
+// pushes it to the GitOps repository before it answers.
+const defaultUpdateTimeout = 20 * time.Minute
+
+// parentsDescription documents the one parent syntax both member kinds share.
+const parentsDescription = "Stack members that must deploy before this one. Write each as " +
+	"`\"manifest:<name>\"` or `\"addon:<name>\"`; a bare `\"<name>\"` is accepted when exactly one " +
+	"manifest or addon of that name is declared in this resource's stacks, and its kind is inferred. " +
+	"Leaving `parents` unset keeps the dependencies stored on the platform; an empty list removes them."
 
 type clusterResource struct {
 	client *client.Client
@@ -50,15 +64,18 @@ type manifestModel struct {
 }
 
 type addonModel struct {
-	Name              types.String   `tfsdk:"name"`
-	ChartName         types.String   `tfsdk:"chart_name"`
-	ChartVersion      types.String   `tfsdk:"chart_version"`
-	RepositoryURL     types.String   `tfsdk:"repository_url"`
-	Namespace         types.String   `tfsdk:"namespace"`
-	ConfigurationType types.String   `tfsdk:"configuration_type"`
-	Configuration     types.String   `tfsdk:"configuration"`
-	Parents           []types.String `tfsdk:"parents"`
-	JobConfiguration  types.String   `tfsdk:"job_configuration"`
+	Name                   types.String   `tfsdk:"name"`
+	ChartName              types.String   `tfsdk:"chart_name"`
+	ChartVersion           types.String   `tfsdk:"chart_version"`
+	RegistryName           types.String   `tfsdk:"registry_name"`
+	RegistryURL            types.String   `tfsdk:"registry_url"`
+	RegistryCredentialName types.String   `tfsdk:"registry_credential_name"`
+	RepositoryURL          types.String   `tfsdk:"repository_url"`
+	Namespace              types.String   `tfsdk:"namespace"`
+	ConfigurationType      types.String   `tfsdk:"configuration_type"`
+	Configuration          types.String   `tfsdk:"configuration"`
+	Parents                []types.String `tfsdk:"parents"`
+	JobConfiguration       types.String   `tfsdk:"job_configuration"`
 }
 
 type stackModel struct {
@@ -95,7 +112,10 @@ func (clusterResourceInstance *clusterResource) Metadata(_ context.Context, requ
 
 func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
-		MarkdownDescription: "Imports and manages a cluster on the Ankra platform.",
+		MarkdownDescription: "Imports and manages a cluster on the Ankra platform. Creating the resource " +
+			"registers the cluster and returns `helm_command`, which installs the Ankra agent; the platform " +
+			"issues that command only once, when the cluster is first registered. Updates re-apply the " +
+			"stacks through the same import route.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the cluster (mirrors `cluster_id`).",
@@ -120,10 +140,12 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 				Required:            true,
 			},
 			"ankra_token": schema.StringAttribute{
-				MarkdownDescription: "Deprecated per-resource API token. " + tokenDeprecationMessage,
-				Optional:            true,
-				Sensitive:           true,
-				DeprecationMessage:  tokenDeprecationMessage,
+				MarkdownDescription: "Deprecated per-resource API token. " + tokenDeprecationMessage + " " +
+					"Changing it (for example rotating the token) updates the resource in place and never " +
+					"replaces the cluster.",
+				Optional:           true,
+				Sensitive:          true,
+				DeprecationMessage: tokenDeprecationMessage,
 			},
 			"cluster_id": schema.StringAttribute{
 				MarkdownDescription: "Identifier assigned to the cluster by the Ankra platform.",
@@ -159,7 +181,7 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 			},
 		},
 		Blocks: map[string]schema.Block{
-			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true}),
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true}),
 			"stacks": schema.ListNestedBlock{
 				MarkdownDescription: "Stacks of manifests and addons to apply to the cluster.",
 				NestedObject: schema.NestedBlockObject{
@@ -191,7 +213,7 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 										Required:            true,
 									},
 									"parents": schema.ListAttribute{
-										MarkdownDescription: "Names of resources this manifest depends on.",
+										MarkdownDescription: parentsDescription,
 										Optional:            true,
 										ElementType:         types.StringType,
 									},
@@ -218,32 +240,54 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 										MarkdownDescription: "Helm chart version.",
 										Required:            true,
 									},
+									"registry_url": schema.StringAttribute{
+										MarkdownDescription: "URL of the Helm registry that serves the chart " +
+											"(`https://...` or `oci://...`). Required unless the deprecated " +
+											"`repository_url` is set.",
+										Optional: true,
+									},
+									"registry_name": schema.StringAttribute{
+										MarkdownDescription: "Name of the Helm registry as connected to the Ankra " +
+											"organisation. Defaults to a name derived from `registry_url`; the " +
+											"platform accepts any name when the URL matches a registry already " +
+											"connected, and otherwise asks for the registry to be connected first.",
+										Optional: true,
+									},
+									"registry_credential_name": schema.StringAttribute{
+										MarkdownDescription: "Helm registry credential for a private registry. " +
+											"When unset the platform uses the credential connected for the URL, if any.",
+										Optional: true,
+									},
 									"repository_url": schema.StringAttribute{
-										MarkdownDescription: "Helm chart repository URL.",
-										Required:            true,
+										MarkdownDescription: "Deprecated alias of `registry_url`.",
+										Optional:            true,
+										DeprecationMessage:  "Use registry_url (and optionally registry_name) instead.",
 									},
 									"namespace": schema.StringAttribute{
 										MarkdownDescription: "Namespace the addon is installed into.",
 										Required:            true,
 									},
 									"configuration_type": schema.StringAttribute{
-										MarkdownDescription: "Type of the supplied configuration.",
+										MarkdownDescription: "Ignored; the platform only accepts standalone values.",
 										Optional:            true,
+										DeprecationMessage:  "configuration_type is ignored and will be removed; set configuration only.",
 									},
 									"configuration": schema.StringAttribute{
-										MarkdownDescription: "Addon configuration payload. Treated as sensitive because Helm values commonly carry credentials.",
-										Optional:            true,
-										Sensitive:           true,
+										MarkdownDescription: "Helm values for the addon, as YAML or base64-encoded YAML. " +
+											"Treated as sensitive because Helm values commonly carry credentials.",
+										Optional:  true,
+										Sensitive: true,
 									},
 									"parents": schema.ListAttribute{
-										MarkdownDescription: "Names of resources this addon depends on.",
+										MarkdownDescription: parentsDescription,
 										Optional:            true,
 										ElementType:         types.StringType,
 									},
 									"job_configuration": schema.StringAttribute{
-										MarkdownDescription: "Job configuration payload for the addon. Treated as sensitive because it commonly carries credentials.",
-										Optional:            true,
-										Sensitive:           true,
+										MarkdownDescription: "Per-addon job timeouts in seconds, as a JSON object, e.g. " +
+											"`jsonencode({ create_job_timeout = 600, update_job_timeout = 600 })`. Accepted keys: " +
+											"`create_job_timeout`, `read_job_timeout`, `update_job_timeout`, `delete_job_timeout`.",
+										Optional: true,
 									},
 								},
 							},
@@ -276,12 +320,69 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 	if response.Diagnostics.HasError() {
 		return
 	}
-	clusterResourceInstance.importCluster(ctx, &plan, &response.Diagnostics)
+	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
+	if clientError != nil {
+		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
+		return
+	}
+	importRequest, specDiagnostics := importRequestFromModel(&plan)
+	response.Diagnostics.Append(specDiagnostics...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	plan.State = types.StringUnknown()
-	plan.Kind = types.StringUnknown()
+
+	// One deadline bounds the whole create: the import, the by-name
+	// resolution of an asynchronous import, and the optional agent wait.
+	createTimeout := resolveTimeout(ctx, plan.Timeouts.Create, defaultCreateTimeout, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	createContext, cancel := context.WithTimeout(ctx, createTimeout)
+	defer cancel()
+
+	clusterName := plan.ClusterName.ValueString()
+	preexisting, lookupError := apiClient.GetClusterByName(createContext, clusterName)
+	if lookupError != nil {
+		response.Diagnostics.AddError("Unable to check for an existing cluster", lookupError.Error())
+		return
+	}
+
+	importResponse, importError := apiClient.ImportCluster(createContext, importRequest)
+	if importError != nil {
+		recoverFailedCreate(ctx, apiClient, &plan, preexisting, importError, response)
+		return
+	}
+
+	clusterID := importResponse.ClusterID
+	if clusterID == "" {
+		// The platform queued the import instead of running it. The cluster is
+		// registered in the background, so resolve it by name rather than
+		// failing and leaving it orphaned outside Terraform.
+		registered, waitError := apiClient.WaitForClusterByName(createContext, clusterName, 0)
+		if waitError != nil {
+			response.Diagnostics.AddError("Imported cluster was not registered",
+				fmt.Sprintf("The platform accepted the import without returning a result, and no cluster "+
+					"named %q appeared before the create timeout: %s", clusterName, waitError.Error()))
+			return
+		}
+		clusterID = registered.ID
+		response.Diagnostics.AddWarning("Cluster imported asynchronously",
+			"The platform queued the import instead of running it, so it returned neither the outcome nor "+
+				"the agent install command. The cluster was found by name and recorded in state, and "+
+				"helm_command is empty: copy the agent install command from the Ankra UI.")
+	} else if preexisting != nil && importResponse.ImportCommand == "" {
+		response.Diagnostics.AddWarning("Existing cluster adopted",
+			fmt.Sprintf("A cluster named %q already existed, so the import updated it and Terraform now "+
+				"manages it. The platform only issues the agent install command when a cluster is first "+
+				"registered, so helm_command is empty.", clusterName))
+	}
+	addImportWarnings(&response.Diagnostics, importResponse.Warnings)
+
+	plan.ID = types.StringValue(clusterID)
+	plan.ClusterID = types.StringValue(clusterID)
+	plan.HelmCommand = types.StringValue(importResponse.ImportCommand)
+	plan.State = types.StringNull()
+	plan.Kind = types.StringNull()
 
 	// Persist the import result before any wait, so a timeout cannot lose the
 	// cluster the platform has already registered.
@@ -290,7 +391,7 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 		return
 	}
 
-	cluster := clusterResourceInstance.settleImported(ctx, &plan, &response.Diagnostics)
+	cluster := clusterResourceInstance.settleImported(createContext, apiClient, &plan, &response.Diagnostics)
 	if cluster == nil {
 		return
 	}
@@ -298,14 +399,48 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
+// orphanLookupTimeout bounds the by-name lookup that runs after a failed
+// import, on a context detached from the (possibly expired) create deadline.
+const orphanLookupTimeout = 30 * time.Second
+
+// recoverFailedCreate reports a failed import without leaving an orphan. A
+// rejected specification is rolled back by the platform, so it is reported as
+// is. Any other failure is ambiguous - the connection may have dropped after
+// the platform registered the cluster - so a cluster of that name that did
+// not exist before this create is recorded in state alongside the error.
+// Terraform then marks it tainted, and the next apply replaces it.
+func recoverFailedCreate(ctx context.Context, apiClient *client.Client, plan *clusterResourceModel, preexisting *client.Cluster, importError error, response *resource.CreateResponse) {
+	var rejected *client.ImportRejectedError
+	if errors.As(importError, &rejected) {
+		response.Diagnostics.AddError("Cluster specification rejected", importError.Error())
+		return
+	}
+	if preexisting == nil {
+		lookupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), orphanLookupTimeout)
+		defer cancel()
+		registered, lookupError := apiClient.GetClusterByName(lookupContext, plan.ClusterName.ValueString())
+		if lookupError == nil && registered != nil {
+			plan.ID = types.StringValue(registered.ID)
+			plan.ClusterID = types.StringValue(registered.ID)
+			plan.HelmCommand = types.StringValue("")
+			applyClusterIdentity(&plan.State, &plan.Kind, registered)
+			response.Diagnostics.Append(response.State.Set(ctx, plan)...)
+			response.Diagnostics.AddError("Cluster registered but the import did not complete",
+				fmt.Sprintf("%s\n\nThe platform registered cluster %q (id %s) before the import failed, so it "+
+					"is recorded in state instead of being left outside Terraform. Terraform marks it tainted: "+
+					"the next apply replaces it, which also issues a fresh agent install command. Run "+
+					"`terraform untaint` instead to keep the registration as it is.",
+					importError.Error(), registered.Name, registered.ID))
+			return
+		}
+	}
+	response.Diagnostics.AddError("Unable to import cluster", importError.Error())
+}
+
 // settleImported waits for the cluster agent to check in when the practitioner
 // opted in, and otherwise resolves the row once so state and kind are recorded.
-func (clusterResourceInstance *clusterResource) settleImported(ctx context.Context, plan *clusterResourceModel, diagnostics *diag.Diagnostics) *client.Cluster {
-	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
-	if clientError != nil {
-		diagnostics.AddError("Missing API token", missingTokenDetail)
-		return nil
-	}
+// ctx carries the create deadline.
+func (clusterResourceInstance *clusterResource) settleImported(ctx context.Context, apiClient *client.Client, plan *clusterResourceModel, diagnostics *diag.Diagnostics) *client.Cluster {
 	clusterID := plan.ClusterID.ValueString()
 
 	if plan.WaitForOnline.IsNull() || plan.WaitForOnline.IsUnknown() || !plan.WaitForOnline.ValueBool() {
@@ -320,14 +455,7 @@ func (clusterResourceInstance *clusterResource) settleImported(ctx context.Conte
 		return cluster
 	}
 
-	wait := resolveTimeout(ctx, plan.Timeouts.Create, defaultCreateTimeout, diagnostics)
-	if diagnostics.HasError() {
-		return nil
-	}
-	waitContext, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	cluster, waitError := apiClient.WaitForImportedCluster(waitContext, clusterID, 0)
+	cluster, waitError := apiClient.WaitForImportedCluster(ctx, clusterID, 0)
 	if waitError != nil {
 		diagnostics.AddError("Cluster agent did not check in", waitError.Error())
 		return nil
@@ -373,16 +501,80 @@ func (clusterResourceInstance *clusterResource) Read(ctx context.Context, reques
 }
 
 func (clusterResourceInstance *clusterResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	var plan clusterResourceModel
+	var plan, prior clusterResourceModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &prior)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	clusterResourceInstance.importCluster(ctx, &plan, &response.Diagnostics)
+	importRequest, specDiagnostics := importRequestFromModel(&plan)
+	response.Diagnostics.Append(specDiagnostics...)
 	if response.Diagnostics.HasError() {
 		return
 	}
+
+	// Nothing the platform stores changed - a rotated ankra_token, a new
+	// timeout or wait_for_online - so there is nothing to re-import.
+	if priorRequest, priorDiagnostics := importRequestFromModel(&prior); !priorDiagnostics.HasError() &&
+		reflect.DeepEqual(priorRequest, importRequest) {
+		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		return
+	}
+
+	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
+	if clientError != nil {
+		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
+		return
+	}
+	updateTimeout := resolveTimeout(ctx, plan.Timeouts.Update, defaultUpdateTimeout, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	updateContext, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	importResponse, importError := apiClient.ImportCluster(updateContext, importRequest)
+	if importError != nil {
+		var rejected *client.ImportRejectedError
+		if errors.As(importError, &rejected) {
+			response.Diagnostics.AddError("Cluster specification rejected", importError.Error())
+			return
+		}
+		response.Diagnostics.AddError("Unable to update cluster", importError.Error())
+		return
+	}
+	switch {
+	case importResponse.ClusterID == "":
+		response.Diagnostics.AddWarning("Cluster update queued",
+			"The platform queued the update instead of running it, so its outcome was not reported. "+
+				"Check the cluster's stacks in Ankra.")
+	case importResponse.ClusterID != plan.ClusterID.ValueString():
+		response.Diagnostics.AddWarning("Cluster identity changed",
+			fmt.Sprintf("The platform applied the update to cluster %s, not %s: the cluster was probably "+
+				"deleted and registered again outside Terraform. Remove it from state and import it again.",
+				importResponse.ClusterID, plan.ClusterID.ValueString()))
+	}
+	addImportWarnings(&response.Diagnostics, importResponse.Warnings)
+
+	// helm_command is only issued when a cluster is first registered; a
+	// re-import answers with an empty one, which must not replace the stored
+	// command, so the plan (which carries the stored value) is saved as is.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+}
+
+// ValidateConfig reports stack problems at plan time - unresolvable parents,
+// an addon without a registry URL, a malformed job_configuration - instead
+// of at apply. Values still unknown are left to apply.
+func (clusterResourceInstance *clusterResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	var stacks []stackModel
+	if diagnostics := request.Config.GetAttribute(ctx, path.Root("stacks"), &stacks); diagnostics.HasError() {
+		return
+	}
+	if !stacksFullyKnown(stacks) {
+		return
+	}
+	_, diagnostics := stacksToAPI(stacks)
+	response.Diagnostics.Append(diagnostics...)
 }
 
 func (clusterResourceInstance *clusterResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -411,42 +603,30 @@ func (clusterResourceInstance *clusterResource) ImportState(ctx context.Context,
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
 }
 
-// importCluster builds the import payload from the plan, calls the API, and
-// writes the computed attributes back into the plan.
-func (clusterResourceInstance *clusterResource) importCluster(ctx context.Context, plan *clusterResourceModel, diagnostics *diag.Diagnostics) {
-	apiClient, clientError := clusterResourceInstance.clientForToken(plan.AnkraToken)
-	if clientError != nil {
-		diagnostics.AddError("Missing API token", missingTokenDetail)
-		return
-	}
-
-	request := client.ImportClusterRequest{
-		Name:        plan.ClusterName.ValueString(),
+// importRequestFromModel builds the import payload for a configuration.
+func importRequestFromModel(model *clusterResourceModel) (client.ImportClusterRequest, diag.Diagnostics) {
+	stacks, diagnostics := stacksToAPI(model.Stacks)
+	return client.ImportClusterRequest{
+		Name:        model.ClusterName.ValueString(),
 		Description: "Managed by Terraform",
 		Spec: client.ImportClusterSpec{
 			GitRepository: client.GitRepository{
 				Provider:       "github",
-				CredentialName: plan.GithubCredentialName.ValueString(),
-				Branch:         plan.GithubBranch.ValueString(),
-				Repository:     plan.GithubRepository.ValueString(),
+				CredentialName: model.GithubCredentialName.ValueString(),
+				Branch:         model.GithubBranch.ValueString(),
+				Repository:     model.GithubRepository.ValueString(),
 			},
-			Stacks: stacksToAPI(plan.Stacks),
+			Stacks: stacks,
 		},
-	}
+	}, diagnostics
+}
 
-	response, err := apiClient.ImportCluster(ctx, request)
-	if err != nil {
-		diagnostics.AddError("Unable to import cluster", err.Error())
-		return
+// addImportWarnings surfaces the advisory findings the platform returned.
+func addImportWarnings(diagnostics *diag.Diagnostics, warnings []client.ValidationWarning) {
+	for _, warning := range warnings {
+		diagnostics.AddWarning("Ankra platform warning",
+			fmt.Sprintf("%s %q: %s: %s", warning.Kind, warning.Name, warning.Key, warning.Message))
 	}
-	if response.ClusterID == "" {
-		diagnostics.AddError("Invalid import response", "The Ankra platform did not return a cluster_id.")
-		return
-	}
-
-	plan.ID = types.StringValue(response.ClusterID)
-	plan.ClusterID = types.StringValue(response.ClusterID)
-	plan.HelmCommand = types.StringValue(response.ImportCommand)
 }
 
 // clientForToken returns the configured client, or a copy overridden with the
@@ -465,60 +645,4 @@ func (clusterResourceInstance *clusterResource) clientForToken(token types.Strin
 	override := *clusterResourceInstance.client
 	override.Token = token.ValueString()
 	return &override, nil
-}
-
-func stacksToAPI(stacks []stackModel) []client.Stack {
-	result := make([]client.Stack, 0, len(stacks))
-	for _, stack := range stacks {
-		result = append(result, client.Stack{
-			Name:        stack.Name.ValueString(),
-			Description: stack.Description.ValueString(),
-			Manifests:   manifestsToAPI(stack.Manifests),
-			Addons:      addonsToAPI(stack.Addons),
-		})
-	}
-	return result
-}
-
-func manifestsToAPI(manifests []manifestModel) []client.Manifest {
-	result := make([]client.Manifest, 0, len(manifests))
-	for _, manifest := range manifests {
-		result = append(result, client.Manifest{
-			Name:           manifest.Name.ValueString(),
-			Namespace:      manifest.Namespace.ValueString(),
-			ManifestBase64: manifest.ManifestBase64.ValueString(),
-			Parents:        stringsToAPI(manifest.Parents),
-			FromFile:       manifest.FromFile.ValueString(),
-		})
-	}
-	return result
-}
-
-func addonsToAPI(addons []addonModel) []client.Addon {
-	result := make([]client.Addon, 0, len(addons))
-	for _, addon := range addons {
-		result = append(result, client.Addon{
-			Name:              addon.Name.ValueString(),
-			ChartName:         addon.ChartName.ValueString(),
-			ChartVersion:      addon.ChartVersion.ValueString(),
-			RepositoryURL:     addon.RepositoryURL.ValueString(),
-			Namespace:         addon.Namespace.ValueString(),
-			ConfigurationType: addon.ConfigurationType.ValueString(),
-			Configuration:     addon.Configuration.ValueString(),
-			Parents:           stringsToAPI(addon.Parents),
-			JobConfiguration:  addon.JobConfiguration.ValueString(),
-		})
-	}
-	return result
-}
-
-func stringsToAPI(values []types.String) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	result := make([]string, 0, len(values))
-	for _, value := range values {
-		result = append(result, value.ValueString())
-	}
-	return result
 }

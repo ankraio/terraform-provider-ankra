@@ -3,12 +3,12 @@
 page_title: "ankra_cluster Resource - ankra"
 subcategory: ""
 description: |-
-  Imports and manages a cluster on the Ankra platform.
+  Imports and manages a cluster on the Ankra platform. Creating the resource registers the cluster and returns helm_command, which installs the Ankra agent; the platform issues that command only once, when the cluster is first registered. Updates re-apply the stacks through the same import route.
 ---
 
 # ankra_cluster (Resource)
 
-Imports and manages a cluster on the Ankra platform.
+Imports and manages a cluster on the Ankra platform. Creating the resource registers the cluster and returns `helm_command`, which installs the Ankra agent; the platform issues that command only once, when the cluster is first registered. Updates re-apply the stacks through the same import route.
 
 ## Example Usage
 
@@ -20,27 +20,44 @@ resource "ankra_cluster" "example" {
   github_repository      = "ankra-io/my-repo"
 
   stacks {
-    name        = "create-ns"
-    description = "Creates a namespace"
+    name        = "ingress"
+    description = "Traefik ingress controller"
 
     manifests {
-      name = "test-namespace"
+      name = "traefik-namespace"
       manifest_base64 = base64encode(<<-YAML
         apiVersion: v1
         kind: Namespace
         metadata:
-          name: test-ns
+          name: traefik
         YAML
       )
     }
 
     addons {
-      name           = "ingress-nginx"
-      chart_name     = "ingress-nginx"
-      chart_version  = "4.11.0"
-      repository_url = "https://kubernetes.github.io/ingress-nginx"
-      namespace      = "ingress-nginx"
+      name          = "traefik"
+      chart_name    = "traefik"
+      chart_version = "37.1.1"
+      registry_name = "traefik"
+      registry_url  = "https://traefik.github.io/charts"
+      namespace     = "traefik"
+      parents       = ["manifest:traefik-namespace"]
+
+      configuration = <<-YAML
+        deployment:
+          replicas: 2
+        YAML
+
+      job_configuration = jsonencode({
+        create_job_timeout = 600
+        update_job_timeout = 600
+      })
     }
+  }
+
+  timeouts {
+    create = "30m"
+    update = "20m"
   }
 }
 ```
@@ -57,7 +74,7 @@ resource "ankra_cluster" "example" {
 
 ### Optional
 
-- `ankra_token` (String, Sensitive, Deprecated) Deprecated per-resource API token. Configure the token on the provider block (or the ANKRA_TOKEN environment variable) instead of per resource.
+- `ankra_token` (String, Sensitive, Deprecated) Deprecated per-resource API token. Configure the token on the provider block (or the ANKRA_TOKEN environment variable) instead of per resource. Changing it (for example rotating the token) updates the resource in place and never replaces the cluster.
 - `stacks` (Block List) Stacks of manifests and addons to apply to the cluster. (see [below for nested schema](#nestedblock--stacks))
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `wait_for_online` (Boolean) Wait for the cluster agent to check in before the resource is considered created. Defaults to `false`, because importing a cluster only registers it - somebody still has to run `helm_command` against the cluster, which Terraform cannot do. Set it to `true` when that happens out of band and dependent resources need a live cluster.
@@ -92,14 +109,17 @@ Required:
 - `chart_version` (String) Helm chart version.
 - `name` (String) Name of the addon.
 - `namespace` (String) Namespace the addon is installed into.
-- `repository_url` (String) Helm chart repository URL.
 
 Optional:
 
-- `configuration` (String, Sensitive) Addon configuration payload. Treated as sensitive because Helm values commonly carry credentials.
-- `configuration_type` (String) Type of the supplied configuration.
-- `job_configuration` (String, Sensitive) Job configuration payload for the addon. Treated as sensitive because it commonly carries credentials.
-- `parents` (List of String) Names of resources this addon depends on.
+- `configuration` (String, Sensitive) Helm values for the addon, as YAML or base64-encoded YAML. Treated as sensitive because Helm values commonly carry credentials.
+- `configuration_type` (String, Deprecated) Ignored; the platform only accepts standalone values.
+- `job_configuration` (String) Per-addon job timeouts in seconds, as a JSON object, e.g. `jsonencode({ create_job_timeout = 600, update_job_timeout = 600 })`. Accepted keys: `create_job_timeout`, `read_job_timeout`, `update_job_timeout`, `delete_job_timeout`.
+- `parents` (List of String) Stack members that must deploy before this one. Write each as `"manifest:<name>"` or `"addon:<name>"`; a bare `"<name>"` is accepted when exactly one manifest or addon of that name is declared in this resource's stacks, and its kind is inferred. Leaving `parents` unset keeps the dependencies stored on the platform; an empty list removes them.
+- `registry_credential_name` (String) Helm registry credential for a private registry. When unset the platform uses the credential connected for the URL, if any.
+- `registry_name` (String) Name of the Helm registry as connected to the Ankra organisation. Defaults to a name derived from `registry_url`; the platform accepts any name when the URL matches a registry already connected, and otherwise asks for the registry to be connected first.
+- `registry_url` (String) URL of the Helm registry that serves the chart (`https://...` or `oci://...`). Required unless the deprecated `repository_url` is set.
+- `repository_url` (String, Deprecated) Deprecated alias of `registry_url`.
 
 
 <a id="nestedblock--stacks--manifests"></a>
@@ -114,7 +134,7 @@ Optional:
 
 - `from_file` (String) Source file the manifest was generated from.
 - `namespace` (String) Namespace the manifest is applied to.
-- `parents` (List of String) Names of resources this manifest depends on.
+- `parents` (List of String) Stack members that must deploy before this one. Write each as `"manifest:<name>"` or `"addon:<name>"`; a bare `"<name>"` is accepted when exactly one manifest or addon of that name is declared in this resource's stacks, and its kind is inferred. Leaving `parents` unset keeps the dependencies stored on the platform; an empty list removes them.
 
 
 
@@ -124,6 +144,7 @@ Optional:
 Optional:
 
 - `create` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
+- `update` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
 
 ## Import
 

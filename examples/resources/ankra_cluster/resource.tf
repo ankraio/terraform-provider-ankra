@@ -5,26 +5,43 @@ resource "ankra_cluster" "example" {
   github_repository      = "ankra-io/my-repo"
 
   stacks {
-    name        = "create-ns"
-    description = "Creates a namespace"
+    name        = "ingress"
+    description = "Traefik ingress controller"
 
     manifests {
-      name = "test-namespace"
+      name = "traefik-namespace"
       manifest_base64 = base64encode(<<-YAML
         apiVersion: v1
         kind: Namespace
         metadata:
-          name: test-ns
+          name: traefik
         YAML
       )
     }
 
     addons {
-      name           = "ingress-nginx"
-      chart_name     = "ingress-nginx"
-      chart_version  = "4.11.0"
-      repository_url = "https://kubernetes.github.io/ingress-nginx"
-      namespace      = "ingress-nginx"
+      name          = "traefik"
+      chart_name    = "traefik"
+      chart_version = "37.1.1"
+      registry_name = "traefik"
+      registry_url  = "https://traefik.github.io/charts"
+      namespace     = "traefik"
+      parents       = ["manifest:traefik-namespace"]
+
+      configuration = <<-YAML
+        deployment:
+          replicas: 2
+        YAML
+
+      job_configuration = jsonencode({
+        create_job_timeout = 600
+        update_job_timeout = 600
+      })
     }
+  }
+
+  timeouts {
+    create = "30m"
+    update = "20m"
   }
 }
