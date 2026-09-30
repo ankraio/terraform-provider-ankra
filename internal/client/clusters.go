@@ -18,64 +18,6 @@ const maxListPages = 100
 // costs as few round trips as possible.
 const listPageSize = 100
 
-// GitRepository is the source-of-truth git repository for an imported cluster.
-type GitRepository struct {
-	Provider       string `json:"provider"`
-	CredentialName string `json:"credential_name"`
-	Branch         string `json:"branch"`
-	Repository     string `json:"repository"`
-}
-
-// Manifest is a raw Kubernetes manifest deployed as part of a stack.
-type Manifest struct {
-	Name           string   `json:"name"`
-	Namespace      string   `json:"namespace,omitempty"`
-	ManifestBase64 string   `json:"manifest_base64"`
-	Parents        []string `json:"parents,omitempty"`
-	FromFile       string   `json:"from_file,omitempty"`
-}
-
-// Addon is a Helm-chart addon deployed as part of a stack.
-type Addon struct {
-	Name              string   `json:"name"`
-	ChartName         string   `json:"chart_name"`
-	ChartVersion      string   `json:"chart_version"`
-	RepositoryURL     string   `json:"repository_url"`
-	Namespace         string   `json:"namespace"`
-	ConfigurationType string   `json:"configuration_type,omitempty"`
-	Configuration     string   `json:"configuration,omitempty"`
-	Parents           []string `json:"parents,omitempty"`
-	JobConfiguration  string   `json:"job_configuration,omitempty"`
-}
-
-// Stack groups manifests and addons applied to a cluster.
-type Stack struct {
-	Name        string     `json:"name"`
-	Description string     `json:"description,omitempty"`
-	Manifests   []Manifest `json:"manifests,omitempty"`
-	Addons      []Addon    `json:"addons,omitempty"`
-}
-
-// ImportClusterSpec is the desired state sent to the import endpoint.
-type ImportClusterSpec struct {
-	GitRepository GitRepository `json:"git_repository"`
-	Stacks        []Stack       `json:"stacks"`
-}
-
-// ImportClusterRequest is the payload for POST /api/v1/clusters/import.
-type ImportClusterRequest struct {
-	Name        string            `json:"name"`
-	Description string            `json:"description"`
-	Spec        ImportClusterSpec `json:"spec"`
-}
-
-// ImportClusterResponse is returned by the import endpoint. ImportCommand
-// embeds a live cluster agent token, so callers must treat it as a secret.
-type ImportClusterResponse struct {
-	ClusterID     string `json:"cluster_id"`
-	ImportCommand string `json:"import_command"`
-}
-
 // Cluster is one row of a cluster listing. The fields mirror
 // ClusterListItemContract in the platform OpenAPI contract.
 type Cluster struct {
@@ -99,15 +41,6 @@ type Pagination struct {
 type ClusterListResponse struct {
 	Result     []Cluster  `json:"result"`
 	Pagination Pagination `json:"pagination"`
-}
-
-// ImportCluster creates or updates a cluster via the import endpoint.
-func (client *Client) ImportCluster(ctx context.Context, request ImportClusterRequest) (ImportClusterResponse, error) {
-	var response ImportClusterResponse
-	if err := client.doRequest(ctx, http.MethodPost, "/api/v1/clusters/import", request, &response); err != nil {
-		return ImportClusterResponse{}, err
-	}
-	return response, nil
 }
 
 // listClusterPage fetches a single page of the cluster listing, applying the
