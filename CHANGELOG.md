@@ -1,3 +1,9 @@
+## 0.2.1 (2026-10-01)
+
+BUG FIXES:
+
+* provider: A configuration that sets only the deprecated per-resource `ankra_token` (no provider `token`, no `ANKRA_TOKEN`), which is how 0.1.x was configured, works again. 0.2.0 refused it when the provider started, with "Missing API token" and "Provider requires explicit configuration", so the deprecated attribute did not work at all. A resource or data source that receives no token from anywhere still fails with "Missing API token" and sends no request. ([#20](https://github.com/ankraio/terraform-provider-ankra/pull/20))
+
 ## 0.2.0 (2026-10-01)
 
 0.2.0 is the first release since 0.1.6. It moves the provider to terraform-plugin-framework, makes `ankra_cluster` work against the current import API again (0.1.6 cannot create or update a cluster), and adds resources for the clouds Ankra provisions on. Read the upgrade notes before running `terraform init -upgrade`.
