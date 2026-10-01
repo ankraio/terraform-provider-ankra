@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -82,17 +81,13 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 		baseURL = strings.TrimSpace(config.BaseURL.ValueString())
 	}
 
-	// A token that is still unknown at configure time resolves before apply,
-	// so the provider is wired up and the check is left to the resources.
-	if token == "" && !config.Token.IsUnknown() {
-		response.Diagnostics.AddAttributeError(
-			path.Root("token"),
-			"Missing API token",
-			missingTokenDetail,
-		)
-		return
-	}
-
+	// No provider token is not an error here. The deprecated per-resource
+	// ankra_token still supplies one, and a 0.1.x configuration sets only that
+	// (no provider block at all), so failing at configure time breaks every
+	// such configuration on upgrade. Each resource and the data source report
+	// "Missing API token" when no token reaches them, and never send a request
+	// without one. A token still unknown at configure time resolves before
+	// apply the same way.
 	userAgent := "terraform-provider-ankra/" + providerInstance.version
 	apiClient := client.NewClient(baseURL, token, userAgent)
 

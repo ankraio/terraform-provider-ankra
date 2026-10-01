@@ -41,6 +41,8 @@ type mockPlatform struct {
 	imports      int
 	deletes      int
 	lastQueryRaw string
+	// authorizations records the Authorization header of every request.
+	authorizations []string
 }
 
 func newMockPlatform(t *testing.T) (*mockPlatform, *httptest.Server) {
@@ -48,6 +50,7 @@ func newMockPlatform(t *testing.T) (*mockPlatform, *httptest.Server) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		platform.mutex.Lock()
 		defer platform.mutex.Unlock()
+		platform.authorizations = append(platform.authorizations, request.Header.Get("Authorization"))
 		writer.Header().Set("Content-Type", "application/json")
 
 		switch {
@@ -300,6 +303,88 @@ func TestAccClusterResourceLifecycle(t *testing.T) {
 			},
 		},
 	})
+}
+
+// TestAccClusterResourcePerResourceTokenOnly covers a 0.1.x configuration:
+// no provider block and no ANKRA_TOKEN, only the deprecated per-resource
+// ankra_token. 0.2.0 refused it at provider configure time with "Missing API
+// token", so the deprecated attribute did not work at all.
+func TestAccClusterResourcePerResourceTokenOnly(t *testing.T) {
+	platform, server := newMockPlatform(t)
+	defer server.Close()
+	t.Setenv("ANKRA_TOKEN", "")
+	t.Setenv("ANKRA_BASE_URL", server.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "ankra_cluster" "test" {
+  cluster_name           = "dev"
+  github_credential_name = "cred"
+  github_branch          = "main"
+  github_repository      = "ankra-io/repo"
+  ankra_token            = "resource-token"
+}
+
+data "ankra_clusters" "all" {
+  ankra_token = "resource-token"
+  depends_on  = [ankra_cluster.test]
+}
+`,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_cluster.test", "cluster_id", "cluster-1"),
+					resource.TestCheckResourceAttrSet("data.ankra_clusters.all", "clusters.0.id"),
+					func(_ *terraform.State) error {
+						platform.mutex.Lock()
+						defer platform.mutex.Unlock()
+						for _, authorization := range platform.authorizations {
+							if authorization != "Bearer resource-token" {
+								return fmt.Errorf("request sent Authorization %q, want the per-resource token", authorization)
+							}
+						}
+						if len(platform.authorizations) == 0 {
+							return fmt.Errorf("no request reached the platform")
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+// TestAccClusterResourceMissingToken: with no token anywhere the resource
+// fails with "Missing API token" and never sends an unauthenticated request.
+func TestAccClusterResourceMissingToken(t *testing.T) {
+	platform, server := newMockPlatform(t)
+	defer server.Close()
+	t.Setenv("ANKRA_TOKEN", "")
+	t.Setenv("ANKRA_BASE_URL", server.URL)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: `
+resource "ankra_cluster" "test" {
+  cluster_name           = "dev"
+  github_credential_name = "cred"
+  github_branch          = "main"
+  github_repository      = "ankra-io/repo"
+}
+`,
+				ExpectError: regexp.MustCompile(`Missing API token`),
+			},
+		},
+	})
+
+	platform.mutex.Lock()
+	defer platform.mutex.Unlock()
+	if len(platform.authorizations) != 0 {
+		t.Errorf("sent %d request(s) without a token, want none", len(platform.authorizations))
+	}
 }
 
 // TestAccClusterResourceAsyncImport covers a platform that queues the import
