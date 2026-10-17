@@ -10,9 +10,25 @@ import (
 
 // applicationResources are applications and Ankra Pipelines.
 func applicationResources() []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewApplicationResource,
+		NewApplicationSettingsResource,
+		NewApplicationAutoDeployResource,
+		NewApplicationAIConfigResource,
+		NewApplicationDemoConfigResource,
+		NewApplicationEnvSecretResource,
+		NewApplicationDeploymentResource,
+		NewPipelineRepositoryResource,
+		NewPipelineDefinitionResource,
+		NewPipelineScheduleResource,
+		NewPipelineMergeTrainResource,
+	}
 }
 
 func applicationDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewApplicationsDataSource,
+		NewApplicationDataSource,
+		NewPipelineRepositoriesDataSource,
+	}
 }
