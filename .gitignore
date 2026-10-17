@@ -41,3 +41,8 @@ test/**/.terraform.lock.hcl
 
 # Keep windows files with windows line endings
 *.winfile eol=crlf
+
+# Ankra Pipelines caches, tools and scratch space in the workspace
+.ci-cache/
+.ci-tmp/
+.ci-tools/
