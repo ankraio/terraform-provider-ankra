@@ -5,10 +5,14 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -18,8 +22,10 @@ import (
 )
 
 const (
-	tokenEnvironmentVariable   = "ANKRA_TOKEN"
-	baseURLEnvironmentVariable = "ANKRA_BASE_URL"
+	tokenEnvironmentVariable          = "ANKRA_TOKEN"
+	baseURLEnvironmentVariable        = "ANKRA_BASE_URL"
+	organisationIDEnvironmentVariable = "ANKRA_ORGANISATION_ID"
+	projectIDEnvironmentVariable      = "ANKRA_PROJECT_ID"
 )
 
 // Ensure ankraProvider satisfies the provider.Provider interface.
@@ -30,8 +36,10 @@ type ankraProvider struct {
 }
 
 type ankraProviderModel struct {
-	Token   types.String `tfsdk:"token"`
-	BaseURL types.String `tfsdk:"base_url"`
+	Token          types.String `tfsdk:"token"`
+	BaseURL        types.String `tfsdk:"base_url"`
+	OrganisationID types.String `tfsdk:"organisation_id"`
+	ProjectID      types.String `tfsdk:"project_id"`
 }
 
 // New returns a function that constructs the Ankra provider for the given
@@ -49,7 +57,7 @@ func (providerInstance *ankraProvider) Metadata(_ context.Context, _ provider.Me
 
 func (providerInstance *ankraProvider) Schema(_ context.Context, _ provider.SchemaRequest, response *provider.SchemaResponse) {
 	response.Schema = schema.Schema{
-		MarkdownDescription: "The Ankra provider manages clusters on the Ankra platform.",
+		MarkdownDescription: "The Ankra provider manages clusters and the organisation resources around them on the Ankra platform.",
 		Attributes: map[string]schema.Attribute{
 			"token": schema.StringAttribute{
 				MarkdownDescription: "Ankra API token. May also be set with the `ANKRA_TOKEN` environment variable.",
@@ -59,6 +67,15 @@ func (providerInstance *ankraProvider) Schema(_ context.Context, _ provider.Sche
 			"base_url": schema.StringAttribute{
 				MarkdownDescription: "Base URL of the Ankra platform API. May also be set with the `ANKRA_BASE_URL` environment variable. Defaults to `" + client.DefaultBaseURL + "`.",
 				Optional:            true,
+			},
+			"organisation_id": schema.StringAttribute{
+				MarkdownDescription: "ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `" + client.OrganisationHeader + "` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.",
+				Optional:            true,
+			},
+			"project_id": schema.StringAttribute{
+				MarkdownDescription: "ID (UUID) of the project to act in, for organisations that use projects. Sent as the `" + client.ProjectHeader + "` header. May also be set with the `ANKRA_PROJECT_ID` environment variable. " +
+					"Set it whenever the organisation has projects: without it the platform scopes every request to the project the token's user last selected in the portal, so switching project there would change what Terraform sees.",
+				Optional: true,
 			},
 		},
 	}
@@ -81,6 +98,12 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 		baseURL = strings.TrimSpace(config.BaseURL.ValueString())
 	}
 
+	organisationID, organisationKnown := scopeIdentifier(config.OrganisationID, organisationIDEnvironmentVariable, "organisation_id", &response.Diagnostics)
+	projectID, projectKnown := scopeIdentifier(config.ProjectID, projectIDEnvironmentVariable, "project_id", &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	// No provider token is not an error here. The deprecated per-resource
 	// ankra_token still supplies one, and a 0.1.x configuration sets only that
 	// (no provider block at all), so failing at configure time breaks every
@@ -90,24 +113,79 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 	// apply the same way.
 	userAgent := "terraform-provider-ankra/" + providerInstance.version
 	apiClient := client.NewClient(baseURL, token, userAgent)
+	apiClient.OrganisationID = organisationID
+	apiClient.ProjectID = projectID
+	switch {
+	case !organisationKnown:
+		apiClient.UnresolvedScope = "organisation_id"
+	case !projectKnown:
+		apiClient.UnresolvedScope = "project_id"
+	}
 
 	response.ResourceData = apiClient
 	response.DataSourceData = apiClient
 }
 
-func (providerInstance *ankraProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{
-		NewClusterResource,
-		NewHetznerClusterResource,
-		NewDigitalOceanClusterResource,
-		NewOVHClusterResource,
-		NewScalewayClusterResource,
-		NewUpCloudClusterResource,
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// scopeIdentifier resolves an organisation or project override from the
+// configuration, falling back to its environment variable. It reports false
+// when the configured value is not known yet: the caller must then refuse to
+// send requests, because leaving the header off silently scopes them to a
+// different organisation or project. The platform accepts only IDs here, so a
+// slug is rejected at configure time instead of failing every request.
+func scopeIdentifier(configured types.String, environmentVariable, attributeName string, diagnostics *diag.Diagnostics) (string, bool) {
+	if configured.IsUnknown() {
+		return "", false
 	}
+	value := strings.TrimSpace(os.Getenv(environmentVariable))
+	if !configured.IsNull() {
+		value = strings.TrimSpace(configured.ValueString())
+	}
+	if value != "" && !uuidPattern.MatchString(value) {
+		diagnostics.AddAttributeError(path.Root(attributeName), "Invalid "+attributeName,
+			fmt.Sprintf("%q is not an ID. Set the %s UUID (`ankra org list -o json`), not a name or slug.", value, strings.TrimSuffix(attributeName, "_id")))
+	}
+	return value, true
+}
+
+func (providerInstance *ankraProvider) Resources(_ context.Context) []func() resource.Resource {
+	return concatenate(
+		clusterResources(),
+		credentialResources(),
+		configurationResources(),
+		clusterLaneResources(),
+		clusterSettingResources(),
+		alertAndDNSResources(),
+		organisationResources(),
+		applicationResources(),
+		catalogueAndStorageResources(),
+		platformServiceResources(),
+	)
 }
 
 func (providerInstance *ankraProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{
-		NewClustersDataSource,
+	return concatenate(
+		clusterDataSources(),
+		credentialDataSources(),
+		configurationDataSources(),
+		clusterLaneDataSources(),
+		clusterSettingDataSources(),
+		alertAndDNSDataSources(),
+		organisationDataSources(),
+		applicationDataSources(),
+		catalogueAndStorageDataSources(),
+		platformServiceDataSources(),
+	)
+}
+
+// concatenate joins the per-domain factory lists. Each domain registers its
+// resources and data sources in its own register_<domain>.go file, so domains
+// can be added side by side without touching this file.
+func concatenate[Factory any](groups ...[]Factory) []Factory {
+	var joined []Factory
+	for _, group := range groups {
+		joined = append(joined, group...)
 	}
+	return joined
 }

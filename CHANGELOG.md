@@ -1,3 +1,13 @@
+## 0.3.0 (Unreleased)
+
+FEATURES:
+
+* provider: New `organisation_id` argument (or `ANKRA_ORGANISATION_ID`) acts in an organisation other than the one the token is bound to, the same override as the CLI's `--org` flag. It takes the organisation's ID; a name or slug is rejected when the provider is configured.
+* provider: New `project_id` argument (or `ANKRA_PROJECT_ID`) for organisations that use projects. Set it: without it the platform scopes requests to the project the token's user last selected in the portal, so a project switch there would change what Terraform sees.
+* provider: When `organisation_id` or `project_id` is only known after apply, the provider sends no request instead of acting in the token's default organisation or project.
+* **New Resource:** `ankra_organisation_variable` - an organisation variable, including secret variables (`is_secret`). Removing `description` from the configuration clears it on the platform. Reserved platform names and names containing `/` are refused at plan time. If the name later resolves to a different variable (for example an organisation-wide one after the project's own was deleted), Terraform recreates its own instead of adopting the other one.
+* **New Data Source:** `ankra_organisation_variables` - the organisation's variables; secret values are null.
+
 ## 0.2.1 (2026-10-01)
 
 BUG FIXES:
