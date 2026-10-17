@@ -15,7 +15,7 @@ Lists the organisation's service tokens, revoked ones included, ordered by servi
 ```terraform
 data "ankra_service_tokens" "all" {}
 
-# Service accounts holding no role act with read-only access.
+# Service accounts whose role was removed.
 output "accounts_without_role" {
   value = distinct([for token in data.ankra_service_tokens.all.tokens : token.account_name if token.role_slug == ""])
 }
@@ -45,5 +45,5 @@ Read-Only:
 - `project_name` (String) Name of the pinned project.
 - `revoked` (Boolean) Whether the token is revoked.
 - `revoked_at` (String) When the token was revoked; null while it is live.
-- `role_slug` (String) Role the service account holds; empty when it holds none and acts with read-only access.
+- `role_slug` (String) Role the service account holds; empty when the account holds no role.
 - `scopes` (List of String) Scopes the token is restricted to; empty for the account's full authority.

@@ -72,10 +72,11 @@ func TestAccServiceTokensDataSourceForbidden(t *testing.T) {
 	})
 }
 
-// TestAccServiceTokenAccountWithoutRole pins the stand-down decision: an
-// account whose role assignments were removed reads back with an empty role,
-// the plan shows it, and the apply re-mints the token on the same account,
-// which grants the configured role again.
+// TestAccServiceTokenAccountWithoutRole pins that a role removed outside
+// Terraform is never given back on its own: the plan shows the drift with a
+// warning, apply fails without minting, and only an explicit replacement
+// (taint here, `-replace` in practice) mints a new token, which grants the
+// role.
 func TestAccServiceTokenAccountWithoutRole(t *testing.T) {
 	fake := newTokenFake(t)
 	config := fake.providerBlock() + `
@@ -85,6 +86,17 @@ resource "ankra_service_token" "ci" {
 }
 `
 	var firstID string
+	mintsBefore := 0
+	leftAlone := func() {
+		if len(fake.createBodies) != mintsBefore {
+			t.Errorf("a token was minted for an account whose role was removed: %d mints", len(fake.createBodies)-mintsBefore)
+		}
+		for _, row := range fake.service {
+			if row["role_slug"] != "" || row["id"] != firstID {
+				t.Errorf("the role was given back or the token replaced without being asked: %v", row)
+			}
+		}
+	}
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
@@ -100,33 +112,35 @@ resource "ankra_service_token" "ci" {
 					for _, row := range fake.service {
 						row["role_slug"] = ""
 					}
+					mintsBefore = len(fake.createBodies)
 				},
-				Config: config,
-				ConfigPlanChecks: resource.ConfigPlanChecks{
-					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("ankra_service_token.ci", plancheck.ResourceActionUpdate)},
-				},
+				Config:      config,
+				ExpectError: regexp.MustCompile(`(?s)Service account no longer holds its role.*-replace`),
+			},
+			{
+				PreConfig:          leftAlone,
+				Config:             config,
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				PreConfig: leftAlone,
+				Config:    config,
+				Taint:     []string{"ankra_service_token.ci"},
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("ankra_service_token.ci", "role_slug", "member"),
 					func(state *terraform.State) error {
 						if state.RootModule().Resources["ankra_service_token.ci"].Primary.ID == firstID {
-							return fmt.Errorf("the token was not re-minted")
-						}
-						if len(fake.service) != 1 || len(fake.standDowns) != 0 {
-							return fmt.Errorf("re-mint left %v tokens or stood the account down (%v)", fake.service, fake.standDowns)
+							return fmt.Errorf("the explicit replacement did not mint a new token")
 						}
 						for _, row := range fake.service {
 							if row["role_slug"] != "member" {
-								return fmt.Errorf("the account did not get its role back: %v", row["role_slug"])
+								return fmt.Errorf("the replacement did not grant the role: %v", row["role_slug"])
 							}
 						}
 						return nil
 					},
 				),
-			},
-			{
-				Config:             config,
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: false,
 			},
 		},
 	})

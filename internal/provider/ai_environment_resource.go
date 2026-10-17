@@ -146,7 +146,8 @@ func (environment *aiEnvironmentResource) Schema(_ context.Context, _ resource.S
 			"demo_cert_issuer_name":   aiEnvironmentString("cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`. Stored lowercased."),
 			"demo_ttl_role_caps": schema.SingleNestedAttribute{
 				MarkdownDescription: "Longest demo lifetime, in hours (1 to 720), each role tier may ask for. Owner shares the `admin` tier; viewer and custom " +
-					"roles share the `member` tier. Only the tiers you set are managed: an unset tier keeps the organisation's value. " +
+					"roles share the `member` tier. Only the tiers you set are managed: an unset tier keeps the organisation's value, and removing a tier from configuration " +
+					"stops managing it without resetting it (destroy resets only the tiers set at the last apply). " +
 					"Platform defaults: admin 720, operator 168, member 72.",
 				Optional:      true,
 				Computed:      true,

@@ -261,7 +261,7 @@ func (tokensDataSource *serviceTokensDataSource) Schema(_ context.Context, _ dat
 						"account_id":   computedStringAttribute("Identifier of the service account the token belongs to."),
 						"account_name": computedStringAttribute("Name of the service account."),
 						"label":        computedStringAttribute("Label of the token within its account."),
-						"role_slug":    computedStringAttribute("Role the service account holds; empty when it holds none and acts with read-only access."),
+						"role_slug":    computedStringAttribute("Role the service account holds; empty when the account holds no role."),
 						"expires_at":   computedStringAttribute("When the token expires (UTC, as the platform renders it)."),
 						"created_at":   computedStringAttribute("When the token was created."),
 						"revoked_at":   computedStringAttribute("When the token was revoked; null while it is live."),
