@@ -51,7 +51,10 @@ func (domainResource *organisationDomainResource) Schema(_ context.Context, _ re
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The organisation's own Ankra root domain, under which cluster zones and the organisation's DNS zone are created. " +
 			"A singleton: declare it once per organisation. Destroying it restores the platform default (`dns_root_domain_default`). " +
-			"The platform refuses a change while cluster zones or DNS records still hang off the current domain. The counterpart of `ankra org domain set`.",
+			"The platform refuses a change, including the destroy, while cluster zones or DNS records still hang off the current domain: give " +
+			"`ankra_organisation_dns_record` and `ankra_organisation_custom_dns_zone` resources a `depends_on` on this resource so Terraform removes them first. " +
+			"Creating it takes over a domain already set in the portal, and destroying it then restores the default rather than that earlier domain. " +
+			"The counterpart of `ankra org domain set`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Fixed identifier of the singleton.",

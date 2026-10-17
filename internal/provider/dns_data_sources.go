@@ -201,7 +201,7 @@ func (zonesDataSource *organisationCustomDNSZonesDataSource) Schema(_ context.Co
 				"id":              alertDNSComputedString("The zone name."),
 				"zone":            alertDNSComputedString("Zone name."),
 				"credential_name": alertDNSComputedString("Credential that publishes into the zone."),
-				"provider_kind":   alertDNSComputedString("Credential family: `webhook`, `cloudflare` or `avura`."),
+				"credential_provider":   alertDNSComputedString("Credential family: `webhook`, `cloudflare` or `avura`."),
 				"policy":          alertDNSComputedString("external-dns policy the clusters run for the zone."),
 			}),
 		},

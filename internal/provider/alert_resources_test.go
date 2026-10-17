@@ -310,8 +310,9 @@ resource "ankra_alert_destination" "first" {
 }
 
 resource "ankra_alert_destination" "second" {
-  name = "second"
-  url  = "https://hooks.example.com/2"
+  name    = "second"
+  url     = "https://hooks.example.com/2"
+  enabled = false
 }
 
 resource "ankra_alert_route" "critical" {
@@ -363,6 +364,13 @@ resource "ankra_alert_route" "critical" {
 							if row["name"] == "pager" {
 								if row["description"] != "" || row["url"] != "https://events.example.com/hook?token=two" {
 									return fmt.Errorf("pager not updated as configured: %v", row)
+								}
+							}
+						}
+						for _, update := range fake.destinationUpdates {
+							if alertFakeString(update["name"]) == "second" {
+								if _, sentURL := update["url"]; sentURL {
+									return fmt.Errorf("an update that did not change the URL re-sent it, which drops a migrated destination's Vault path")
 								}
 							}
 						}

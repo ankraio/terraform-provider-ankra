@@ -121,6 +121,10 @@ func (destinationResource *alertDestinationResource) ValidateConfig(ctx context.
 		response.Diagnostics.AddAttributeError(path.Root("url"), "Invalid alert destination",
 			"Set exactly one of url (a webhook destination) and channel_id (a channel the Ankra bot posts to).")
 	}
+	if hasChannel && configuration.IntegrationType.ValueString() == "teams" && configuration.TeamsTenantID.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("teams_tenant_id"), "Invalid alert destination",
+			"A Teams channel destination needs teams_tenant_id.")
+	}
 	if !hasChannel && (!configuration.ChannelName.IsNull() || !configuration.TeamsTenantID.IsNull()) {
 		response.Diagnostics.AddAttributeError(path.Root("channel_name"), "Invalid alert destination",
 			"channel_name and teams_tenant_id only apply to a channel destination (channel_id).")
@@ -207,13 +211,14 @@ func (destinationResource *alertDestinationResource) Update(ctx context.Context,
 	if apiClient == nil {
 		return
 	}
-	var plan alertDestinationModel
+	var plan, state alertDestinationModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
-	if err := apiClient.UpdateAlertDestination(ctx, plan.ID.ValueString(), alertDestinationUpdateFromPlan(plan)); err != nil {
+	if err := apiClient.UpdateAlertDestination(ctx, plan.ID.ValueString(), alertDestinationUpdateFromPlan(plan, state)); err != nil {
 		response.Diagnostics.AddError("Unable to update alert destination", err.Error())
 		return
 	}
@@ -223,8 +228,11 @@ func (destinationResource *alertDestinationResource) Update(ctx context.Context,
 // alertDestinationUpdateFromPlan states every member, because the platform
 // keeps an absent or null one: a removed optional value is sent as an empty
 // string, which clears it, and an empty channel_id moves a channel
-// destination back to its URL.
-func alertDestinationUpdateFromPlan(plan alertDestinationModel) client.AlertDestinationUpdate {
+// destination back to its URL. The URL is the exception: it is sent only when
+// it changed, because the platform treats any URL it receives as new, drops
+// the Vault path a migrated destination keeps its URL under, and stores the
+// URL in plain text again.
+func alertDestinationUpdateFromPlan(plan, state alertDestinationModel) client.AlertDestinationUpdate {
 	empty := ""
 	clearedWhenNull := func(value types.String) *string {
 		if pointer := stringPointer(value); pointer != nil {
@@ -232,9 +240,13 @@ func alertDestinationUpdateFromPlan(plan alertDestinationModel) client.AlertDest
 		}
 		return &empty
 	}
+	var changedURL *string
+	if !plan.URL.Equal(state.URL) {
+		changedURL = stringPointer(plan.URL)
+	}
 	return client.AlertDestinationUpdate{
 		Name:          stringPointer(plan.Name),
-		URL:           stringPointer(plan.URL),
+		URL:           changedURL,
 		ChannelID:     clearedWhenNull(plan.ChannelID),
 		ChannelName:   stringPointer(plan.ChannelName),
 		TeamsTenantID: clearedWhenNull(plan.TeamsTenantID),

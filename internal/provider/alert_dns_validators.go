@@ -88,3 +88,49 @@ func (bounds alertDNSRangeValidator) ValidateInt64(ctx context.Context, request 
 			fmt.Sprintf("%d is not accepted: %s.", value, bounds.Description(ctx)))
 	}
 }
+
+// alertDNSTrimmedValidator refuses a value with leading or trailing
+// whitespace, which the platform trims: the stored value would differ from
+// configuration and Terraform would report an inconsistent result.
+type alertDNSTrimmedValidator struct{}
+
+func (alertDNSTrimmedValidator) Description(_ context.Context) string {
+	return "value must not start or end with whitespace"
+}
+
+func (trimmed alertDNSTrimmedValidator) MarkdownDescription(ctx context.Context) string {
+	return trimmed.Description(ctx)
+}
+
+func (trimmed alertDNSTrimmedValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	if value != strings.TrimSpace(value) {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid value",
+			"The platform trims surrounding whitespace, so "+trimmed.Description(ctx)+". With a heredoc, use trimspace() or the <<- form without a trailing newline.")
+	}
+}
+
+// alertDNSNonEmptyValidator refuses an empty string the platform would
+// replace with a value of its own.
+type alertDNSNonEmptyValidator struct{}
+
+func (alertDNSNonEmptyValidator) Description(_ context.Context) string {
+	return "value must not be empty"
+}
+
+func (nonEmpty alertDNSNonEmptyValidator) MarkdownDescription(ctx context.Context) string {
+	return nonEmpty.Description(ctx)
+}
+
+func (nonEmpty alertDNSNonEmptyValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	if request.ConfigValue.ValueString() == "" {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid value",
+			"An empty value is replaced by the platform's own, so "+nonEmpty.Description(ctx)+"; leave the attribute unset for the default.")
+	}
+}

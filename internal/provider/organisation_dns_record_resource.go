@@ -73,8 +73,9 @@ func (recordResource *organisationDNSRecordResource) Schema(_ context.Context, _
 				Validators:          []validator.String{alertDNSOneOfValidator{allowed: []string{"A", "AAAA", "CNAME", "TXT"}}},
 			},
 			"content": schema.StringAttribute{
-				MarkdownDescription: "What the record points at: an address for `A`/`AAAA`, a hostname for `CNAME`, text for `TXT`.",
+				MarkdownDescription: "What the record points at: an address for `A`/`AAAA`, a hostname for `CNAME`, text for `TXT`. Leading and trailing whitespace is refused, because the platform trims it.",
 				Required:            true,
+				Validators:          []validator.String{alertDNSTrimmedValidator{}},
 			},
 			"ttl": schema.Int64Attribute{
 				MarkdownDescription: "TTL in seconds, 30 to 86400. Unset is Auto.",

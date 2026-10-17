@@ -322,7 +322,7 @@ func (fake *dnsFake) credentialNamed(name string) map[string]any {
 	return nil
 }
 
-func dnsTestConfig(fake *dnsFake, content string, ttl string, comment string, rootDomain string, credentialURL string) string {
+func dnsTestConfig(fake *dnsFake, content string, ttl string, comment string, rootDomain string, credentialURL string, zoneCredential string) string {
 	ttlLine := ""
 	if ttl != "" {
 		ttlLine = "ttl = " + ttl
@@ -351,7 +351,7 @@ resource "ankra_cloudflare_credential" "cloudflare" {
 
 resource "ankra_organisation_custom_dns_zone" "example" {
   zone            = "example.org"
-  credential_name = ankra_dns_credential.webhook.name
+  credential_name = %[6]s
 }
 
 resource "ankra_organisation_domain" "this" {
@@ -389,14 +389,14 @@ data "ankra_dns_credentials" "all" {
 data "ankra_cloudflare_credentials" "all" {
   depends_on = [ankra_cloudflare_credential.cloudflare]
 }
-`, content, ttlLine, commentLine, rootDomain, credentialURL)
+`, content, ttlLine, commentLine, rootDomain, credentialURL, zoneCredential)
 }
 
 func TestAccOrganisationDNSLifecycle(t *testing.T) {
 	fake := newDNSFake(t)
-	initial := dnsTestConfig(fake, "a.example.net", "300", "", "apps.example.com", "https://dns.example.com/hook?token=one")
-	changed := dnsTestConfig(fake, "b.example.net", "", "edge", "apps2.example.com", "https://dns.example.com/hook?token=one")
-	rotated := dnsTestConfig(fake, "b.example.net", "", "edge", "apps2.example.com", "https://dns.example.com/hook?token=two")
+	initial := dnsTestConfig(fake, "a.example.net", "300", "", "apps.example.com", "https://dns.example.com/hook?token=one", "ankra_dns_credential.webhook.name")
+	changed := dnsTestConfig(fake, "b.example.net", "", "edge", "apps2.example.com", "https://dns.example.com/hook?token=one", "ankra_dns_credential.webhook.name")
+	rotated := dnsTestConfig(fake, "b.example.net", "", "edge", "apps2.example.com", "https://dns.example.com/hook?token=two", "ankra_cloudflare_credential.cloudflare.name")
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -407,7 +407,7 @@ func TestAccOrganisationDNSLifecycle(t *testing.T) {
 					resource.TestCheckResourceAttr("ankra_organisation_dns_record.logs", "fqdn", "logs."+dnsFakeZone),
 					resource.TestCheckResourceAttr("ankra_organisation_dns_record.logs", "ttl", "300"),
 					resource.TestCheckResourceAttr("ankra_organisation_dns_record.logs", "state", "pending"),
-					resource.TestCheckResourceAttr("ankra_organisation_custom_dns_zone.example", "provider_kind", "webhook"),
+					resource.TestCheckResourceAttr("ankra_organisation_custom_dns_zone.example", "credential_provider", "webhook"),
 					resource.TestCheckResourceAttr("ankra_organisation_custom_dns_zone.example", "policy", "upsert-only"),
 					resource.TestCheckResourceAttr("ankra_organisation_domain.this", "dns_root_domain_default", "ankra.cc"),
 					resource.TestCheckResourceAttr("ankra_cloudflare_credential.cloudflare", "account_id", "account-resolved"),
@@ -499,21 +499,24 @@ func TestAccOrganisationDNSLifecycle(t *testing.T) {
 				ImportState:       true,
 				ImportStateIdFunc: dnsCloudflareRecordImportID,
 				ImportStateVerify: true,
-				// The import reads the qualified name; configuration holds the label.
-				ImportStateVerifyIgnore: []string{"name"},
 			},
 			{
-				// A new webhook URL replaces the credential: the platform cannot change it.
+				// A new webhook URL replaces the credential: the platform cannot change
+				// it. The zone moves to the Cloudflare credential, so its family is
+				// re-derived rather than the old one asserted.
 				Config: rotated,
-				Check: func(_ *terraform.State) error {
-					if len(fake.credentialDeletes) != 1 {
-						return fmt.Errorf("rotating the webhook URL deleted %d credentials, want 1", len(fake.credentialDeletes))
-					}
-					if secret := fake.credentialNamed("webhook")["secret"]; secret != "https://dns.example.com/hook?token=two" {
-						return fmt.Errorf("webhook secret = %v", secret)
-					}
-					return nil
-				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_organisation_custom_dns_zone.example", "credential_provider", "cloudflare"),
+					func(_ *terraform.State) error {
+						if len(fake.credentialDeletes) != 1 {
+							return fmt.Errorf("rotating the webhook URL deleted %d credentials, want 1", len(fake.credentialDeletes))
+						}
+						if secret := fake.credentialNamed("webhook")["secret"]; secret != "https://dns.example.com/hook?token=two" {
+							return fmt.Errorf("webhook secret = %v", secret)
+						}
+						return nil
+					},
+				),
 			},
 			{
 				// Deleted outside Terraform: the next plan recreates them. A record
@@ -607,4 +610,90 @@ resource "ankra_cloudflare_dns_record" "www" {
 func dnsFakeText(value any) string {
 	text, _ := value.(string)
 	return text
+}
+
+// TestAccCloudflareDNSRecordImportPlansNothing imports a record Terraform did
+// not create and checks configuration naming it by its bare label plans no
+// change: the import stores the label, not the full name.
+func TestAccCloudflareDNSRecordImportPlansNothing(t *testing.T) {
+	fake := newDNSFake(t)
+	fake.credentials["cloudflare-id"] = map[string]any{"id": "cloudflare-id", "name": "cloudflare", "provider": "cloudflare", "account_id": "account-resolved"}
+	fake.cloudflareRecords["record-1"] = map[string]any{
+		"id": "record-1", "zone_id": "zone-1", "zone_name": "example.com", "name": "www.example.com", "record_type": "MX",
+		"content": "mail.example.net", "ttl": float64(1), "is_ttl_automatic": true, "proxied": false, "proxiable": false,
+		"priority": float64(10), "comment": "Managed by Ankra", "tags": []string{}, "managed_by": "ankra",
+	}
+	configuration := fake.providerBlock() + `
+resource "ankra_cloudflare_dns_record" "www" {
+  credential_name = "cloudflare"
+  zone_id         = "zone-1"
+  name            = "www"
+  record_type     = "MX"
+  content         = "mail.example.net"
+  priority        = 10
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             configuration,
+				ResourceName:       "ankra_cloudflare_dns_record.www",
+				ImportState:        true,
+				ImportStateId:      "cloudflare/zone-1/record-1",
+				ImportStatePersist: true,
+			},
+			{
+				Config:   configuration,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+func TestAccCloudflareDNSRecordRejectsMXWithoutPriorityAndEmptyComment(t *testing.T) {
+	fake := newRouteFake(t)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_cloudflare_dns_record" "mail" {
+  zone_id     = "zone-1"
+  name        = "@"
+  record_type = "MX"
+  content     = "mail.example.net"
+}
+`,
+				ExpectError: regexp.MustCompile("An MX record needs a priority"),
+			},
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_cloudflare_dns_record" "txt" {
+  zone_id     = "zone-1"
+  name        = "note"
+  record_type = "TXT"
+  content     = "hello"
+  comment     = ""
+}
+`,
+				ExpectError: regexp.MustCompile("leave the attribute unset"),
+			},
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_organisation_dns_record" "txt" {
+  name        = "note"
+  record_type = "TXT"
+  content     = <<EOT
+hello
+EOT
+}
+`,
+				ExpectError: regexp.MustCompile("trims surrounding whitespace"),
+			},
+		},
+	})
+	if served := fake.served(); len(served) != 0 {
+		t.Errorf("an invalid configuration reached the platform: %v", served)
+	}
 }

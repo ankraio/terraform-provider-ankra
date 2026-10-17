@@ -84,7 +84,7 @@ func (recordResource *cloudflareDNSRecordResource) Schema(_ context.Context, _ r
 				PlanModifiers:       replaced,
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Record name: a label such as `www` (qualified with the zone) or the full name. Changing it replaces the record.",
+				MarkdownDescription: "Record name: a label such as `www` (qualified with the zone) or the full name. An import stores the label, so name an imported record by its label. Changing it replaces the record.",
 				Required:            true,
 				PlanModifiers:       replaced,
 			},
@@ -95,8 +95,9 @@ func (recordResource *cloudflareDNSRecordResource) Schema(_ context.Context, _ r
 				Validators:          []validator.String{alertDNSOneOfValidator{allowed: []string{"A", "AAAA", "CNAME", "TXT", "MX", "NS"}}},
 			},
 			"content": schema.StringAttribute{
-				MarkdownDescription: "What the record points at.",
+				MarkdownDescription: "What the record points at, without leading or trailing whitespace (the platform trims it).",
 				Required:            true,
+				Validators:          []validator.String{alertDNSTrimmedValidator{}},
 			},
 			"ttl": schema.Int64Attribute{
 				MarkdownDescription: "TTL in seconds, 60 to 86400, or `1` for automatic. Defaults to `1`; a proxied record is always automatic.",
@@ -111,14 +112,15 @@ func (recordResource *cloudflareDNSRecordResource) Schema(_ context.Context, _ r
 				Default:             booldefault.StaticBool(false),
 			},
 			"priority": schema.Int64Attribute{
-				MarkdownDescription: "Priority of an `MX` record. Once set it can be changed but not removed.",
+				MarkdownDescription: "Priority of an `MX` record; required for `MX` and refused for other types.",
 				Optional:            true,
 			},
 			"comment": schema.StringAttribute{
-				MarkdownDescription: "Comment stored on the record. Defaults to `" + cloudflareManagedComment + "`, which the platform stamps on a record written without one.",
+				MarkdownDescription: "Comment stored on the record. Defaults to `" + cloudflareManagedComment + "`, which the platform stamps on a record written without one; an empty comment is therefore refused.",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString(cloudflareManagedComment),
+				Validators:          []validator.String{alertDNSNonEmptyValidator{}},
 			},
 			"fqdn": schema.StringAttribute{
 				MarkdownDescription: "Full name of the record.",
@@ -161,9 +163,16 @@ func (recordResource *cloudflareDNSRecordResource) ValidateConfig(ctx context.Co
 		response.Diagnostics.AddAttributeError(path.Root("proxied"), "Invalid Cloudflare record",
 			"Only A, AAAA and CNAME records can be proxied.")
 	}
-	if !configuration.Priority.IsNull() && !configuration.RecordType.IsUnknown() && recordType != "MX" {
-		response.Diagnostics.AddAttributeError(path.Root("priority"), "Invalid Cloudflare record",
-			"priority only applies to MX records.")
+	if !configuration.RecordType.IsUnknown() {
+		if !configuration.Priority.IsNull() && recordType != "MX" {
+			response.Diagnostics.AddAttributeError(path.Root("priority"), "Invalid Cloudflare record",
+				"priority only applies to MX records.")
+		}
+		// The platform cannot clear a priority, so an MX record must always state one.
+		if configuration.Priority.IsNull() && recordType == "MX" {
+			response.Diagnostics.AddAttributeError(path.Root("priority"), "Invalid Cloudflare record",
+				"An MX record needs a priority.")
+		}
 	}
 }
 
@@ -216,7 +225,7 @@ func (recordResource *cloudflareDNSRecordResource) Read(ctx context.Context, req
 		return
 	}
 	if state.Name.IsNull() {
-		state.Name = types.StringValue(record.Name)
+		state.Name = types.StringValue(cloudflareRecordLabel(record.Name, record.ZoneName))
 	}
 	if state.RecordType.IsNull() {
 		state.RecordType = types.StringValue(record.RecordType)
@@ -309,4 +318,13 @@ func cloudflareDNSRecordApply(record *client.CloudflareRecord, model *cloudflare
 	model.FQDN = types.StringValue(record.Name)
 	model.ZoneName = types.StringValue(record.ZoneName)
 	model.ManagedBy = types.StringValue(record.ManagedBy)
+}
+
+// cloudflareRecordLabel is the label of a record name inside its zone, or the
+// name itself for the zone apex or a name outside the zone.
+func cloudflareRecordLabel(fqdn, zoneName string) string {
+	if zoneName != "" && strings.HasSuffix(fqdn, "."+zoneName) {
+		return strings.TrimSuffix(fqdn, "."+zoneName)
+	}
+	return fqdn
 }

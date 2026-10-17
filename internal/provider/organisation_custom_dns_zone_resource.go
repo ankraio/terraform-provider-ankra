@@ -21,6 +21,7 @@ var (
 	_ resource.Resource                = (*organisationCustomDNSZoneResource)(nil)
 	_ resource.ResourceWithConfigure   = (*organisationCustomDNSZoneResource)(nil)
 	_ resource.ResourceWithImportState = (*organisationCustomDNSZoneResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*organisationCustomDNSZoneResource)(nil)
 )
 
 type organisationCustomDNSZoneResource struct {
@@ -28,11 +29,11 @@ type organisationCustomDNSZoneResource struct {
 }
 
 type organisationCustomDNSZoneModel struct {
-	ID             types.String `tfsdk:"id"`
-	Zone           types.String `tfsdk:"zone"`
-	CredentialName types.String `tfsdk:"credential_name"`
-	Provider       types.String `tfsdk:"provider_kind"`
-	Policy         types.String `tfsdk:"policy"`
+	ID                 types.String `tfsdk:"id"`
+	Zone               types.String `tfsdk:"zone"`
+	CredentialName     types.String `tfsdk:"credential_name"`
+	CredentialProvider types.String `tfsdk:"credential_provider"`
+	Policy             types.String `tfsdk:"policy"`
 }
 
 // NewOrganisationCustomDNSZoneResource returns the
@@ -68,9 +69,9 @@ func (zoneResource *organisationCustomDNSZoneResource) Schema(_ context.Context,
 				MarkdownDescription: "Name of the organisation credential that publishes into the zone. Changing it rebinds the zone in place.",
 				Required:            true,
 			},
-			"provider_kind": schema.StringAttribute{
+			"credential_provider": schema.StringAttribute{
 				MarkdownDescription: "Credential family: `webhook`, `cloudflare` or `avura`. The platform derives it from the credential; " +
-					"set it to assert the family, which the platform checks. Sent as `provider`.",
+					"set it to assert the family, which the platform checks. Sent as `provider` only when set here. Rebinding to another credential re-derives it.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
@@ -85,11 +86,35 @@ func (zoneResource *organisationCustomDNSZoneResource) Schema(_ context.Context,
 	}
 }
 
-func (zoneResource *organisationCustomDNSZoneResource) declare(ctx context.Context, apiClient *client.Client, plan *organisationCustomDNSZoneModel) error {
+// ModifyPlan marks the derived credential family and policy unknown when the
+// zone is rebound to another credential, which may be of another family:
+// carrying the old values forward would assert a family the new credential
+// does not have.
+func (zoneResource *organisationCustomDNSZoneResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var state, plan, configuration organisationCustomDNSZoneModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.Config.Get(ctx, &configuration)...)
+	if response.Diagnostics.HasError() || plan.CredentialName.Equal(state.CredentialName) {
+		return
+	}
+	if configuration.CredentialProvider.IsNull() {
+		plan.CredentialProvider = types.StringUnknown()
+	}
+	plan.Policy = types.StringUnknown()
+	response.Diagnostics.Append(response.Plan.Set(ctx, &plan)...)
+}
+
+// declare sends the declaration. provider is sent only when configuration
+// sets it: otherwise the platform derives the family from the credential.
+func (zoneResource *organisationCustomDNSZoneResource) declare(ctx context.Context, apiClient *client.Client, configuredProvider types.String, plan *organisationCustomDNSZoneModel) error {
 	declared, err := apiClient.DeclareOrganisationCustomDNSZone(ctx, client.OrganisationCustomDNSZoneDeclaration{
 		Zone:           plan.Zone.ValueString(),
 		CredentialName: plan.CredentialName.ValueString(),
-		Provider:       stringPointer(plan.Provider),
+		Provider:       stringPointer(configuredProvider),
 	})
 	if err != nil {
 		return err
@@ -105,10 +130,12 @@ func (zoneResource *organisationCustomDNSZoneResource) Create(ctx context.Contex
 	}
 	var plan organisationCustomDNSZoneModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	var configuredProvider types.String
+	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("credential_provider"), &configuredProvider)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := zoneResource.declare(ctx, apiClient, &plan); err != nil {
+	if err := zoneResource.declare(ctx, apiClient, configuredProvider, &plan); err != nil {
 		response.Diagnostics.AddError("Unable to declare organisation custom DNS zone", err.Error())
 		return
 	}
@@ -145,10 +172,12 @@ func (zoneResource *organisationCustomDNSZoneResource) Update(ctx context.Contex
 	}
 	var plan organisationCustomDNSZoneModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	var configuredProvider types.String
+	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("credential_provider"), &configuredProvider)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := zoneResource.declare(ctx, apiClient, &plan); err != nil {
+	if err := zoneResource.declare(ctx, apiClient, configuredProvider, &plan); err != nil {
 		response.Diagnostics.AddError("Unable to rebind organisation custom DNS zone", err.Error())
 		return
 	}
@@ -180,6 +209,6 @@ func organisationCustomDNSZoneApply(zone *client.OrganisationCustomDNSZone, mode
 	model.ID = types.StringValue(zone.Zone)
 	model.Zone = types.StringValue(zone.Zone)
 	model.CredentialName = types.StringValue(zone.CredentialName)
-	model.Provider = optionalString(alertDNSStringValue(zone.Provider))
+	model.CredentialProvider = optionalString(alertDNSStringValue(zone.Provider))
 	model.Policy = optionalString(alertDNSStringValue(zone.Policy))
 }
