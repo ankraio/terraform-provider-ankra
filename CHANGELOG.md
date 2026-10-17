@@ -6,6 +6,12 @@ FEATURES:
 * Cluster resources (`ankra_cluster`, every cloud lane, `ankra_managed_cluster`) gain a computed `project_id`: the project the cluster was found in, which is the provider's project.
 * data-source/ankra_clusters: New `project_id` argument lists another project's clusters, by ID or slug; each listed cluster carries its `project_id`.
 * resource/ankra_helm_registry, resource/ankra_helm_registry_credential: New `project_id` argument creates the registry or credential in another project, by ID or slug, and makes every request for it there. The platform does not report it back, so it is kept as configured. Import one from another project as `<project>/<name>`. Writing the same project as its slug or its ID is an in-place change; another project replaces it. Organisation-wide registries and credentials cannot be created from Terraform.
+* resource/ankra_alert_route: New `project_id` and `organisation_wide` arguments choose the project a route is created in. `organisation_wide = true` creates a route that matches every project's notifications, also from a provider scoped to one project. A `project_id` other than the provider's is refused at apply, because the provider could not read that route back. The platform cannot move a route, so changing either replaces it; after `terraform import`, the first apply adopts the configured values in place.
+* **New Data Source:** `ankra_slack_channels` - the channels the Ankra bot can post to in the connected Slack workspace, for Slack alert destinations.
+* **New Data Source:** `ankra_teams_channels` - the channels of every Microsoft Teams team the Ankra bot is installed in, with their tenant, for Teams alert destinations.
+* **New Data Source:** `ankra_cluster_dns_zones` - every cluster's generated DNS domain and its reconciliation state.
+* **New Data Source:** `ankra_cloudflare_dns_records` - the records in a Cloudflare zone, filtered by `name`, `record_type` or `search`. `is_truncated` (and a warning) reports a zone larger than the platform's listing bound.
+* **New Data Source:** `ankra_alert_ingest_credentials` - the organisation's alert ingest credentials and the webhook path each accepts. Tokens are never listed.
 
 ## 0.3.0 (2026-10-17)
 

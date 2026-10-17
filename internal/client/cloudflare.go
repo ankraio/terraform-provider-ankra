@@ -150,6 +150,42 @@ type cloudflareRecordListing struct {
 	Items []CloudflareRecord `json:"items"`
 }
 
+// CloudflareRecordFilter narrows a zone's record listing; an empty member
+// does not filter.
+type CloudflareRecordFilter struct {
+	Name       string
+	RecordType string
+	Search     string
+}
+
+// CloudflareRecordListing is a zone's record listing. The platform walks
+// Cloudflare's pages up to its own bound; IsTruncated reports that it
+// stopped before the end.
+type CloudflareRecordListing struct {
+	Items       []CloudflareRecord `json:"items"`
+	IsTruncated bool               `json:"is_truncated"`
+}
+
+// ListCloudflareRecords lists the records in a zone, narrowed by filter. A
+// zone the credential cannot reach is a NotFound APIError.
+func (client *Client) ListCloudflareRecords(ctx context.Context, credentialName, zoneID string, filter CloudflareRecordFilter) (*CloudflareRecordListing, error) {
+	query := url.Values{}
+	if filter.Name != "" {
+		query.Set("name", filter.Name)
+	}
+	if filter.RecordType != "" {
+		query.Set("record_type", filter.RecordType)
+	}
+	if filter.Search != "" {
+		query.Set("search", filter.Search)
+	}
+	var listing CloudflareRecordListing
+	if err := client.doRequest(ctx, http.MethodGet, cloudflarePath(cloudflareRecordsPath(zoneID), credentialName, query), nil, &listing); err != nil {
+		return nil, err
+	}
+	return &listing, nil
+}
+
 func cloudflarePath(path string, credentialName string, query url.Values) string {
 	if query == nil {
 		query = url.Values{}

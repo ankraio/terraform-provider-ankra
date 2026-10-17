@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -48,6 +49,55 @@ type alertRouteModel struct {
 	StopOnMatch      types.Bool   `tfsdk:"stop_on_match"`
 	Mode             types.String `tfsdk:"mode"`
 	Enabled          types.Bool   `tfsdk:"enabled"`
+}
+
+// alertRouteResourceModel is the resource's model: the route as the platform
+// returns it, plus the project the create stamps, which the platform never
+// returns.
+type alertRouteResourceModel struct {
+	alertRouteModel
+	ProjectID        types.String `tfsdk:"project_id"`
+	OrganisationWide types.Bool   `tfsdk:"organisation_wide"`
+}
+
+// alertRouteProjectPrivateKey marks, in private state, a route whose
+// project_id and organisation_wide Terraform chose itself: at create, or on
+// the first apply after an import adopted the configured values.
+const alertRouteProjectPrivateKey = "alert_route_project_recorded"
+
+// alertRouteProjectRecorded reports whether the private state marks the
+// route's project as chosen by Terraform.
+func alertRouteProjectRecorded(ctx context.Context, private privateStateReader) bool {
+	if private == nil {
+		return false
+	}
+	recorded, diagnostics := private.GetKey(ctx, alertRouteProjectPrivateKey)
+	return !diagnostics.HasError() && len(recorded) > 0
+}
+
+// alertRouteProjectReplace replaces the route when its project changes,
+// because the platform cannot move a route. After an import the project is
+// unknowable, so the first apply adopts the configuration in place instead.
+func alertRouteProjectReplace() planmodifier.String {
+	return stringplanmodifier.RequiresReplaceIf(
+		func(ctx context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+			response.RequiresReplace = alertRouteProjectRecorded(ctx, request.Private)
+		},
+		"Changing the project replaces the route, except on the first apply after an import.",
+		"Changing the project replaces the route, except on the first apply after an import.",
+	)
+}
+
+// alertRouteOrganisationWideReplace is alertRouteProjectReplace for
+// organisation_wide.
+func alertRouteOrganisationWideReplace() planmodifier.Bool {
+	return boolplanmodifier.RequiresReplaceIf(
+		func(ctx context.Context, request planmodifier.BoolRequest, response *boolplanmodifier.RequiresReplaceIfFuncResponse) {
+			response.RequiresReplace = alertRouteProjectRecorded(ctx, request.Private)
+		},
+		"Changing organisation_wide replaces the route, except on the first apply after an import.",
+		"Changing organisation_wide replaces the route, except on the first apply after an import.",
+	)
 }
 
 // NewAlertRouteResource returns the ankra_alert_route resource, the
@@ -140,14 +190,39 @@ func (routeResource *alertRouteResource) Schema(_ context.Context, _ resource.Sc
 				Computed:            true,
 				Default:             booldefault.StaticBool(true),
 			},
+			"project_id": schema.StringAttribute{
+				MarkdownDescription: "Project the route belongs to; it then matches only that project's notifications. Unset places the route in the provider's " +
+					"`project_id`, as the platform does with any create. When the provider sets `project_id`, this must be unset or equal to it, because " +
+					"a route in another project is not visible to the provider. Conflicts with `organisation_wide`. The platform cannot move a route, so " +
+					"changing it replaces the route. The platform does not return it: after `terraform import`, set it to match the route; the first apply " +
+					"adopts the configured value without replacing the route.",
+				Optional:      true,
+				PlanModifiers: []planmodifier.String{alertRouteProjectReplace()},
+			},
+			"organisation_wide": schema.BoolAttribute{
+				MarkdownDescription: "Make the route organisation-wide, so it matches every project's notifications, even when the provider sets `project_id`. " +
+					"Needs alert management rights at organisation scope. Conflicts with `project_id`. Defaults to `false`. Changing it replaces the route, " +
+					"with the same import rule as `project_id`.",
+				Optional:      true,
+				Computed:      true,
+				Default:       booldefault.StaticBool(false),
+				PlanModifiers: []planmodifier.Bool{alertRouteOrganisationWideReplace()},
+			},
 		},
 	}
 }
 
 func (routeResource *alertRouteResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
-	var configuration alertRouteModel
+	var configuration alertRouteResourceModel
 	response.Diagnostics.Append(request.Config.Get(ctx, &configuration)...)
-	if response.Diagnostics.HasError() || configuration.Kinds.IsUnknown() {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if configuration.OrganisationWide.ValueBool() && !configuration.ProjectID.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("organisation_wide"), "Invalid alert route",
+			"organisation_wide and project_id conflict: an organisation-wide route belongs to no project.")
+	}
+	if configuration.Kinds.IsUnknown() {
 		return
 	}
 	if configuration.Kinds.IsNull() {
@@ -183,23 +258,25 @@ func (routeResource *alertRouteResource) Create(ctx context.Context, request res
 	if apiClient == nil {
 		return
 	}
-	var plan alertRouteModel
+	var plan alertRouteResourceModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	body := alertRouteWriteFromPlan(ctx, plan, &response.Diagnostics)
+	project := alertRouteProjectFromPlan(plan, apiClient.ProjectID, &response.Diagnostics)
+	body := alertRouteWriteFromPlan(ctx, plan.alertRouteModel, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
 
-	route, err := apiClient.CreateAlertRoute(ctx, body)
+	route, err := apiClient.CreateAlertRoute(ctx, body, project)
 	if err != nil {
 		response.Diagnostics.AddError("Unable to create alert route", err.Error())
 		return
 	}
-	alertRouteApply(route, &plan)
+	alertRouteApply(route, &plan.alertRouteModel)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(response.Private.SetKey(ctx, alertRouteProjectPrivateKey, []byte("true"))...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
@@ -208,7 +285,7 @@ func (routeResource *alertRouteResource) Read(ctx context.Context, request resou
 	if apiClient == nil {
 		return
 	}
-	var state alertRouteModel
+	var state alertRouteResourceModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
 		return
@@ -222,7 +299,13 @@ func (routeResource *alertRouteResource) Read(ctx context.Context, request resou
 		response.Diagnostics.AddError("Unable to read alert route", err.Error())
 		return
 	}
-	alertRouteApply(route, &state)
+	alertRouteApply(route, &state.alertRouteModel)
+	if state.OrganisationWide.IsNull() {
+		// Imported: the platform does not say whether the route is
+		// organisation-wide, so state takes the default until an apply
+		// adopts the configuration.
+		state.OrganisationWide = types.BoolValue(false)
+	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
@@ -232,12 +315,13 @@ func (routeResource *alertRouteResource) Update(ctx context.Context, request res
 	if apiClient == nil {
 		return
 	}
-	var plan alertRouteModel
+	var plan alertRouteResourceModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	body := alertRouteWriteFromPlan(ctx, plan, &response.Diagnostics)
+	alertRouteProjectFromPlan(plan, apiClient.ProjectID, &response.Diagnostics)
+	body := alertRouteWriteFromPlan(ctx, plan.alertRouteModel, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -247,9 +331,33 @@ func (routeResource *alertRouteResource) Update(ctx context.Context, request res
 		response.Diagnostics.AddError("Unable to update alert route", err.Error())
 		return
 	}
-	alertRouteApply(route, &plan)
+	alertRouteApply(route, &plan.alertRouteModel)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	// The first apply after an import adopts the configured project; from
+	// then on a change to it replaces the route.
+	response.Diagnostics.Append(response.Private.SetKey(ctx, alertRouteProjectPrivateKey, []byte("true"))...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+}
+
+// alertRouteProjectFromPlan renders the plan's project choice as the create
+// sends it, and refuses a project_id other than the provider's, whose route
+// the provider could not read back.
+func alertRouteProjectFromPlan(plan alertRouteResourceModel, providerProjectID string, diagnostics *diag.Diagnostics) client.AlertRouteProject {
+	if plan.OrganisationWide.ValueBool() {
+		return client.AlertRouteProject{IsSet: true}
+	}
+	if plan.ProjectID.IsNull() || plan.ProjectID.IsUnknown() {
+		return client.AlertRouteProject{}
+	}
+	projectID := plan.ProjectID.ValueString()
+	if providerProjectID != "" && projectID != providerProjectID {
+		diagnostics.AddAttributeError(path.Root("project_id"), "Alert route project outside the provider's project",
+			"project_id is "+projectID+" but the provider is scoped to project "+providerProjectID+". The platform only shows a provider "+
+				"scoped to a project that project's routes and the organisation-wide ones, so Terraform could not read this route back. "+
+				"Leave project_id unset, or manage the route from a provider configured with that project_id.")
+		return client.AlertRouteProject{}
+	}
+	return client.AlertRouteProject{IsSet: true, ProjectID: &projectID}
 }
 
 func (routeResource *alertRouteResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -257,7 +365,7 @@ func (routeResource *alertRouteResource) Delete(ctx context.Context, request res
 	if apiClient == nil {
 		return
 	}
-	var state alertRouteModel
+	var state alertRouteResourceModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
 		return
