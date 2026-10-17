@@ -251,41 +251,82 @@ func (laneResource *laneClusterResource[Model]) Delete(ctx context.Context, requ
 		return
 	}
 	common := laneResource.definition.common(&state)
-	clusterID := laneClusterID(common)
-	if clusterID == "" {
+	options := client.LaneDeprovisionOptions{Force: common.ForceDestroy.ValueBool()}
+	if laneResource.definition.acceptVolumeDataLoss != nil {
+		options.AcceptVolumeDataLoss = laneResource.definition.acceptVolumeDataLoss(&state)
+	}
+	deprovisionLaneClusterAndWait(ctx, apiClient, laneDeprovision{
+		lane:          laneResource.definition.lane,
+		displayName:   laneResource.definition.displayName,
+		clusterID:     laneClusterID(common),
+		options:       options,
+		deleteTimeout: common.Timeouts.Delete,
+	}, request.Private, &response.Diagnostics)
+}
+
+// laneDeprovision is one cluster destroy on a provisioned lane.
+type laneDeprovision struct {
+	lane          string
+	displayName   string
+	clusterID     string
+	options       client.LaneDeprovisionOptions
+	deleteTimeout timeoutFunc
+}
+
+// deprovisionLaneClusterAndWait is the destroy every provisioned lane
+// shares: it refuses when the provider's scope moved since the cluster was
+// tracked, deprovisions with the lane's flags, and waits until the platform
+// no longer lists the cluster, so a replacement's create does not collide
+// with the old cluster's name while it is still being torn down.
+func deprovisionLaneClusterAndWait(ctx context.Context, apiClient *client.Client, deprovision laneDeprovision, private privateStateReader, diagnostics *diag.Diagnostics) {
+	if deprovision.clusterID == "" {
 		return
 	}
-	if !requireUnmovedScope(ctx, apiClient, request.Private, &response.Diagnostics) {
+	if !requireUnmovedScope(ctx, apiClient, private, diagnostics) {
 		return
 	}
 
-	wait := resolveTimeout(ctx, common.Timeouts.Delete, defaultDeleteTimeout, &response.Diagnostics)
-	if response.Diagnostics.HasError() {
+	wait := resolveTimeout(ctx, deprovision.deleteTimeout, defaultDeleteTimeout, diagnostics)
+	if diagnostics.HasError() {
 		return
 	}
 	deleteContext, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
-	if current, readError := apiClient.GetClusterByID(deleteContext, clusterID); readError == nil && current != nil &&
+	if current, readError := apiClient.GetClusterByID(deleteContext, deprovision.clusterID); readError == nil && current != nil &&
 		current.State == clusterDeprovisioningState {
 		// A deprovision is already running (an earlier destroy timed out):
 		// re-sending it would cancel and re-dispatch the platform's jobs, so
 		// only wait for it.
-		awaitClusterGone(deleteContext, apiClient, clusterID, &response.Diagnostics)
+		awaitClusterGone(deleteContext, apiClient, deprovision.clusterID, diagnostics)
 		return
 	}
-	options := client.LaneDeprovisionOptions{Force: common.ForceDestroy.ValueBool()}
-	if laneResource.definition.acceptVolumeDataLoss != nil {
-		options.AcceptVolumeDataLoss = laneResource.definition.acceptVolumeDataLoss(&state)
-	}
-	err := apiClient.DeprovisionLaneCluster(deleteContext, laneResource.definition.lane, clusterID, options)
+	err := apiClient.DeprovisionLaneCluster(deleteContext, deprovision.lane, deprovision.clusterID, deprovision.options)
 	if err != nil {
-		if !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) && !response.Diagnostics.HasError() {
-			response.Diagnostics.AddError("Unable to deprovision "+laneResource.definition.displayName+" cluster", err.Error())
+		if !deletedWhenNotFound(ctx, err, apiClient, private, diagnostics) && !diagnostics.HasError() {
+			diagnostics.AddError("Unable to deprovision "+deprovision.displayName+" cluster", err.Error())
 		}
 		return
 	}
-	awaitClusterGone(deleteContext, apiClient, clusterID, &response.Diagnostics)
+	awaitClusterGone(deleteContext, apiClient, deprovision.clusterID, diagnostics)
+}
+
+// originalLaneForceDestroy reads force_destroy on the original five lanes,
+// whose default stays true for backwards compatibility.
+func originalLaneForceDestroy(value types.Bool) bool {
+	if value.IsNull() || value.IsUnknown() {
+		return true
+	}
+	return value.ValueBool()
+}
+
+// originalLaneClusterID is the cluster id of an original-lane resource,
+// falling back to id for state written before cluster_id existed.
+func originalLaneClusterID(clusterID types.String, id types.String) string {
+	if value := clusterID.ValueString(); value != "" {
+		return value
+	}
+	return id.ValueString()
 }
 
 // ImportState imports by cluster id and opens the adoption window: the
@@ -365,6 +406,21 @@ func acceptVolumeDataLossAttribute() schema.BoolAttribute {
 		Optional: true,
 		Computed: true,
 		Default:  booldefault.StaticBool(false),
+	}
+}
+
+// originalLaneAcceptVolumeDataLossAttribute is acceptVolumeDataLossAttribute
+// for the original five lanes. It has no computed default, so state written
+// by an earlier provider version plans no change after the upgrade; unset
+// reads as false.
+func originalLaneAcceptVolumeDataLossAttribute() schema.BoolAttribute {
+	return schema.BoolAttribute{
+		MarkdownDescription: "Send `accept_volume_data_loss=true` when deprovisioning, consenting to the deletion of the " +
+			"cluster's persistent volumes. Without it the platform refuses to destroy a cluster that still holds " +
+			"volumes it would delete, and `terraform destroy` fails with that refusal; `force_destroy` does not " +
+			"replace this consent. Unset means `false`. Changing this only affects a future destroy, so it never " +
+			"replaces the cluster.",
+		Optional: true,
 	}
 }
 

@@ -54,6 +54,7 @@ type upCloudClusterResourceModel struct {
 	GitopsCredentialName  types.String   `tfsdk:"gitops_credential_name"`
 	GitopsRepository      types.String   `tfsdk:"gitops_repository"`
 	Description           types.String   `tfsdk:"description"`
+	AcceptVolumeDataLoss  types.Bool     `tfsdk:"accept_volume_data_loss"`
 	ForceDestroy          types.Bool     `tfsdk:"force_destroy"`
 	WaitForReady          types.Bool     `tfsdk:"wait_for_ready"`
 	Timeouts              timeouts.Value `tfsdk:"timeouts"`
@@ -79,6 +80,7 @@ func (upCloudResource *upCloudClusterResource) Schema(ctx context.Context, _ res
 	attributes["etcd_plan"] = defaultedReplaceString("Server plan for dedicated etcd nodes.", "2xCPU-4GB")
 	attributes["network_ip_range"] = optionalReplaceString("Private network IP range.")
 	attributes["force_destroy"] = forceDestroyAttribute("UpCloud")
+	attributes["accept_volume_data_loss"] = originalLaneAcceptVolumeDataLossAttribute()
 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Provisions a UpCloud-backed cluster on the Ankra platform. Provisioning arguments " +
@@ -138,6 +140,7 @@ func (upCloudResource *upCloudClusterResource) Create(ctx context.Context, reque
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, upCloudResource.client, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -173,7 +176,7 @@ func (upCloudResource *upCloudClusterResource) Read(ctx context.Context, request
 		return
 	}
 	if cluster == nil {
-		response.State.RemoveResource(ctx)
+		removeMissingCluster(ctx, upCloudResource.client, response)
 		return
 	}
 
@@ -184,6 +187,7 @@ func (upCloudResource *upCloudClusterResource) Read(ctx context.Context, request
 	}
 	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, upCloudResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, upCloudResource.client, response.Private)...)
 }
 
 // Update carries through the arguments that can change in place: force_destroy
@@ -205,11 +209,7 @@ func (upCloudResource *upCloudClusterResource) Delete(ctx context.Context, reque
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	clusterID := state.ClusterID.ValueString()
-	if clusterID == "" {
-		clusterID = state.ID.ValueString()
-	}
+	clusterID := originalLaneClusterID(state.ClusterID, state.ID)
 	if clusterID == "" {
 		return
 	}
@@ -217,21 +217,16 @@ func (upCloudResource *upCloudClusterResource) Delete(ctx context.Context, reque
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
-
-	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultDeleteTimeout, &response.Diagnostics)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	deleteContext, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	force := true
-	if !state.ForceDestroy.IsNull() && !state.ForceDestroy.IsUnknown() {
-		force = state.ForceDestroy.ValueBool()
-	}
-	if err := upCloudResource.client.DeleteProvisionedCluster(deleteContext, client.LaneUpCloud, clusterID, force); err != nil {
-		response.Diagnostics.AddError("Unable to deprovision UpCloud cluster", err.Error())
-	}
+	deprovisionLaneClusterAndWait(ctx, upCloudResource.client, laneDeprovision{
+		lane:        client.LaneUpCloud,
+		displayName: "UpCloud",
+		clusterID:   clusterID,
+		options: client.LaneDeprovisionOptions{
+			Force:                originalLaneForceDestroy(state.ForceDestroy),
+			AcceptVolumeDataLoss: state.AcceptVolumeDataLoss.ValueBool(),
+		},
+		deleteTimeout: state.Timeouts.Delete,
+	}, request.Private, &response.Diagnostics)
 }
 
 func (upCloudResource *upCloudClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {

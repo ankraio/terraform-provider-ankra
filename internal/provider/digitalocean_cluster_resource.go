@@ -54,6 +54,7 @@ type digitalOceanClusterResourceModel struct {
 	GitopsCredentialName  types.String   `tfsdk:"gitops_credential_name"`
 	GitopsRepository      types.String   `tfsdk:"gitops_repository"`
 	Description           types.String   `tfsdk:"description"`
+	AcceptVolumeDataLoss  types.Bool     `tfsdk:"accept_volume_data_loss"`
 	ForceDestroy          types.Bool     `tfsdk:"force_destroy"`
 	WaitForReady          types.Bool     `tfsdk:"wait_for_ready"`
 	Timeouts              timeouts.Value `tfsdk:"timeouts"`
@@ -79,6 +80,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Schema(ctx context.Cont
 	attributes["etcd_size"] = defaultedReplaceString("Droplet size for dedicated etcd nodes.", "s-2vcpu-4gb")
 	attributes["network_ip_range"] = optionalReplaceString("Private network IP range.")
 	attributes["force_destroy"] = forceDestroyAttribute("DigitalOcean")
+	attributes["accept_volume_data_loss"] = originalLaneAcceptVolumeDataLossAttribute()
 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Provisions a DigitalOcean-backed cluster on the Ankra platform. Provisioning arguments " +
@@ -138,6 +140,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Create(ctx context.Cont
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, digitalOceanResource.client, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -173,7 +176,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Read(ctx context.Contex
 		return
 	}
 	if cluster == nil {
-		response.State.RemoveResource(ctx)
+		removeMissingCluster(ctx, digitalOceanResource.client, response)
 		return
 	}
 
@@ -184,6 +187,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Read(ctx context.Contex
 	}
 	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, digitalOceanResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, digitalOceanResource.client, response.Private)...)
 }
 
 // Update carries through the arguments that can change in place: force_destroy
@@ -205,11 +209,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Delete(ctx context.Cont
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	clusterID := state.ClusterID.ValueString()
-	if clusterID == "" {
-		clusterID = state.ID.ValueString()
-	}
+	clusterID := originalLaneClusterID(state.ClusterID, state.ID)
 	if clusterID == "" {
 		return
 	}
@@ -217,21 +217,16 @@ func (digitalOceanResource *digitalOceanClusterResource) Delete(ctx context.Cont
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
-
-	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultDeleteTimeout, &response.Diagnostics)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	deleteContext, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	force := true
-	if !state.ForceDestroy.IsNull() && !state.ForceDestroy.IsUnknown() {
-		force = state.ForceDestroy.ValueBool()
-	}
-	if err := digitalOceanResource.client.DeleteProvisionedCluster(deleteContext, client.LaneDigitalOcean, clusterID, force); err != nil {
-		response.Diagnostics.AddError("Unable to deprovision DigitalOcean cluster", err.Error())
-	}
+	deprovisionLaneClusterAndWait(ctx, digitalOceanResource.client, laneDeprovision{
+		lane:        client.LaneDigitalOcean,
+		displayName: "DigitalOcean",
+		clusterID:   clusterID,
+		options: client.LaneDeprovisionOptions{
+			Force:                originalLaneForceDestroy(state.ForceDestroy),
+			AcceptVolumeDataLoss: state.AcceptVolumeDataLoss.ValueBool(),
+		},
+		deleteTimeout: state.Timeouts.Delete,
+	}, request.Private, &response.Diagnostics)
 }
 
 func (digitalOceanResource *digitalOceanClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {

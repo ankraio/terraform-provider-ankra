@@ -64,6 +64,10 @@ type lanesFake struct {
 	// managedStepErrorReads holds every managed cluster created from now on
 	// in "creating" with a failed step for that many listing reads.
 	managedStepErrorReads int
+	// volumeConsentRequired makes a deprovision without
+	// accept_volume_data_loss=true answer 409, as the platform does for a
+	// cluster that still holds volumes the delete would remove.
+	volumeConsentRequired bool
 }
 
 type lanesFakeCluster struct {
@@ -151,6 +155,11 @@ func newLanesFake(t *testing.T) *lanesFake {
 			return
 		}
 		fake.deprovisionQuery = append(fake.deprovisionQuery, request.URL.RawQuery)
+		if fake.volumeConsentRequired && request.URL.Query().Get("accept_volume_data_loss") != "true" {
+			writeJSON(t, writer, http.StatusConflict, map[string]any{
+				"detail": "Deleting this cluster deletes 2 persistent volumes; repeat the delete with accept_volume_data_loss=true to proceed"})
+			return
+		}
 		cluster.state = "deprovisioning"
 		cluster.deprovisionReads = 1
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "cluster_id": cluster.id})

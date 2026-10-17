@@ -46,6 +46,7 @@ output "ovh_cluster_id" {
 
 ### Optional
 
+- `accept_volume_data_loss` (Boolean) Send `accept_volume_data_loss=true` when deprovisioning, consenting to the deletion of the cluster's persistent volumes. Without it the platform refuses to destroy a cluster that still holds volumes it would delete, and `terraform destroy` fails with that refusal; `force_destroy` does not replace this consent. Unset means `false`. Changing this only affects a future destroy, so it never replaces the cluster.
 - `availability_zones` (List of String) 3-AZ regions only: availability zones to spread the cluster across (e.g. `eu-west-par-b`).
 - `cni` (String) Container network interface. Defaults to `cilium`, the only CNI kubeadm clusters run; set `flannel` or `calico` for k3s clusters.
 - `control_plane_count` (Number) Number of control-plane nodes.

@@ -55,6 +55,7 @@ type hetznerClusterResourceModel struct {
 	GitopsRepository       types.String   `tfsdk:"gitops_repository"`
 	SSHKeyCredentialID     types.String   `tfsdk:"ssh_key_credential_id"`
 	Description            types.String   `tfsdk:"description"`
+	AcceptVolumeDataLoss   types.Bool     `tfsdk:"accept_volume_data_loss"`
 	ForceDestroy           types.Bool     `tfsdk:"force_destroy"`
 	WaitForReady           types.Bool     `tfsdk:"wait_for_ready"`
 	Timeouts               timeouts.Value `tfsdk:"timeouts"`
@@ -83,6 +84,7 @@ func (hetznerResource *hetznerClusterResource) Schema(ctx context.Context, _ res
 	attributes["etcd_server_type"] = defaultedReplaceString("Hetzner server type for dedicated etcd nodes.", "cx33")
 	attributes["ssh_key_credential_id"] = optionalReplaceString("SSH key credential id to attach to the cluster nodes.")
 	attributes["force_destroy"] = forceDestroyAttribute("Hetzner")
+	attributes["accept_volume_data_loss"] = originalLaneAcceptVolumeDataLossAttribute()
 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Provisions a Hetzner-backed cluster on the Ankra platform. Provisioning arguments " +
@@ -138,6 +140,7 @@ func (hetznerResource *hetznerClusterResource) Create(ctx context.Context, reque
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, hetznerResource.client, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -173,7 +176,7 @@ func (hetznerResource *hetznerClusterResource) Read(ctx context.Context, request
 		return
 	}
 	if cluster == nil {
-		response.State.RemoveResource(ctx)
+		removeMissingCluster(ctx, hetznerResource.client, response)
 		return
 	}
 
@@ -184,6 +187,7 @@ func (hetznerResource *hetznerClusterResource) Read(ctx context.Context, request
 	}
 	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, hetznerResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, hetznerResource.client, response.Private)...)
 }
 
 // Update carries through the arguments that can change in place: force_destroy
@@ -205,33 +209,24 @@ func (hetznerResource *hetznerClusterResource) Delete(ctx context.Context, reque
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	clusterID := state.ClusterID.ValueString()
-	if clusterID == "" {
-		clusterID = state.ID.ValueString()
-	}
+	clusterID := originalLaneClusterID(state.ClusterID, state.ID)
 	if clusterID == "" {
 		return
 	}
-	if clientError := hetznerResource.requireClient(); clientError != nil {
+	if hetznerResource.client == nil || hetznerResource.client.Token == "" {
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
-
-	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultDeleteTimeout, &response.Diagnostics)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	deleteContext, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	force := true
-	if !state.ForceDestroy.IsNull() && !state.ForceDestroy.IsUnknown() {
-		force = state.ForceDestroy.ValueBool()
-	}
-	if err := hetznerResource.client.DeleteHetznerCluster(deleteContext, clusterID, force); err != nil {
-		response.Diagnostics.AddError("Unable to deprovision Hetzner cluster", err.Error())
-	}
+	deprovisionLaneClusterAndWait(ctx, hetznerResource.client, laneDeprovision{
+		lane:        client.LaneHetzner,
+		displayName: "Hetzner",
+		clusterID:   clusterID,
+		options: client.LaneDeprovisionOptions{
+			Force:                originalLaneForceDestroy(state.ForceDestroy),
+			AcceptVolumeDataLoss: state.AcceptVolumeDataLoss.ValueBool(),
+		},
+		deleteTimeout: state.Timeouts.Delete,
+	}, request.Private, &response.Diagnostics)
 }
 
 func (hetznerResource *hetznerClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {

@@ -62,6 +62,7 @@ type scalewayClusterResourceModel struct {
 	GitopsCredentialName  types.String   `tfsdk:"gitops_credential_name"`
 	GitopsRepository      types.String   `tfsdk:"gitops_repository"`
 	Description           types.String   `tfsdk:"description"`
+	AcceptVolumeDataLoss  types.Bool     `tfsdk:"accept_volume_data_loss"`
 	ForceDestroy          types.Bool     `tfsdk:"force_destroy"`
 	WaitForReady          types.Bool     `tfsdk:"wait_for_ready"`
 	Timeouts              timeouts.Value `tfsdk:"timeouts"`
@@ -96,6 +97,7 @@ func (scalewayResource *scalewayClusterResource) Schema(ctx context.Context, _ r
 	attributes["runtime_credential_id"] = optionalReplaceString(
 		"Separate credential the cluster uses at runtime, when it differs from the provisioning credential.")
 	attributes["force_destroy"] = forceDestroyAttribute("Scaleway")
+	attributes["accept_volume_data_loss"] = originalLaneAcceptVolumeDataLossAttribute()
 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Provisions a Scaleway-backed cluster on the Ankra platform. Provisioning arguments " +
@@ -155,6 +157,7 @@ func (scalewayResource *scalewayClusterResource) Create(ctx context.Context, req
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, scalewayResource.client, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -190,7 +193,7 @@ func (scalewayResource *scalewayClusterResource) Read(ctx context.Context, reque
 		return
 	}
 	if cluster == nil {
-		response.State.RemoveResource(ctx)
+		removeMissingCluster(ctx, scalewayResource.client, response)
 		return
 	}
 
@@ -201,6 +204,7 @@ func (scalewayResource *scalewayClusterResource) Read(ctx context.Context, reque
 	}
 	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, scalewayResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, scalewayResource.client, response.Private)...)
 }
 
 // Update carries through the arguments that can change in place: force_destroy
@@ -222,11 +226,7 @@ func (scalewayResource *scalewayClusterResource) Delete(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-
-	clusterID := state.ClusterID.ValueString()
-	if clusterID == "" {
-		clusterID = state.ID.ValueString()
-	}
+	clusterID := originalLaneClusterID(state.ClusterID, state.ID)
 	if clusterID == "" {
 		return
 	}
@@ -234,21 +234,16 @@ func (scalewayResource *scalewayClusterResource) Delete(ctx context.Context, req
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
-
-	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultDeleteTimeout, &response.Diagnostics)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	deleteContext, cancel := context.WithTimeout(ctx, wait)
-	defer cancel()
-
-	force := true
-	if !state.ForceDestroy.IsNull() && !state.ForceDestroy.IsUnknown() {
-		force = state.ForceDestroy.ValueBool()
-	}
-	if err := scalewayResource.client.DeleteProvisionedCluster(deleteContext, client.LaneScaleway, clusterID, force); err != nil {
-		response.Diagnostics.AddError("Unable to deprovision Scaleway cluster", err.Error())
-	}
+	deprovisionLaneClusterAndWait(ctx, scalewayResource.client, laneDeprovision{
+		lane:        client.LaneScaleway,
+		displayName: "Scaleway",
+		clusterID:   clusterID,
+		options: client.LaneDeprovisionOptions{
+			Force:                originalLaneForceDestroy(state.ForceDestroy),
+			AcceptVolumeDataLoss: state.AcceptVolumeDataLoss.ValueBool(),
+		},
+		deleteTimeout: state.Timeouts.Delete,
+	}, request.Private, &response.Diagnostics)
 }
 
 func (scalewayResource *scalewayClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {

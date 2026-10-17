@@ -23,9 +23,9 @@ func clusterLaneResources() []func() resource.Resource {
 }
 
 func clusterLaneDataSources() []func() datasource.DataSource {
-	return []func() datasource.DataSource{
+	return append([]func() datasource.DataSource{
 		NewKubernetesVersionsDataSource,
 		NewPlaygroundPlansDataSource,
 		NewNodeGroupsDataSource,
-	}
+	}, laneCatalogueDataSources()...)
 }
