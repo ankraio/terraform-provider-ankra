@@ -430,6 +430,41 @@ resource "ankra_mcp_server" "sentry" {
 	})
 }
 
+// TestAccMCPServerEnvKeyCaseCollisions pins N3: env keys are sent as HTTP
+// headers, so keys that differ only in letter case are refused, in one
+// configuration and against a key already stored.
+func TestAccMCPServerEnvKeyCaseCollisions(t *testing.T) {
+	fake := newMCPFake(t)
+	withEnv := func(env string) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_mcp_server" "sentry" {
+  name      = "sentry"
+  transport = "http"
+  url       = "https://mcp.sentry.dev/mcp"
+  env       = %s
+}
+`, env)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      withEnv(`{ Region = "eu", region = "us" }`),
+				ExpectError: regexp.MustCompile("Env keys collide"),
+			},
+			{Config: withEnv(`{ Region = "eu" }`)},
+			{
+				Config:      withEnv(`{ REGION = "eu" }`),
+				ExpectError: regexp.MustCompile("Env key changes only in letter case"),
+			},
+		},
+	})
+	if len(fake.updates) != 0 {
+		t.Errorf("a colliding env reached the platform: %v", fake.updates)
+	}
+}
+
 func mcpToolGrantImportID(state *terraform.State) (string, error) {
 	attributes := state.RootModule().Resources["ankra_mcp_tool_grant.find_issues"].Primary.Attributes
 	return attributes["server_id"] + "/" + attributes["role"] + "/" + attributes["tool_name"], nil

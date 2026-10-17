@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -34,11 +35,15 @@ type tokenFake struct {
 	service      map[string]map[string]any
 	createBodies []map[string]json.RawMessage
 	standDowns   []string
-	created      int
+	// failCreates makes the next personal creates fail, and failDeletes
+	// refuses deleting the named tokens, to drive interrupted re-mints.
+	failCreates int
+	failDeletes map[string]bool
+	created     int
 }
 
 func newTokenFake(t *testing.T) *tokenFake {
-	fake := &tokenFake{organisationFake: newOrganisationFake(t), personal: map[string]map[string]any{}, service: map[string]map[string]any{}}
+	fake := &tokenFake{organisationFake: newOrganisationFake(t), personal: map[string]map[string]any{}, service: map[string]map[string]any{}, failDeletes: map[string]bool{}}
 
 	fake.handle("GET /api/v1/org/account/tokens", func(writer http.ResponseWriter, _ *http.Request) {
 		visible := map[string]map[string]any{}
@@ -50,6 +55,11 @@ func newTokenFake(t *testing.T) *tokenFake {
 		writeJSON(t, writer, http.StatusOK, tokenFakeListing(visible))
 	})
 	fake.handle("POST /api/v1/org/account/tokens", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.failCreates > 0 {
+			fake.failCreates--
+			writeJSON(t, writer, http.StatusForbidden, map[string]any{"detail": "minting refused"})
+			return
+		}
 		var raw map[string]json.RawMessage
 		decodeJSON(t, request, &raw)
 		fake.createBodies = append(fake.createBodies, raw)
@@ -95,6 +105,10 @@ func newTokenFake(t *testing.T) *tokenFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"id": replacement["id"], "token": "ankra_rotated", "name": replacement["name"], "replaced_token_id": row["id"]})
 	})
 	fake.handle("DELETE /api/v1/org/account/tokens/{token_id}", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.failDeletes[request.PathValue("token_id")] {
+			writeJSON(t, writer, http.StatusForbidden, map[string]any{"detail": "deletion refused"})
+			return
+		}
 		row, exists := fake.personal[request.PathValue("token_id")]
 		switch {
 		case !exists || row["owner"] != fake.caller:
@@ -206,7 +220,7 @@ func (fake *tokenFake) mintRow(prefix, expiresAt string) (map[string]any, string
 	answeredExpiry := naiveExpiry + "Z"
 	if expiresAt != "" {
 		parsed, _ := organisationParseTimestamp(expiresAt)
-		naiveExpiry = parsed.Format("2006-01-02T15:04:05")
+		naiveExpiry = parsed.Format("2006-01-02T15:04:05.999999")
 		answeredExpiry = expiresAt
 	}
 	return map[string]any{
@@ -501,6 +515,137 @@ resource "ankra_service_token" "ci" {
 				Check: func(_ *terraform.State) error {
 					if len(fake.service) != 1 {
 						return fmt.Errorf("service token deleted outside Terraform was not recreated")
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// TestAccAPITokenInterruptedRemint pins N1 and N4: a mint that fails after
+// the provider renewed the old token to free its name is finished by the next
+// apply instead of wedging every plan, and an old token that could not be
+// retired is retried until it is gone.
+func TestAccAPITokenInterruptedRemint(t *testing.T) {
+	fake := newTokenFake(t)
+	config := func(name, expiry string) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_api_token" "ci" {
+  name       = %q
+  expires_at = %q
+}
+`, name, expiry)
+	}
+	var firstID string
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: func(_ *terraform.State) error {
+			if len(fake.personal) != 0 {
+				return fmt.Errorf("tokens left after destroy: %v", fake.personal)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{
+				Config: config("ci", "2027-01-01T00:00:00Z"),
+				Check: func(state *terraform.State) error {
+					firstID = state.RootModule().Resources["ankra_api_token.ci"].Primary.ID
+					return nil
+				},
+			},
+			{
+				PreConfig:   func() { fake.failCreates = 1 },
+				Config:      config("ci", "2027-06-01T00:00:00Z"),
+				ExpectError: regexp.MustCompile("Unable to mint the replacement token"),
+			},
+			{
+				// The renewed old token is Terraform's own: no "renewed outside
+				// Terraform" error, the apply finishes the re-mint.
+				Config: config("ci", "2027-06-01T00:00:00Z"),
+				Check: func(_ *terraform.State) error {
+					if _, exists := fake.personal[firstID]; exists {
+						return fmt.Errorf("the renewed old token %s was not retired", firstID)
+					}
+					if rows := fake.personalNamed("ci"); len(rows) != 1 || len(fake.personal) != 1 {
+						return fmt.Errorf("expected exactly one live token named ci, got %v", fake.personal)
+					}
+					return nil
+				},
+			},
+			{
+				PreConfig: func() {
+					for identifier := range fake.personal {
+						fake.failDeletes[identifier] = true
+					}
+				},
+				// A rename mints first; the old token cannot be deleted yet, so
+				// the next plan still has work to do.
+				Config:             config("ci-renamed", "2027-06-01T00:00:00Z"),
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config:             config("ci-renamed", "2027-06-01T00:00:00Z"),
+				PlanOnly:           true,
+				ExpectNonEmptyPlan: true,
+			},
+			{
+				PreConfig: func() { fake.failDeletes = map[string]bool{} },
+				Config:    config("ci-renamed", "2027-06-01T00:00:00Z"),
+				Check: func(_ *terraform.State) error {
+					if len(fake.personal) != 1 || len(fake.personalNamed("ci-renamed")) != 1 {
+						return fmt.Errorf("the old token was not retired on the next apply: %v", fake.personal)
+					}
+					return nil
+				},
+			},
+			{
+				Config:   config("ci-renamed", "2027-06-01T00:00:00Z"),
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccServiceTokenRevokedInPortal pins N2: a service token revoked in the
+// portal is re-minted in place without ever leaving its account without a
+// token, so the account is not stood down and keeps its role.
+func TestAccServiceTokenRevokedInPortal(t *testing.T) {
+	fake := newTokenFake(t)
+	config := fake.providerBlock() + `
+resource "ankra_service_token" "ci" {
+  name      = "ci-deployer"
+  role_slug = "deployer"
+  label     = "pipelines"
+}
+`
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config},
+			{
+				PreConfig: func() {
+					for _, row := range fake.service {
+						row["revoked"] = true
+					}
+				},
+				Config: config,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectResourceAction("ankra_service_token.ci", plancheck.ResourceActionUpdate)},
+				},
+				Check: func(_ *terraform.State) error {
+					if len(fake.standDowns) != 0 {
+						return fmt.Errorf("the account was stood down while its revoked token was re-minted: %v", fake.standDowns)
+					}
+					if len(fake.service) != 1 {
+						return fmt.Errorf("expected exactly the re-minted token, got %v", fake.service)
+					}
+					for _, row := range fake.service {
+						if row["label"] != "pipelines" || row["revoked"] == true {
+							return fmt.Errorf("the re-minted token is %v", row)
+						}
 					}
 					return nil
 				},
