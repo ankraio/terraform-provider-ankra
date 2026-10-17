@@ -85,6 +85,7 @@ resource "ankra_cluster" "example" {
 - `helm_command` (String, Sensitive) Helm command emitted by the platform to bootstrap the cluster agent. Contains a live cluster agent token, so the value is sensitive.
 - `id` (String) Identifier of the cluster (mirrors `cluster_id`).
 - `kind` (String) Cluster kind the platform reports.
+- `project_id` (String) ID of the project the cluster belongs to: the provider's `project_id`, resolved to an ID when it is a slug, since the platform shows a cluster only in its own project. Null when the provider sets no `project_id`. Moving a cluster to another project is not managed here; after a move the cluster is no longer visible in this project.
 - `state` (String) Lifecycle state the platform reports for the cluster, refreshed on every read (`offline` until the agent checks in, then `online`).
 
 <a id="nestedblock--stacks"></a>

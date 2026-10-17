@@ -47,6 +47,7 @@ type helmRegistryModel struct {
 	ExcludeCharts   types.List   `tfsdk:"exclude_charts"`
 	ReadJobInterval types.Int64  `tfsdk:"read_job_interval"`
 	LastSyncError   types.String `tfsdk:"last_sync_error"`
+	ProjectID       types.String `tfsdk:"project_id"`
 }
 
 // NewHelmRegistryResource returns the ankra_helm_registry resource, the
@@ -110,6 +111,7 @@ func (registryResource *helmRegistryResource) Schema(_ context.Context, _ resour
 				MarkdownDescription: "Why the most recent index sync failed, when it did.",
 				Computed:            true,
 			},
+			"project_id": helmProjectIDAttribute("registry"),
 		},
 	}
 }
@@ -152,11 +154,17 @@ func (registryResource *helmRegistryResource) Create(ctx context.Context, reques
 		return
 	}
 
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+
 	err := apiClient.CreateHelmRegistry(ctx, client.HelmRegistrySpecification{
 		Name:           plan.Name.ValueString(),
 		URL:            plan.URL.ValueString(),
 		ExcludeCharts:  stringsFromList(ctx, plan.ExcludeCharts, &response.Diagnostics),
 		CredentialName: stringPointer(plan.CredentialName),
+		ProjectID:      helmProjectIDBody(apiClient, plan.ProjectID),
 	})
 	if err != nil {
 		response.Diagnostics.AddError("Unable to create Helm registry", err.Error())
@@ -214,6 +222,10 @@ func (registryResource *helmRegistryResource) Read(ctx context.Context, request 
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	detail, err := apiClient.GetHelmRegistry(ctx, state.Name.ValueString())
 	if removeWhenNotFound(ctx, err, apiClient, response) {
@@ -243,6 +255,10 @@ func (registryResource *helmRegistryResource) Update(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	if !plan.ReadJobInterval.IsUnknown() && !plan.ReadJobInterval.IsNull() && !plan.ReadJobInterval.Equal(state.ReadJobInterval) {
 		if err := apiClient.UpdateHelmRegistry(ctx, plan.Name.ValueString(), plan.ReadJobInterval.ValueInt64()); err != nil {
@@ -264,6 +280,10 @@ func (registryResource *helmRegistryResource) Delete(ctx context.Context, reques
 	var state helmRegistryModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 
@@ -288,6 +308,29 @@ func (registryResource *helmRegistryResource) refresh(ctx context.Context, apiCl
 	}
 	helmRegistryApplyDetail(model, detail)
 	return true
+}
+
+// helmProjectIDAttribute is the optional project a Helm registry or
+// credential is created in. The platform does not return it, so it is kept
+// as configured; every request for the resource is scoped to that project.
+func helmProjectIDAttribute(subject string) schema.StringAttribute {
+	return schema.StringAttribute{
+		MarkdownDescription: "Project to create the " + subject + " in, by ID or slug, instead of the provider's project. Every request for this " + subject +
+			" is then made in that project. The platform does not report a " + subject + "'s project, so this is kept as configured and a move " +
+			"made outside Terraform is not detected; it is null after an import. Changing it replaces the " + subject + ".",
+		Optional:      true,
+		PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+	}
+}
+
+// helmProjectIDBody is the project_id a create sends: the resolved ID of the
+// resource's own project, or nil to leave the request's project in charge.
+func helmProjectIDBody(apiClient *client.Client, projectID types.String) *string {
+	if projectID.IsNull() || projectID.IsUnknown() {
+		return nil
+	}
+	resolved := apiClient.ScopeProjectID()
+	return &resolved
 }
 
 // helmRegistryTargetChanged is readTargetChanged for registries, whose API

@@ -32,6 +32,22 @@ resource "ankra_helm_registry" "bitnami" {
   exclude_charts = ["wordpress"]
 }
 
+# A registry and its credential created in another project, by slug or ID,
+# rather than the provider's project.
+resource "ankra_helm_registry_credential" "team" {
+  name       = "team-charts"
+  username   = "robot-team"
+  password   = var.acme_registry_token
+  project_id = "data-team"
+}
+
+resource "ankra_helm_registry" "team" {
+  name            = "team"
+  url             = "oci://registry.acme.example/team"
+  credential_name = ankra_helm_registry_credential.team.name
+  project_id      = "data-team"
+}
+
 # An ankra_cluster addon then names the registry it installs from:
 #
 #   addons {
@@ -62,6 +78,7 @@ variable "acme_registry_token" {
 
 - `credential_name` (String) Name of the `ankra_helm_registry_credential` used to pull from a private registry. The platform cannot change it in place, so changing it replaces the registry.
 - `exclude_charts` (List of String) Charts to leave out of the catalogue. HTTP registries only. Changing it replaces the registry.
+- `project_id` (String) Project to create the registry in, by ID or slug, instead of the provider's project. Every request for this registry is then made in that project. The platform does not report a registry's project, so this is kept as configured and a move made outside Terraform is not detected; it is null after an import. Changing it replaces the registry.
 - `read_job_interval` (Number) Seconds between automatic background syncs of the chart index: `0` disables them, otherwise between 60 and 86400. The platform default is 120.
 
 ### Read-Only

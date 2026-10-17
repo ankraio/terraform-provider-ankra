@@ -31,6 +31,7 @@ type hetznerClusterResourceModel struct {
 	ClusterID              types.String   `tfsdk:"cluster_id"`
 	State                  types.String   `tfsdk:"state"`
 	Kind                   types.String   `tfsdk:"kind"`
+	ProjectID              types.String   `tfsdk:"project_id"`
 	Name                   types.String   `tfsdk:"name"`
 	CredentialID           types.String   `tfsdk:"credential_id"`
 	Location               types.String   `tfsdk:"location"`
@@ -132,6 +133,7 @@ func (hetznerResource *hetznerClusterResource) Create(ctx context.Context, reque
 	plan.ClusterID = types.StringValue(created.ClusterID)
 	plan.State = types.StringUnknown()
 	plan.Kind = types.StringUnknown()
+	plan.ProjectID = optionalString(hetznerResource.client.ScopeProjectID())
 
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
@@ -145,7 +147,7 @@ func (hetznerResource *hetznerClusterResource) Create(ctx context.Context, reque
 	if cluster == nil {
 		return
 	}
-	applyClusterIdentity(&plan.State, &plan.Kind, cluster)
+	applyClusterIdentity(&plan.State, &plan.Kind, &plan.ProjectID, hetznerResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
@@ -180,7 +182,7 @@ func (hetznerResource *hetznerClusterResource) Read(ctx context.Context, request
 	if cluster.Name != "" {
 		state.Name = types.StringValue(cluster.Name)
 	}
-	applyClusterIdentity(&state.State, &state.Kind, cluster)
+	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, hetznerResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 

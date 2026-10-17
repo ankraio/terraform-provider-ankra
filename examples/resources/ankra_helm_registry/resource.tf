@@ -17,6 +17,22 @@ resource "ankra_helm_registry" "bitnami" {
   exclude_charts = ["wordpress"]
 }
 
+# A registry and its credential created in another project, by slug or ID,
+# rather than the provider's project.
+resource "ankra_helm_registry_credential" "team" {
+  name       = "team-charts"
+  username   = "robot-team"
+  password   = var.acme_registry_token
+  project_id = "data-team"
+}
+
+resource "ankra_helm_registry" "team" {
+  name            = "team"
+  url             = "oci://registry.acme.example/team"
+  credential_name = ankra_helm_registry_credential.team.name
+  project_id      = "data-team"
+}
+
 # An ankra_cluster addon then names the registry it installs from:
 #
 #   addons {

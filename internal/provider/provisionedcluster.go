@@ -137,6 +137,21 @@ func identityAttributes() map[string]schema.Attribute {
 			Computed:            true,
 			PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 		},
+		"project_id": clusterProjectIDAttribute(),
+	}
+}
+
+// clusterProjectIDAttribute is the project a cluster belongs to. The platform
+// does not return it, but it lists a cluster only to requests scoped to the
+// cluster's own project, so it is the provider's project_id (resolved to an
+// ID) whenever the cluster is found.
+func clusterProjectIDAttribute() schema.StringAttribute {
+	return schema.StringAttribute{
+		MarkdownDescription: "ID of the project the cluster belongs to: the provider's `project_id`, resolved to an ID when it is a slug, " +
+			"since the platform shows a cluster only in its own project. Null when the provider sets no `project_id`. " +
+			"Moving a cluster to another project is not managed here; after a move the cluster is no longer visible in this project.",
+		Computed:      true,
+		PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 	}
 }
 
@@ -233,10 +248,17 @@ func awaitProvisioned(ctx context.Context, apiClient *client.Client, clusterID s
 }
 
 // applyClusterIdentity records the platform-reported state and kind, leaving
-// the fields null when the platform did not report them.
-func applyClusterIdentity(state *types.String, kind *types.String, cluster *client.Cluster) {
+// the fields null when the platform did not report them, and the project the
+// cluster was found in. The platform lists a cluster only to requests scoped
+// to its own project, so that is the provider's project, or null when the
+// provider sets none.
+func applyClusterIdentity(state *types.String, kind *types.String, projectID *types.String, apiClient *client.Client, cluster *client.Cluster) {
 	if cluster == nil {
 		return
+	}
+	*projectID = types.StringNull()
+	if apiClient != nil {
+		*projectID = optionalString(apiClient.ScopeProjectID())
 	}
 	if cluster.State != "" {
 		*state = types.StringValue(cluster.State)

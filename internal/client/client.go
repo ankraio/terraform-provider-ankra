@@ -59,6 +59,11 @@ type Client struct {
 	UserAgent      string
 	OrganisationID string
 	ProjectID      string
+	// ProjectSlug, when set, names the project by slug instead of ProjectID.
+	// It is resolved to the project's ID once, before the first request
+	// (ResolveProject), because the platform accepts only an ID in the
+	// project header.
+	ProjectSlug string
 	// UnresolvedScope, when set, names a scope argument (organisation_id or
 	// project_id) whose value is not known yet. Every request is refused rather
 	// than sent without it, because an absent header silently means a
@@ -68,7 +73,10 @@ type Client struct {
 	// projectScope caches FloatingProjectCount. It is a pointer so the
 	// copies resources make for a per-resource token share one lookup.
 	projectScope *projectScopeCheck
-	HTTPClient   *http.Client
+	// projectSlug caches the ProjectSlug lookup, shared by copies like
+	// projectScope.
+	projectSlug *projectSlugResolution
+	HTTPClient  *http.Client
 }
 
 // NewClient returns a Client. An empty baseURL falls back to DefaultBaseURL.
@@ -82,6 +90,7 @@ func NewClient(baseURL, token, userAgent string) *Client {
 		UserAgent:    userAgent,
 		MaxRetries:   DefaultMaxRetries,
 		projectScope: &projectScopeCheck{},
+		projectSlug:  &projectSlugResolution{},
 		HTTPClient:   &http.Client{Timeout: DefaultTimeout},
 	}
 }
@@ -114,6 +123,11 @@ func IsNotFound(err error) bool {
 func (client *Client) doRequest(ctx context.Context, method, path string, requestBody any, responseTarget any, acceptableStatuses ...int) error {
 	if client.UnresolvedScope != "" {
 		return fmt.Errorf("%s is not known until apply; refusing to call %s %s without it", client.UnresolvedScope, method, path)
+	}
+	if path != projectsPath {
+		if err := client.ResolveProject(ctx); err != nil {
+			return err
+		}
 	}
 
 	var encodedBody []byte
@@ -188,8 +202,8 @@ func (client *Client) attempt(ctx context.Context, method, path string, encodedB
 	if client.OrganisationID != "" {
 		request.Header.Set(OrganisationHeader, client.OrganisationID)
 	}
-	if client.ProjectID != "" {
-		request.Header.Set(ProjectHeader, client.ProjectID)
+	if projectID := client.ScopeProjectID(); projectID != "" {
+		request.Header.Set(ProjectHeader, projectID)
 	}
 
 	tflog.Debug(ctx, "ankra API request", map[string]any{"method": method, "path": path})

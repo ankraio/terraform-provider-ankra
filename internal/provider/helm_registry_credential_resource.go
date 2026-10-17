@@ -30,10 +30,11 @@ type helmRegistryCredentialResource struct {
 }
 
 type helmRegistryCredentialModel struct {
-	ID       types.String `tfsdk:"id"`
-	Name     types.String `tfsdk:"name"`
-	Username types.String `tfsdk:"username"`
-	Password types.String `tfsdk:"password"`
+	ID        types.String `tfsdk:"id"`
+	Name      types.String `tfsdk:"name"`
+	Username  types.String `tfsdk:"username"`
+	Password  types.String `tfsdk:"password"`
+	ProjectID types.String `tfsdk:"project_id"`
 }
 
 // NewHelmRegistryCredentialResource returns the
@@ -73,6 +74,7 @@ func (credentialResource *helmRegistryCredentialResource) Schema(_ context.Conte
 				Required:            true,
 				Sensitive:           true,
 			},
+			"project_id": helmProjectIDAttribute("credential"),
 		},
 	}
 }
@@ -88,10 +90,16 @@ func (credentialResource *helmRegistryCredentialResource) Create(ctx context.Con
 		return
 	}
 
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+
 	err := apiClient.CreateHelmRegistryCredential(ctx, client.HelmRegistryCredentialCreate{
-		Name:     plan.Name.ValueString(),
-		Username: plan.Username.ValueString(),
-		Password: plan.Password.ValueString(),
+		Name:      plan.Name.ValueString(),
+		Username:  plan.Username.ValueString(),
+		Password:  plan.Password.ValueString(),
+		ProjectID: helmProjectIDBody(apiClient, plan.ProjectID),
 	})
 	if err != nil {
 		response.Diagnostics.AddError("Unable to create Helm registry credential", err.Error())
@@ -124,6 +132,10 @@ func (credentialResource *helmRegistryCredentialResource) Read(ctx context.Conte
 	var state helmRegistryCredentialModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 
@@ -174,6 +186,10 @@ func (credentialResource *helmRegistryCredentialResource) Update(ctx context.Con
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	err := apiClient.UpdateHelmRegistryCredential(ctx, plan.Name.ValueString(), client.HelmRegistryCredentialUpdate{
 		Username: plan.Username.ValueString(),
@@ -194,6 +210,10 @@ func (credentialResource *helmRegistryCredentialResource) Delete(ctx context.Con
 	var state helmRegistryCredentialModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 

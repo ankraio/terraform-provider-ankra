@@ -1,3 +1,12 @@
+## 0.4.0 (Unreleased)
+
+FEATURES:
+
+* provider: `project_id` (and `ANKRA_PROJECT_ID`) also takes a project slug. The slug is resolved to the project's ID once, before the first request; a slug that matches no project the token can see, or an organisation without projects, fails every resource and data source instead of acting in another project.
+* Cluster resources (`ankra_cluster`, every cloud lane, `ankra_managed_cluster`) gain a computed `project_id`: the project the cluster was found in, which is the provider's project.
+* data-source/ankra_clusters: New `project_id` argument lists another project's clusters, by ID or slug; each listed cluster carries its `project_id`.
+* resource/ankra_helm_registry, resource/ankra_helm_registry_credential: New `project_id` argument creates the registry or credential in another project, by ID or slug, and makes every request for it there. The platform does not report it back, so it is kept as configured.
+
 ## 0.3.0 (2026-10-17)
 
 0.3.0 brings the provider to parity with the `ankra` CLI: every object the CLI creates, updates or deletes has a resource, and the objects worth referencing have data sources (97 resources and 42 data sources, up from 6 and 1). Operational commands (logs, exec, metrics, runs, scale, upgrade, chat) stay in the CLI.

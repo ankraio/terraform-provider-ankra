@@ -34,6 +34,10 @@ variable "acme_registry_token" {
 - `password` (String, Sensitive) Registry password or token. The platform never returns it, so a change made outside Terraform is not detected.
 - `username` (String) Registry username. Read back to detect drift when the token holds the `credentials.reveal` permission; otherwise a change made outside Terraform is not detected.
 
+### Optional
+
+- `project_id` (String) Project to create the credential in, by ID or slug, instead of the provider's project. Every request for this credential is then made in that project. The platform does not report a credential's project, so this is kept as configured and a move made outside Terraform is not detected; it is null after an import. Changing it replaces the credential.
+
 ### Read-Only
 
 - `id` (String) Identifier of the credential.
