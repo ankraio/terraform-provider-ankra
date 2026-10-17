@@ -101,7 +101,7 @@ func (meshResource *clusterMeshResource) Read(ctx context.Context, request resou
 		return
 	}
 	mesh, err := apiClient.GetClusterMesh(ctx, state.ID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, "", response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, "", response) {
 		return
 	}
 	if err != nil {
@@ -249,7 +249,7 @@ func (memberResource *clusterMeshMemberResource) Read(ctx context.Context, reque
 		return
 	}
 	mesh, err := apiClient.GetClusterMesh(ctx, state.MeshID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

@@ -106,7 +106,7 @@ func (shippingResource *clusterLogShippingResource) Read(ctx context.Context, re
 		return
 	}
 	shipping, err := apiClient.GetClusterLogShipping(ctx, state.ClusterID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

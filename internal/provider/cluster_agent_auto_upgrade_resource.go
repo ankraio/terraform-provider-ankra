@@ -95,7 +95,7 @@ func (upgradeResource *clusterAgentAutoUpgradeResource) Read(ctx context.Context
 		return
 	}
 	agent, err := apiClient.GetClusterAgent(ctx, state.ClusterID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

@@ -219,7 +219,7 @@ func (grantResource *clusterAccessGrantResource) Read(ctx context.Context, reque
 	if client.IsNotFound(err) && clusterSettingsIsPast(state.ExpiresAt.ValueString()) && clusterSettingsScopeError(err, state.ClusterID.ValueString()) == nil {
 		return
 	}
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
