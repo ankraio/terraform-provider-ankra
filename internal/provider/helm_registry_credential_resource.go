@@ -103,6 +103,7 @@ func (credentialResource *helmRegistryCredentialResource) Create(ctx context.Con
 	// of orphaning it, which would make the next apply fail on its own name.
 	plan.ID = types.StringNull()
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -127,17 +128,18 @@ func (credentialResource *helmRegistryCredentialResource) Read(ctx context.Conte
 	}
 
 	detail, err := apiClient.GetHelmRegistryCredential(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err == nil {
 		if readTargetChanged(state.ID, detail.ID) {
-			response.State.RemoveResource(ctx)
+			removeWhenTargetChanged(ctx, apiClient, response)
 			return
 		}
 		state.ID = types.StringValue(detail.ID)
 		state.Username = types.StringValue(detail.Username)
 		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		return
 	}
 	if !helmRegistryCredentialRevealDenied(err) {
@@ -146,7 +148,7 @@ func (credentialResource *helmRegistryCredentialResource) Read(ctx context.Conte
 	}
 
 	credential, err := apiClient.FindHelmRegistryCredential(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -154,11 +156,12 @@ func (credentialResource *helmRegistryCredentialResource) Read(ctx context.Conte
 		return
 	}
 	if readTargetChanged(state.ID, credential.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	state.ID = types.StringValue(credential.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *helmRegistryCredentialResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
