@@ -274,7 +274,8 @@ func (client *Client) ListDNSOrganisationCredentials(ctx context.Context, provid
 }
 
 // DeleteDNSOrganisationCredential deletes a credential of any provider by id.
-// One already gone is not an error; one still in use answers 409.
+// Credentials are project-scoped, so a 404 is returned for the caller to tell
+// "gone" from "out of scope"; one still in use answers 409.
 func (client *Client) DeleteDNSOrganisationCredential(ctx context.Context, credentialID string) error {
-	return client.doRequest(ctx, http.MethodDelete, dnsOrganisationCredentialsPath+"/"+url.PathEscape(credentialID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, dnsOrganisationCredentialsPath+"/"+url.PathEscape(credentialID), nil, nil)
 }

@@ -198,11 +198,11 @@ func (zonesDataSource *organisationCustomDNSZonesDataSource) Schema(_ context.Co
 		Attributes: map[string]schema.Attribute{
 			"id": alertDNSComputedString("Placeholder identifier for the data source."),
 			"zones": alertDNSListAttribute("Declared zones.", map[string]schema.Attribute{
-				"id":              alertDNSComputedString("The zone name."),
-				"zone":            alertDNSComputedString("Zone name."),
-				"credential_name": alertDNSComputedString("Credential that publishes into the zone."),
-				"credential_provider":   alertDNSComputedString("Credential family: `webhook`, `cloudflare` or `avura`."),
-				"policy":          alertDNSComputedString("external-dns policy the clusters run for the zone."),
+				"id":                  alertDNSComputedString("The zone name."),
+				"zone":                alertDNSComputedString("Zone name."),
+				"credential_name":     alertDNSComputedString("Credential that publishes into the zone."),
+				"credential_provider": alertDNSComputedString("Credential family: `webhook`, `cloudflare` or `avura`."),
+				"policy":              alertDNSComputedString("external-dns policy the clusters run for the zone."),
 			}),
 		},
 	}

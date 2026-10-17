@@ -140,6 +140,7 @@ func (zoneResource *organisationCustomDNSZoneResource) Create(ctx context.Contex
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (zoneResource *organisationCustomDNSZoneResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -154,7 +155,7 @@ func (zoneResource *organisationCustomDNSZoneResource) Read(ctx context.Context,
 	}
 
 	zone, err := apiClient.GetOrganisationCustomDNSZone(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -163,6 +164,7 @@ func (zoneResource *organisationCustomDNSZoneResource) Read(ctx context.Context,
 	}
 	organisationCustomDNSZoneApply(zone, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (zoneResource *organisationCustomDNSZoneResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -182,6 +184,7 @@ func (zoneResource *organisationCustomDNSZoneResource) Update(ctx context.Contex
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (zoneResource *organisationCustomDNSZoneResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {

@@ -127,11 +127,13 @@ func (credentialResource *cloudflareCredentialResource) Create(ctx context.Conte
 	if err != nil {
 		cloudflareCredentialApply(&client.CloudflareCredential{Name: plan.Name.ValueString(), AccountID: alertDNSStringValue(stringPointer(plan.AccountID))}, &plan)
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		response.Diagnostics.AddError("Unable to read the connected Cloudflare credential", err.Error())
 		return
 	}
 	cloudflareCredentialApply(credential, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *cloudflareCredentialResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -152,12 +154,12 @@ func (credentialResource *cloudflareCredentialResource) Read(ctx context.Context
 	}
 	identity := cloudflareCredentialFind(credentials, state.ID.ValueString(), state.Name.ValueString())
 	if identity == nil || readTargetChanged(state.ID, identity.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 
 	credential, err := apiClient.GetCloudflareCredential(ctx, identity.Name)
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -167,6 +169,7 @@ func (credentialResource *cloudflareCredentialResource) Read(ctx context.Context
 	state.ID = types.StringValue(identity.ID)
 	cloudflareCredentialApply(credential, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // cloudflareCredentialFind finds the credential by its id, or, before the id
@@ -186,7 +189,8 @@ func cloudflareCredentialFind(credentials []client.DNSOrganisationCredential, cr
 // Update only runs after an import, when the token was unknown to state: it
 // records the configured token. Any other change replaces the credential.
 func (credentialResource *cloudflareCredentialResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	if credentialResource.requireClient(&response.Diagnostics) == nil {
+	apiClient := credentialResource.requireClient(&response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 	var plan cloudflareCredentialModel
@@ -195,6 +199,7 @@ func (credentialResource *cloudflareCredentialResource) Update(ctx context.Conte
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *cloudflareCredentialResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -207,9 +212,11 @@ func (credentialResource *cloudflareCredentialResource) Delete(ctx context.Conte
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteDNSOrganisationCredential(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete Cloudflare credential", err.Error())
+	err := apiClient.DeleteDNSOrganisationCredential(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete Cloudflare credential", err.Error())
 }
 
 // ImportState imports by credential name. The token cannot be read back; the

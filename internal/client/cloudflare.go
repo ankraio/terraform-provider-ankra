@@ -211,8 +211,10 @@ func (client *Client) UpdateCloudflareRecord(ctx context.Context, credentialName
 	return &record, nil
 }
 
-// DeleteCloudflareRecord deletes a record. One already gone is not an error.
+// DeleteCloudflareRecord deletes a record. The credential it is written with
+// is project-scoped, so a 404 is returned for the caller to tell "gone" from
+// "out of scope".
 func (client *Client) DeleteCloudflareRecord(ctx context.Context, credentialName, zoneID, recordID string) error {
 	path := cloudflareRecordsPath(zoneID) + "/" + url.PathEscape(recordID)
-	return client.doRequest(ctx, http.MethodDelete, cloudflarePath(path, credentialName, nil), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, cloudflarePath(path, credentialName, nil), nil, nil)
 }

@@ -100,6 +100,7 @@ func (domainResource *organisationDomainResource) Create(ctx context.Context, re
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (domainResource *organisationDomainResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -119,7 +120,7 @@ func (domainResource *organisationDomainResource) Read(ctx context.Context, requ
 		return
 	}
 	if domain.DNSRootDomain == nil {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	if !strings.EqualFold(state.DNSRootDomain.ValueString(), *domain.DNSRootDomain) {
@@ -128,6 +129,7 @@ func (domainResource *organisationDomainResource) Read(ctx context.Context, requ
 	state.ID = types.StringValue(organisationDomainSingletonID)
 	state.DNSRootDomainDefault = types.StringValue(domain.DNSRootDomainDefault)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (domainResource *organisationDomainResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -145,6 +147,7 @@ func (domainResource *organisationDomainResource) Update(ctx context.Context, re
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete restores the platform default root domain.

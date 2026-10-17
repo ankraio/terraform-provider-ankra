@@ -200,6 +200,7 @@ func (routeResource *alertRouteResource) Create(ctx context.Context, request res
 	}
 	alertRouteApply(route, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (routeResource *alertRouteResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -214,7 +215,7 @@ func (routeResource *alertRouteResource) Read(ctx context.Context, request resou
 	}
 
 	route, err := apiClient.GetAlertRoute(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -223,6 +224,7 @@ func (routeResource *alertRouteResource) Read(ctx context.Context, request resou
 	}
 	alertRouteApply(route, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (routeResource *alertRouteResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -247,6 +249,7 @@ func (routeResource *alertRouteResource) Update(ctx context.Context, request res
 	}
 	alertRouteApply(route, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (routeResource *alertRouteResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -260,9 +263,11 @@ func (routeResource *alertRouteResource) Delete(ctx context.Context, request res
 		return
 	}
 
-	if err := apiClient.DeleteAlertRoute(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete alert route", err.Error())
+	err := apiClient.DeleteAlertRoute(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete alert route", err.Error())
 }
 
 // ImportState imports by route id.

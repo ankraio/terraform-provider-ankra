@@ -89,6 +89,7 @@ func (credentialResource *dnsCredentialResource) Create(ctx context.Context, req
 	}
 	plan.ID = types.StringValue(credentialID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *dnsCredentialResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -108,17 +109,14 @@ func (credentialResource *dnsCredentialResource) Read(ctx context.Context, reque
 		return
 	}
 	found := dnsCredentialFind(credentials, state.ID.ValueString(), state.Name.ValueString())
-	if found == nil {
-		response.State.RemoveResource(ctx)
-		return
-	}
-	if readTargetChanged(state.ID, found.ID) {
-		response.State.RemoveResource(ctx)
+	if found == nil || readTargetChanged(state.ID, found.ID) {
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	state.ID = types.StringValue(found.ID)
 	state.Name = types.StringValue(found.Name)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // dnsCredentialFind finds the credential by its id, or, before the id is
@@ -143,7 +141,8 @@ func dnsCredentialFind(credentials []client.DNSCredential, credentialID, name st
 // Update only runs after an import, when the secret was unknown to state:
 // it records the configured URL. Any other change replaces the credential.
 func (credentialResource *dnsCredentialResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	if credentialResource.requireClient(&response.Diagnostics) == nil {
+	apiClient := credentialResource.requireClient(&response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 	var plan dnsCredentialModel
@@ -152,6 +151,7 @@ func (credentialResource *dnsCredentialResource) Update(ctx context.Context, req
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *dnsCredentialResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -164,9 +164,11 @@ func (credentialResource *dnsCredentialResource) Delete(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteDNSOrganisationCredential(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete DNS credential", err.Error())
+	err := apiClient.DeleteDNSOrganisationCredential(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete DNS credential", err.Error())
 }
 
 // ImportState imports by credential name. The webhook URL cannot be read

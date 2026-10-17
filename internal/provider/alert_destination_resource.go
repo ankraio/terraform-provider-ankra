@@ -158,6 +158,7 @@ func (destinationResource *alertDestinationResource) Create(ctx context.Context,
 	}
 	plan.ID = types.StringValue(destinationID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -182,7 +183,7 @@ func (destinationResource *alertDestinationResource) Read(ctx context.Context, r
 	}
 
 	destination, err := apiClient.GetAlertDestination(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -204,6 +205,7 @@ func (destinationResource *alertDestinationResource) Read(ctx context.Context, r
 		state.URL = types.StringNull()
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (destinationResource *alertDestinationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -223,6 +225,7 @@ func (destinationResource *alertDestinationResource) Update(ctx context.Context,
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // alertDestinationUpdateFromPlan states every member, because the platform

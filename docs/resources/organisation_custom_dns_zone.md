@@ -39,7 +39,7 @@ variable "dns_webhook_url" {
 
 ### Optional
 
-- `provider_kind` (String) Credential family: `webhook`, `cloudflare` or `avura`. The platform derives it from the credential; set it to assert the family, which the platform checks. Sent as `provider`.
+- `credential_provider` (String) Credential family: `webhook`, `cloudflare` or `avura`. The platform derives it from the credential; set it to assert the family, which the platform checks. Sent as `provider` only when set here. Rebinding to another credential re-derives it.
 
 ### Read-Only
 

@@ -122,6 +122,7 @@ func (recordResource *organisationDNSRecordResource) Create(ctx context.Context,
 	}
 	organisationDNSRecordApply(record, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *organisationDNSRecordResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -136,7 +137,7 @@ func (recordResource *organisationDNSRecordResource) Read(ctx context.Context, r
 	}
 
 	record, err := apiClient.GetOrganisationDNSRecord(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -153,6 +154,7 @@ func (recordResource *organisationDNSRecordResource) Read(ctx context.Context, r
 	}
 	organisationDNSRecordApply(record, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *organisationDNSRecordResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -176,6 +178,7 @@ func (recordResource *organisationDNSRecordResource) Update(ctx context.Context,
 	}
 	organisationDNSRecordApply(record, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *organisationDNSRecordResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {

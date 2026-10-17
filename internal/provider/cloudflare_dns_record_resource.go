@@ -202,6 +202,7 @@ func (recordResource *cloudflareDNSRecordResource) Create(ctx context.Context, r
 	}
 	cloudflareDNSRecordApply(record, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *cloudflareDNSRecordResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -217,7 +218,7 @@ func (recordResource *cloudflareDNSRecordResource) Read(ctx context.Context, req
 
 	record, err := apiClient.GetCloudflareRecord(ctx, state.CredentialName.ValueString(), state.ZoneID.ValueString(),
 		state.ID.ValueString(), state.FQDN.ValueString(), state.RecordType.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -232,6 +233,7 @@ func (recordResource *cloudflareDNSRecordResource) Read(ctx context.Context, req
 	}
 	cloudflareDNSRecordApply(record, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *cloudflareDNSRecordResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -259,6 +261,7 @@ func (recordResource *cloudflareDNSRecordResource) Update(ctx context.Context, r
 	}
 	cloudflareDNSRecordApply(record, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (recordResource *cloudflareDNSRecordResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -271,9 +274,11 @@ func (recordResource *cloudflareDNSRecordResource) Delete(ctx context.Context, r
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteCloudflareRecord(ctx, state.CredentialName.ValueString(), state.ZoneID.ValueString(), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete Cloudflare DNS record", err.Error())
+	err := apiClient.DeleteCloudflareRecord(ctx, state.CredentialName.ValueString(), state.ZoneID.ValueString(), state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete Cloudflare DNS record", err.Error())
 }
 
 // ImportState imports by `zone_id/record_id`, or

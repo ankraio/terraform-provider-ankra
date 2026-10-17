@@ -36,16 +36,16 @@ resource "ankra_cloudflare_dns_record" "www" {
 
 ### Required
 
-- `content` (String) What the record points at.
-- `name` (String) Record name: a label such as `www` (qualified with the zone) or the full name. Changing it replaces the record.
+- `content` (String) What the record points at, without leading or trailing whitespace (the platform trims it).
+- `name` (String) Record name: a label such as `www` (qualified with the zone) or the full name. An import stores the label, so name an imported record by its label. Changing it replaces the record.
 - `record_type` (String) `A`, `AAAA`, `CNAME`, `TXT`, `MX` or `NS`. Changing it replaces the record.
 - `zone_id` (String) Cloudflare zone id. Changing it replaces the record.
 
 ### Optional
 
-- `comment` (String) Comment stored on the record. Defaults to `Managed by Ankra`, which the platform stamps on a record written without one.
+- `comment` (String) Comment stored on the record. Defaults to `Managed by Ankra`, which the platform stamps on a record written without one; an empty comment is therefore refused.
 - `credential_name` (String) Cloudflare credential to write with. Unset uses the organisation's only Cloudflare credential. Changing it replaces the record.
-- `priority` (Number) Priority of an `MX` record. Once set it can be changed but not removed.
+- `priority` (Number) Priority of an `MX` record; required for `MX` and refused for other types.
 - `proxied` (Boolean) Route the record through Cloudflare's proxy (`A`, `AAAA` and `CNAME` only). Defaults to `false`.
 - `ttl` (Number) TTL in seconds, 60 to 86400, or `1` for automatic. Defaults to `1`; a proxied record is always automatic.
 

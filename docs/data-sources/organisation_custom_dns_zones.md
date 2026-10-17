@@ -34,7 +34,7 @@ output "zones" {
 Read-Only:
 
 - `credential_name` (String) Credential that publishes into the zone.
+- `credential_provider` (String) Credential family: `webhook`, `cloudflare` or `avura`.
 - `id` (String) The zone name.
 - `policy` (String) external-dns policy the clusters run for the zone.
-- `provider_kind` (String) Credential family: `webhook`, `cloudflare` or `avura`.
 - `zone` (String) Zone name.

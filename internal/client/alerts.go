@@ -223,7 +223,8 @@ func (client *Client) UpdateAlertRoute(ctx context.Context, routeID string, requ
 	return &route, nil
 }
 
-// DeleteAlertRoute deletes a routing rule. One already gone is not an error.
+// DeleteAlertRoute deletes a routing rule. Routes are project-scoped, so a
+// 404 is returned for the caller to tell "gone" from "out of scope".
 func (client *Client) DeleteAlertRoute(ctx context.Context, routeID string) error {
-	return client.doRequest(ctx, http.MethodDelete, alertRoutesPath+"/"+url.PathEscape(routeID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, alertRoutesPath+"/"+url.PathEscape(routeID), nil, nil)
 }

@@ -26,7 +26,7 @@ resource "ankra_organisation_dns_record" "logs" {
 
 ### Required
 
-- `content` (String) What the record points at: an address for `A`/`AAAA`, a hostname for `CNAME`, text for `TXT`.
+- `content` (String) What the record points at: an address for `A`/`AAAA`, a hostname for `CNAME`, text for `TXT`. Leading and trailing whitespace is refused, because the platform trims it.
 - `name` (String) Label inside the organisation's zone, such as `logs` or `eu.logs`, in lower case. Changing it replaces the record.
 - `record_type` (String) `A`, `AAAA`, `CNAME` or `TXT`. Changing it replaces the record.
 
