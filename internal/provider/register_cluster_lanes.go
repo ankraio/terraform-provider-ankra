@@ -10,9 +10,22 @@ import (
 
 // clusterLaneResources are the cluster lanes beyond the original five clouds, managed Kubernetes, node pools and node groups.
 func clusterLaneResources() []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewAWSClusterResource,
+		NewProxmoxClusterResource,
+		NewMorpheusClusterResource,
+		NewAnkraCloudClusterResource,
+		NewManagedClusterResource,
+		NewManagedNodePoolResource,
+		NewNodeGroupResource,
+		NewPlaygroundResource,
+	}
 }
 
 func clusterLaneDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewKubernetesVersionsDataSource,
+		NewPlaygroundPlansDataSource,
+		NewNodeGroupsDataSource,
+	}
 }

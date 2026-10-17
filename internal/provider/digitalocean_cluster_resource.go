@@ -194,6 +194,7 @@ func (digitalOceanResource *digitalOceanClusterResource) Update(ctx context.Cont
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(clearClusterImported(ctx, response.Private)...)
 }
 
 func (digitalOceanResource *digitalOceanClusterResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -233,6 +234,8 @@ func (digitalOceanResource *digitalOceanClusterResource) Delete(ctx context.Cont
 
 func (digitalOceanResource *digitalOceanClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)
+	response.Diagnostics.Append(markClusterImported(ctx, response.Private)...)
 }
 
 func digitalOceanRequestFromModel(plan *digitalOceanClusterResourceModel) client.DigitalOceanClusterRequest {

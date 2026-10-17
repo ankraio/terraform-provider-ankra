@@ -25,6 +25,15 @@ type Cluster struct {
 	Name  string `json:"name"`
 	Kind  string `json:"kind"`
 	State string `json:"state"`
+	// LatestStepError is the newest unrepaired step failure of a cluster
+	// that is still creating; nil otherwise.
+	LatestStepError *ClusterStepError `json:"latest_step_error,omitempty"`
+}
+
+// ClusterStepError names the step a creating cluster is stuck on.
+type ClusterStepError struct {
+	StepName string `json:"step_name"`
+	Message  string `json:"message"`
 }
 
 // Pagination is the paging envelope the platform returns alongside a listing.

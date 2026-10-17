@@ -194,6 +194,7 @@ func (hetznerResource *hetznerClusterResource) Update(ctx context.Context, reque
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(clearClusterImported(ctx, response.Private)...)
 }
 
 func (hetznerResource *hetznerClusterResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -233,6 +234,8 @@ func (hetznerResource *hetznerClusterResource) Delete(ctx context.Context, reque
 
 func (hetznerResource *hetznerClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)
+	response.Diagnostics.Append(markClusterImported(ctx, response.Private)...)
 }
 
 // requireClient reports whether the resource has a usable API client, rather

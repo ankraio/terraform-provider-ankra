@@ -211,6 +211,7 @@ func (scalewayResource *scalewayClusterResource) Update(ctx context.Context, req
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(clearClusterImported(ctx, response.Private)...)
 }
 
 func (scalewayResource *scalewayClusterResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -250,6 +251,8 @@ func (scalewayResource *scalewayClusterResource) Delete(ctx context.Context, req
 
 func (scalewayResource *scalewayClusterResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)
+	response.Diagnostics.Append(markClusterImported(ctx, response.Private)...)
 }
 
 func scalewayRequestFromModel(ctx context.Context, plan *scalewayClusterResourceModel, diagnostics *diag.Diagnostics) client.ScalewayClusterRequest {
