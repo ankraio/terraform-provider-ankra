@@ -10,9 +10,27 @@ import (
 
 // alertAndDNSResources are alert destinations and routes, and organisation DNS.
 func alertAndDNSResources() []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewAlertDestinationResource,
+		NewAlertRouteResource,
+		NewOrganisationDNSRecordResource,
+		NewOrganisationCustomDNSZoneResource,
+		NewOrganisationDomainResource,
+		NewDNSCredentialResource,
+		NewCloudflareCredentialResource,
+		NewCloudflareDNSRecordResource,
+	}
 }
 
 func alertAndDNSDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewAlertDestinationsDataSource,
+		NewAlertRoutesDataSource,
+		NewOrganisationDNSZoneDataSource,
+		NewOrganisationDNSRecordsDataSource,
+		NewOrganisationCustomDNSZonesDataSource,
+		NewDNSCredentialsDataSource,
+		NewCloudflareCredentialsDataSource,
+		NewCloudflareDomainsDataSource,
+	}
 }
