@@ -3,12 +3,15 @@
 page_title: "ankra_ai_spend_cap Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's daily AI caps. The counterpart of ankra org ai-spend-cap set. One per organisation; changes need the billing.manage permission. An unset cap is cleared, and destroy clears all three, which leaves the money cap at the plan default and the token budget unlimited.
+  The organisation's daily AI caps. The counterpart of ankra org ai-spend-cap set. One per organisation; changes need the billing.manage permission.
+  Only the caps you set are managed: a cap left unset keeps whatever the organisation holds and is read back as a computed value, and removing a cap from configuration stops managing it without clearing it. Destroy clears the caps the configuration set, which leaves the money cap at the plan default and the token budget unlimited.
 ---
 
 # ankra_ai_spend_cap (Resource)
 
-The organisation's daily AI caps. The counterpart of `ankra org ai-spend-cap set`. One per organisation; changes need the `billing.manage` permission. An unset cap is cleared, and destroy clears all three, which leaves the money cap at the plan default and the token budget unlimited.
+The organisation's daily AI caps. The counterpart of `ankra org ai-spend-cap set`. One per organisation; changes need the `billing.manage` permission.
+
+Only the caps you set are managed: a cap left unset keeps whatever the organisation holds and is read back as a computed value, and removing a cap from configuration stops managing it without clearing it. Destroy clears the caps the configuration set, which leaves the money cap at the plan default and the token budget unlimited.
 
 ## Example Usage
 
@@ -25,7 +28,7 @@ resource "ankra_ai_spend_cap" "this" {
 
 ### Optional
 
-- `daily_chat_usd_cap` (Number) Daily money cap on chat, in USD. Unset falls back to the plan default.
+- `daily_chat_usd_cap` (Number) Daily money cap on chat, in USD; null means the plan default applies.
 - `daily_token_hard_cap` (Number) Daily token hard cap: past it, new unattended runs are refused until midnight UTC. It may not be below the soft cap.
 - `daily_token_soft_cap` (Number) Daily token soft cap: past it, unattended runs degrade to the quick tier for the rest of the UTC day.
 

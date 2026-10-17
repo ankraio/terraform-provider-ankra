@@ -13,6 +13,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
 const (
@@ -32,6 +33,9 @@ type organisationFake struct {
 	invites       []map[string]any
 	removals      []map[string]any
 	nextID        int
+	// caller is the user the token authenticates as: the roster marks it
+	// user_current.
+	caller string
 }
 
 type organisationFakeRow struct {
@@ -41,7 +45,7 @@ type organisationFakeRow struct {
 }
 
 func newOrganisationFake(t *testing.T) *organisationFake {
-	fake := &organisationFake{routeFake: newRouteFake(t), organisations: map[string]*organisationFakeRow{}}
+	fake := &organisationFake{routeFake: newRouteFake(t), organisations: map[string]*organisationFakeRow{}, caller: organisationTestCaller}
 	fake.organisations[organisationTestCurrent] = &organisationFakeRow{
 		name: "Current", slug: "current",
 		members: []map[string]any{{"id": organisationTestCaller, "invite_id": "row-0", "email": "owner@example.com", "status": "active", "role": "admin"}},
@@ -84,7 +88,7 @@ func newOrganisationFake(t *testing.T) *organisationFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{
 			"organisation_id": request.PathValue("organisation_id"), "name": row.name, "slug": row.slug,
-			"created_at": "2026-10-01T10:00:00.000000+00:00", "users": row.members, "mfa_required": false,
+			"created_at": "2026-10-01T10:00:00.000000+00:00", "users": fake.roster(row), "mfa_required": false,
 		})
 	})
 	fake.handle("POST /api/v1/org/organisation/invite", func(writer http.ResponseWriter, request *http.Request) {
@@ -135,13 +139,28 @@ func newOrganisationFake(t *testing.T) *organisationFake {
 	return fake
 }
 
-func (fake *organisationFake) memberByEmail(organisationID, email string) map[string]any {
-	row, exists := fake.organisations[organisationID]
+// roster renders the members as the platform does, marking the caller.
+func (fake *organisationFake) roster(row *organisationFakeRow) []map[string]any {
+	users := make([]map[string]any, 0, len(row.members))
+	for _, member := range row.members {
+		rendered := map[string]any{}
+		for key, value := range member {
+			rendered[key] = value
+		}
+		rendered["user_current"] = member["id"] == fake.caller
+		users = append(users, rendered)
+	}
+	return users
+}
+
+// alice returns the invited member of the lifecycle test, or nil.
+func (fake *organisationFake) alice() map[string]any {
+	row, exists := fake.organisations[organisationTestCurrent]
 	if !exists {
 		return nil
 	}
 	for _, member := range row.members {
-		if member["email"] == email {
+		if member["email"] == "alice@example.com" {
 			return member
 		}
 	}
@@ -225,7 +244,7 @@ data "ankra_organisations" "all" {}
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
-			if member := fake.memberByEmail(organisationTestCurrent, "alice@example.com"); member != nil {
+			if member := fake.alice(); member != nil {
 				return fmt.Errorf("member still in the organisation after destroy: %v", member)
 			}
 			return nil
@@ -250,26 +269,34 @@ data "ankra_organisations" "all" {}
 				),
 			},
 			{
-				Config: config("admin"),
-				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("ankra_organisation_member.alice", "role", "admin"),
-					func(_ *terraform.State) error {
-						if len(fake.removals) != 1 || fake.removals[0]["organisation_id"] != organisationTestCurrent {
-							return fmt.Errorf("a role change must remove and re-invite; removals %v", fake.removals)
-						}
-						return nil
-					},
-				),
+				Config:      config("admin"),
+				ExpectError: regexp.MustCompile("Member role cannot change here"),
+			},
+			{
+				PreConfig:   func() { fake.alice()["role"] = "admin" },
+				Config:      config("member"),
+				ExpectError: regexp.MustCompile("Member role cannot change here"),
+			},
+			{
+				PreConfig: func() { fake.alice()["role"] = "member" },
+				Config:    strings.Replace(config("member"), `"alice@example.com"`, `"Alice@Example.com"`, 1),
+				Check: func(_ *terraform.State) error {
+					if len(fake.removals) != 0 || len(fake.invites) != 1 {
+						return fmt.Errorf("a role or email-case change must never remove and re-invite; removals %v, invites %d", fake.removals, len(fake.invites))
+					}
+					return nil
+				},
 			},
 			{
 				Config:      config("owner"),
 				ExpectError: regexp.MustCompile(`"owner" is not accepted`),
 			},
 			{
-				ResourceName:      "ankra_organisation_member.alice",
-				ImportState:       true,
-				ImportStateIdFunc: organisationMemberImportID,
-				ImportStateVerify: true,
+				ResourceName:            "ankra_organisation_member.alice",
+				ImportState:             true,
+				ImportStateIdFunc:       organisationMemberImportID,
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"email"},
 			},
 			{
 				ResourceName:  "ankra_organisation_member.alice",
@@ -282,9 +309,9 @@ data "ankra_organisations" "all" {}
 					row := fake.organisations[organisationTestCurrent]
 					row.members = row.members[:1]
 				},
-				Config: config("admin"),
+				Config: config("member"),
 				Check: func(_ *terraform.State) error {
-					if fake.memberByEmail(organisationTestCurrent, "alice@example.com") == nil {
+					if fake.alice() == nil {
 						return fmt.Errorf("member removed outside Terraform was not invited again")
 					}
 					return nil
@@ -297,4 +324,81 @@ data "ankra_organisations" "all" {}
 func organisationMemberImportID(state *terraform.State) (string, error) {
 	attributes := state.RootModule().Resources["ankra_organisation_member.alice"].Primary.Attributes
 	return attributes["organisation_id"] + "/" + attributes["id"], nil
+}
+
+// TestAccOrganisationImportWithoutCountry pins that an imported organisation,
+// whose country cannot be read back, accepts the configured country instead
+// of wedging every plan.
+func TestAccOrganisationImportWithoutCountry(t *testing.T) {
+	fake := newOrganisationFake(t)
+	config := fake.providerBlock() + fmt.Sprintf(`
+import {
+  to = ankra_organisation.current
+  id = %q
+}
+
+resource "ankra_organisation" "current" {
+  name    = "Current"
+  country = "SE"
+}
+`, organisationTestCurrent)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_5_0)},
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  resource.TestCheckResourceAttr("ankra_organisation.current", "country", "SE"),
+			},
+			{
+				Config:   config,
+				PlanOnly: true,
+			},
+		},
+	})
+}
+
+// TestAccOrganisationMemberSelfRemovalRefused pins that a plan removing the
+// provider's own membership stops before anything is sent.
+func TestAccOrganisationMemberSelfRemovalRefused(t *testing.T) {
+	fake := newOrganisationFake(t)
+	withSelf := fake.providerBlock() + fmt.Sprintf(`
+import {
+  to = ankra_organisation_member.self
+  id = "%s/%s"
+}
+
+resource "ankra_organisation_member" "self" {
+  email = "owner@example.com"
+  role  = "admin"
+}
+`, organisationTestCurrent, organisationTestCaller)
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_5_0)},
+		Steps: []resource.TestStep{
+			{Config: withSelf},
+			{
+				Config:      fake.providerBlock(),
+				ExpectError: regexp.MustCompile("Refusing to remove the provider's own membership"),
+				Check: func(_ *terraform.State) error {
+					if len(fake.removals) != 0 {
+						return fmt.Errorf("own membership removed: %v", fake.removals)
+					}
+					return nil
+				},
+			},
+			{
+				// Teardown: authenticate as someone else, so the test can clean up.
+				PreConfig: func() {
+					row := fake.organisations[organisationTestCurrent]
+					row.members = append(row.members, map[string]any{"id": "someone-else", "email": "admin@example.com", "status": "active", "role": "admin"})
+					fake.caller = "someone-else"
+				},
+				Config: fake.providerBlock(),
+			},
+		},
+	})
 }

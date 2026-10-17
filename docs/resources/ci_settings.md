@@ -3,12 +3,15 @@
 page_title: "ankra_ci_settings Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's Ankra Pipelines settings: where pipeline steps run, scheduler shares, image policy, retention and the image gate. The counterpart of ankra org ci-settings set. One per organisation; changes need organisation admin. Every attribute defaults to the platform default, and destroy restores those defaults.
+  The organisation's Ankra Pipelines settings: where pipeline steps run, scheduler shares, image policy, retention and the image gate. The counterpart of ankra org ci-settings set. One per organisation; changes need organisation admin.
+  Only the attributes you set are managed. An attribute left unset keeps whatever the organisation holds (set in the portal or by the CLI) and is read back as a computed value; removing an attribute from configuration stops managing it and leaves its value in place. Destroy resets the attributes the configuration set to the platform defaults, except ci_cluster_id, which is left as it is because clearing it would stall every pipeline.
 ---
 
 # ankra_ci_settings (Resource)
 
-The organisation's Ankra Pipelines settings: where pipeline steps run, scheduler shares, image policy, retention and the image gate. The counterpart of `ankra org ci-settings set`. One per organisation; changes need organisation admin. Every attribute defaults to the platform default, and destroy restores those defaults.
+The organisation's Ankra Pipelines settings: where pipeline steps run, scheduler shares, image policy, retention and the image gate. The counterpart of `ankra org ci-settings set`. One per organisation; changes need organisation admin.
+
+Only the attributes you set are managed. An attribute left unset keeps whatever the organisation holds (set in the portal or by the CLI) and is read back as a computed value; removing an attribute from configuration stops managing it and leaves its value in place. Destroy resets the attributes the configuration set to the platform defaults, except `ci_cluster_id`, which is left as it is because clearing it would stall every pipeline.
 
 ## Example Usage
 
@@ -27,20 +30,20 @@ resource "ankra_ci_settings" "this" {
 
 ### Optional
 
-- `ci_allowed_image_prefixes` (List of String) Image prefixes steps may name; empty (default) allows any image.
-- `ci_always_run_stages` (List of String) Stages that run whatever their path filters say. Defaults to empty.
-- `ci_artifact_retention_days` (Number) Artifact retention, 1 to 365 days. Defaults to 30.
-- `ci_build_fallback` (String) `platform_builders` (default) keeps Ankra's build cluster available when the organisation's cannot build; `none` refuses the build.
-- `ci_cache_retention_days` (Number) Cache retention, 1 to 365 days. Defaults to 14.
-- `ci_cluster_id` (String) Cluster pipeline steps run on. Unset leaves the organisation without a pipeline cluster.
-- `ci_egress_allowed_cidrs` (List of String) CIDRs pipeline steps may reach. Defaults to empty.
-- `ci_full_run_on_default_branch` (Boolean) Whether a push to the default branch runs every stage. Defaults to `false`.
-- `ci_ignore_unfixed` (Boolean) Organisation floor for the image gate's ignore_unfixed. Defaults to `true`.
-- `ci_image_gate` (String) Image findings that block a publish: `app` (default, fixable critical and high findings in application dependencies), `all` or `off`.
-- `ci_max_parallel_runs` (Number) Runs in flight at once, 1 to 64. Defaults to 16.
-- `ci_max_parallel_steps` (Number) Steps in flight at once, 1 to 256. Defaults to 8.
-- `ci_run_retention_days` (Number) Run history retention, 7 to 365 days. Defaults to 90.
-- `ci_skip_markers` (String) Where a `[skip ci]` marker skips a push: `everywhere`, `except_default_branch` (default) or `never`.
+- `ci_allowed_image_prefixes` (List of String) Image prefixes steps may name; empty (the platform default) allows any image.
+- `ci_always_run_stages` (List of String) Stages that run whatever their path filters say. Platform default empty.
+- `ci_artifact_retention_days` (Number) Artifact retention, 1 to 365 days. Platform default 30.
+- `ci_build_fallback` (String) `platform_builders` (the platform default) keeps Ankra's build cluster available when the organisation's cannot build; `none` refuses the build.
+- `ci_cache_retention_days` (Number) Cache retention, 1 to 365 days. Platform default 14.
+- `ci_cluster_id` (String) Cluster pipeline steps run on. Unset leaves the organisation's choice alone; the provider never clears it.
+- `ci_egress_allowed_cidrs` (List of String) CIDRs pipeline steps may reach. Platform default empty.
+- `ci_full_run_on_default_branch` (Boolean) Whether a push to the default branch runs every stage. Platform default `false`.
+- `ci_ignore_unfixed` (Boolean) Organisation floor for the image gate's ignore_unfixed. Platform default `true`.
+- `ci_image_gate` (String) Image findings that block a publish: `app` (the platform default: fixable critical and high findings in application dependencies), `all` or `off`.
+- `ci_max_parallel_runs` (Number) Runs in flight at once, 1 to 64. Platform default 16.
+- `ci_max_parallel_steps` (Number) Steps in flight at once, 1 to 256. Platform default 8.
+- `ci_run_retention_days` (Number) Run history retention, 7 to 365 days. Platform default 90.
+- `ci_skip_markers` (String) Where a `[skip ci]` marker skips a push: `everywhere`, `except_default_branch` (the platform default) or `never`.
 
 ### Read-Only
 

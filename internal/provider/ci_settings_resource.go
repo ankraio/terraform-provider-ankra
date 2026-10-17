@@ -26,6 +26,7 @@ var (
 	_ resource.Resource                = (*ciSettingsResource)(nil)
 	_ resource.ResourceWithConfigure   = (*ciSettingsResource)(nil)
 	_ resource.ResourceWithImportState = (*ciSettingsResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*ciSettingsResource)(nil)
 )
 
 // ciSettingsID is the fixed id of the organisation's one CI settings object.
@@ -135,9 +136,9 @@ func (settings *ciSettingsResource) Schema(_ context.Context, _ resource.SchemaR
 			},
 			"ci_build_fallback": ciSettingsString("`platform_builders` (the platform default) keeps Ankra's build cluster available when the organisation's cannot build; `none` refuses the build.",
 				organisationStringOneOf{values: []string{"platform_builders", "none"}}),
-			"ci_max_parallel_runs":      ciSettingsInt64("Runs in flight at once, 1 to 64. Platform default 16."),
-			"ci_max_parallel_steps":     ciSettingsInt64("Steps in flight at once, 1 to 256. Platform default 8."),
-			"ci_allowed_image_prefixes": ciSettingsList("Image prefixes steps may name; empty (the platform default) allows any image."),
+			"ci_max_parallel_runs":       ciSettingsInt64("Runs in flight at once, 1 to 64. Platform default 16."),
+			"ci_max_parallel_steps":      ciSettingsInt64("Steps in flight at once, 1 to 256. Platform default 8."),
+			"ci_allowed_image_prefixes":  ciSettingsList("Image prefixes steps may name; empty (the platform default) allows any image."),
 			"ci_artifact_retention_days": ciSettingsInt64("Artifact retention, 1 to 365 days. Platform default 30."),
 			"ci_cache_retention_days":    ciSettingsInt64("Cache retention, 1 to 365 days. Platform default 14."),
 			"ci_run_retention_days":      ciSettingsInt64("Run history retention, 7 to 365 days. Platform default 90."),
@@ -154,6 +155,22 @@ func (settings *ciSettingsResource) Schema(_ context.Context, _ resource.SchemaR
 				Computed:            true,
 			},
 		},
+	}
+}
+
+// ModifyPlan plans an update when the set of configured attributes changed,
+// so the apply records which ones destroy resets.
+func (settings *ciSettingsResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var config ciSettingsModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if organisationManagedKeysChanged(ctx, ciSettingsBody(ctx, config, &response.Diagnostics), request.Private) {
+		response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("ci_cluster_name"), types.StringUnknown())...)
 	}
 }
 

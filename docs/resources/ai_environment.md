@@ -3,12 +3,15 @@
 page_title: "ankra_ai_environment Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's AI environment: the staging cluster AI workspaces and pull request demos run on, their lifetimes, the default AI Gateway mode, and the preview domain demos are published under. The counterpart of ankra org ai-environment set. One per organisation; changes need organisation admin. Destroy restores the platform defaults and clears the staging cluster and preview settings. The organisation's DNS root domain lives on the same platform object but is not managed here.
+  The organisation's AI environment: the staging cluster AI workspaces and pull request demos run on, their lifetimes, the default AI Gateway mode, and the preview domain demos are published under. The counterpart of ankra org ai-environment set. One per organisation; changes need organisation admin.
+  Only the attributes you set are managed: an attribute left unset keeps the organisation's value and is read back as a computed value, and removing one from configuration stops managing it without clearing it. Destroy resets the attributes the configuration set to the platform defaults, except staging_cluster_id, which is left as it is because clearing it would stop every AI workspace and demo. The organisation's DNS root domain lives on the same platform object but is never touched here.
 ---
 
 # ankra_ai_environment (Resource)
 
-The organisation's AI environment: the staging cluster AI workspaces and pull request demos run on, their lifetimes, the default AI Gateway mode, and the preview domain demos are published under. The counterpart of `ankra org ai-environment set`. One per organisation; changes need organisation admin. Destroy restores the platform defaults and clears the staging cluster and preview settings. The organisation's DNS root domain lives on the same platform object but is not managed here.
+The organisation's AI environment: the staging cluster AI workspaces and pull request demos run on, their lifetimes, the default AI Gateway mode, and the preview domain demos are published under. The counterpart of `ankra org ai-environment set`. One per organisation; changes need organisation admin.
+
+Only the attributes you set are managed: an attribute left unset keeps the organisation's value and is read back as a computed value, and removing one from configuration stops managing it without clearing it. Destroy resets the attributes the configuration set to the platform defaults, except `staging_cluster_id`, which is left as it is because clearing it would stop every AI workspace and demo. The organisation's DNS root domain lives on the same platform object but is never touched here.
 
 ## Example Usage
 
@@ -27,14 +30,14 @@ resource "ankra_ai_environment" "this" {
 
 ### Optional
 
-- `default_gateway_mode` (String) Default AI Gateway mode for integrations: `ask` (default) or `agent`.
-- `demo_base_domain` (String) Wildcard zone demos are published under. Unset falls back to the staging cluster's own DNS zone.
-- `demo_cert_issuer_name` (String) cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`.
-- `demo_ingress_class_name` (String) Ingress class for demo ingresses.
-- `demo_tls_secret_name` (String) Secret holding a certificate for the preview domain.
-- `demo_ttl_hours` (Number) Demo lifetime, 1 to 720 hours. Defaults to 24.
-- `staging_cluster_id` (String) Cluster AI workspaces and demos run on. It must be an eligible cluster of the organisation.
-- `workspace_ttl_hours` (Number) AI workspace lifetime, 1 to 168 hours. Defaults to 8.
+- `default_gateway_mode` (String) Default AI Gateway mode for integrations: `ask` (the platform default) or `agent`.
+- `demo_base_domain` (String) Wildcard zone demos are published under; null falls back to the staging cluster's own DNS zone. Stored lowercased.
+- `demo_cert_issuer_name` (String) cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`. Stored lowercased.
+- `demo_ingress_class_name` (String) Ingress class for demo ingresses. Stored lowercased.
+- `demo_tls_secret_name` (String) Secret holding a certificate for the preview domain. Stored lowercased.
+- `demo_ttl_hours` (Number) Demo lifetime, 1 to 720 hours. Platform default 24.
+- `staging_cluster_id` (String) Cluster AI workspaces and demos run on. It must be an eligible cluster of the organisation. The provider never clears it.
+- `workspace_ttl_hours` (Number) AI workspace lifetime, 1 to 168 hours. Platform default 8.
 
 ### Read-Only
 

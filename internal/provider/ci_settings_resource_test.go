@@ -144,21 +144,23 @@ func newCIFake(t *testing.T) *ciFake {
 
 func TestAccCISettingsLifecycle(t *testing.T) {
 	fake := newCIFake(t)
-	pinned := fake.providerBlock() + fmt.Sprintf(`
+	// Set in the portal before Terraform: a pipeline cluster, an image
+	// policy and a scheduler share. None of it is in the configuration.
+	fake.settings["ci_cluster_id"] = ciTestCluster
+	fake.settings["ci_allowed_image_prefixes"] = []any{"ghcr.io/portal/"}
+	fake.settings["ci_max_parallel_steps"] = float64(32)
+	gated := fake.providerBlock() + fmt.Sprintf(`
 resource "ankra_ci_settings" "this" {
-  ci_cluster_id             = %q
-  ci_build_fallback         = "none"
-  ci_max_parallel_runs      = 4
-  ci_allowed_image_prefixes = ["ghcr.io/acme/"]
-  ci_image_gate             = "all"
+  ci_max_parallel_runs = 4
+  ci_image_gate        = "all"
 }
 
 resource "ankra_ci_pool_member" "spare" {
   cluster_id = %q
   weight     = 50
 }
-`, ciTestCluster, ciTestOtherCluster)
-	unpinned := fake.providerBlock() + fmt.Sprintf(`
+`, ciTestOtherCluster)
+	runsOnly := fake.providerBlock() + fmt.Sprintf(`
 resource "ankra_ci_settings" "this" {
   ci_max_parallel_runs = 4
 }
@@ -172,8 +174,12 @@ resource "ankra_ci_pool_member" "spare" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
-			if !reflect.DeepEqual(fake.settings, ciFakeDefaults()) {
-				return fmt.Errorf("destroy did not restore the default CI settings: %v", fake.settings)
+			if fake.settings["ci_max_parallel_runs"] != float64(16) {
+				return fmt.Errorf("destroy did not reset the managed ci_max_parallel_runs: %v", fake.settings["ci_max_parallel_runs"])
+			}
+			if fake.settings["ci_cluster_id"] != ciTestCluster || fake.settings["ci_max_parallel_steps"] != float64(32) ||
+				!reflect.DeepEqual(fake.settings["ci_allowed_image_prefixes"], []any{"ghcr.io/portal/"}) || fake.settings["ci_image_gate"] != "all" {
+				return fmt.Errorf("destroy touched settings Terraform did not manage: %v", fake.settings)
 			}
 			if len(fake.pool) != 0 {
 				return fmt.Errorf("pool members left after destroy: %v", fake.pool)
@@ -182,32 +188,34 @@ resource "ankra_ci_pool_member" "spare" {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: pinned,
+				Config: gated,
 				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_cluster_id", ciTestCluster),
 					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_cluster_name", "builder"),
-					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_cache_retention_days", "14"),
+					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_allowed_image_prefixes.0", "ghcr.io/portal/"),
+					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_max_parallel_steps", "32"),
 					resource.TestCheckResourceAttr("ankra_ci_settings.this", "platform_builds_enabled", "true"),
 					resource.TestCheckResourceAttr("ankra_ci_pool_member.spare", "weight", "50"),
 					resource.TestCheckResourceAttr("ankra_ci_pool_member.spare", "cluster_name", "spare"),
 					func(_ *terraform.State) error {
 						write := fake.writes[0]
-						if len(write) != len(ciFakeDefaults()) {
-							return fmt.Errorf("the settings write must name every setting, got %d members", len(write))
+						if len(write) != 2 || string(write["ci_image_gate"]) != `"all"` || string(write["ci_max_parallel_runs"]) != "4" {
+							return fmt.Errorf("the settings write must name only the configured settings, got %v", write)
 						}
 						return nil
 					},
 				),
 			},
 			{
-				Config: unpinned,
+				Config: runsOnly,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckNoResourceAttr("ankra_ci_settings.this", "ci_cluster_id"),
-					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_build_fallback", "platform_builders"),
-					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_allowed_image_prefixes.#", "0"),
+					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_image_gate", "all"),
+					resource.TestCheckResourceAttr("ankra_ci_settings.this", "ci_cluster_id", ciTestCluster),
 					resource.TestCheckResourceAttr("ankra_ci_pool_member.spare", "weight", "70"),
 					func(_ *terraform.State) error {
-						if string(fake.writes[len(fake.writes)-1]["ci_cluster_id"]) != "null" {
-							return fmt.Errorf("removing ci_cluster_id must send an explicit null to clear it")
+						write := fake.writes[len(fake.writes)-1]
+						if len(write) != 1 {
+							return fmt.Errorf("an attribute removed from configuration must stop being written, got %v", write)
 						}
 						return nil
 					},
@@ -230,7 +238,7 @@ resource "ankra_ci_pool_member" "spare" {
 					fake.settings["ci_max_parallel_runs"] = float64(32)
 					delete(fake.pool, ciTestOtherCluster)
 				},
-				Config: unpinned,
+				Config: runsOnly,
 				Check: func(_ *terraform.State) error {
 					if fake.settings["ci_max_parallel_runs"] != float64(4) || fake.pool[ciTestOtherCluster] != 70 {
 						return fmt.Errorf("drift was not corrected: settings %v, pool %v", fake.settings, fake.pool)

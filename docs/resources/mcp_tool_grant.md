@@ -30,7 +30,7 @@ resource "ankra_mcp_tool_grant" "find_issues" {
 
 ### Optional
 
-- `role` (String) Organisation role the tool is granted to. Defaults to `member`.
+- `role` (String) Organisation role slug the tool is granted to, as `ankra org roles` lists it. Omitted, it is `member`, and the platform treats a `member` grant as granted to every role. The platform accepts any string and a grant to a role that does not exist grants nothing, so the provider checks the role against the organisation's roles at creation (skipped, with a warning, when the provider token cannot list roles).
 
 ### Read-Only
 

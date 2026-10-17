@@ -25,6 +25,7 @@ var (
 	_ resource.Resource                = (*aiEnvironmentResource)(nil)
 	_ resource.ResourceWithConfigure   = (*aiEnvironmentResource)(nil)
 	_ resource.ResourceWithImportState = (*aiEnvironmentResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*aiEnvironmentResource)(nil)
 )
 
 const aiEnvironmentID = "ai_environment"
@@ -118,26 +119,10 @@ func (environment *aiEnvironmentResource) Schema(_ context.Context, _ resource.S
 	}
 }
 
-func (environment *aiEnvironmentResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
-	environment.write(ctx, request.Config, &response.State, response.Private, &response.Diagnostics)
-}
-
-func (environment *aiEnvironmentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	environment.write(ctx, request.Config, &response.State, response.Private, &response.Diagnostics)
-}
-
-// write sends only the configured fields; the platform keeps every key the
-// body does not carry.
-func (environment *aiEnvironmentResource) write(ctx context.Context, config tfsdk.Config, state *tfsdk.State, private privateStateWriter, diagnostics *diag.Diagnostics) {
-	apiClient := environment.requireClient(diagnostics)
-	if apiClient == nil {
-		return
-	}
-	var model aiEnvironmentModel
-	diagnostics.Append(config.Get(ctx, &model)...)
-	if diagnostics.HasError() {
-		return
-	}
+// aiEnvironmentBody names the configured settings only. A null in
+// configuration is indistinguishable from an unset attribute, so the provider
+// never sends a null staging_cluster_id.
+func aiEnvironmentBody(model aiEnvironmentModel) map[string]any {
 	body := map[string]any{}
 	putString := func(key string, value types.String) {
 		if !value.IsNull() && !value.IsUnknown() {
@@ -157,6 +142,48 @@ func (environment *aiEnvironmentResource) write(ctx context.Context, config tfsd
 	putString("demo_ingress_class_name", model.DemoIngressClassName)
 	putString("demo_tls_secret_name", model.DemoTLSSecretName)
 	putString("demo_cert_issuer_name", model.DemoCertIssuerName)
+	return body
+}
+
+// ModifyPlan plans an update when the set of configured settings changed,
+// so the apply records which ones destroy resets.
+func (environment *aiEnvironmentResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var config aiEnvironmentModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if organisationManagedKeysChanged(ctx, aiEnvironmentBody(config), request.Private) {
+		response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("staging_cluster_name"), types.StringUnknown())...)
+	}
+}
+
+func (environment *aiEnvironmentResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	environment.write(ctx, request.Config, request.Plan, &response.State, response.Private, &response.Diagnostics)
+}
+
+func (environment *aiEnvironmentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	environment.write(ctx, request.Config, request.Plan, &response.State, response.Private, &response.Diagnostics)
+}
+
+// write sends only the configured fields; the platform keeps every key the
+// body does not carry.
+func (environment *aiEnvironmentResource) write(ctx context.Context, config tfsdk.Config, plan tfsdk.Plan, state *tfsdk.State, private privateStateWriter, diagnostics *diag.Diagnostics) {
+	apiClient := environment.requireClient(diagnostics)
+	if apiClient == nil {
+		return
+	}
+	var model aiEnvironmentModel
+	var configured aiEnvironmentModel
+	diagnostics.Append(config.Get(ctx, &configured)...)
+	diagnostics.Append(plan.Get(ctx, &model)...)
+	if diagnostics.HasError() {
+		return
+	}
+	body := aiEnvironmentBody(configured)
 
 	var stored *client.OrganisationAIEnvironment
 	var err error

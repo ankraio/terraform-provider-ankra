@@ -24,6 +24,7 @@ var (
 	_ resource.Resource                = (*aiSpendCapResource)(nil)
 	_ resource.ResourceWithConfigure   = (*aiSpendCapResource)(nil)
 	_ resource.ResourceWithImportState = (*aiSpendCapResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*aiSpendCapResource)(nil)
 )
 
 const aiSpendCapID = "ai_spend_cap"
@@ -103,6 +104,37 @@ func (spendCap *aiSpendCapResource) Schema(_ context.Context, _ resource.SchemaR
 	}
 }
 
+// aiSpendCapBody names the configured caps only.
+func aiSpendCapBody(model aiSpendCapModel) map[string]any {
+	body := map[string]any{}
+	if !model.DailyChatUSDCap.IsNull() && !model.DailyChatUSDCap.IsUnknown() {
+		body["daily_chat_usd_cap"] = model.DailyChatUSDCap.ValueFloat64()
+	}
+	if !model.DailyTokenSoftCap.IsNull() && !model.DailyTokenSoftCap.IsUnknown() {
+		body["daily_token_soft_cap"] = model.DailyTokenSoftCap.ValueInt64()
+	}
+	if !model.DailyTokenHardCap.IsNull() && !model.DailyTokenHardCap.IsUnknown() {
+		body["daily_token_hard_cap"] = model.DailyTokenHardCap.ValueInt64()
+	}
+	return body
+}
+
+// ModifyPlan plans an update when the set of configured caps changed, so
+// the apply records which ones destroy clears.
+func (spendCap *aiSpendCapResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var config aiSpendCapModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if organisationManagedKeysChanged(ctx, aiSpendCapBody(config), request.Private) {
+		response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("effective_usd"), types.Float64Unknown())...)
+	}
+}
+
 func (spendCap *aiSpendCapResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	spendCap.write(ctx, request.Config, &response.State, response.Private, &response.Diagnostics)
 }
@@ -121,16 +153,7 @@ func (spendCap *aiSpendCapResource) write(ctx context.Context, config tfsdk.Conf
 	if diagnostics.HasError() {
 		return
 	}
-	body := map[string]any{}
-	if !model.DailyChatUSDCap.IsNull() && !model.DailyChatUSDCap.IsUnknown() {
-		body["daily_chat_usd_cap"] = model.DailyChatUSDCap.ValueFloat64()
-	}
-	if !model.DailyTokenSoftCap.IsNull() && !model.DailyTokenSoftCap.IsUnknown() {
-		body["daily_token_soft_cap"] = model.DailyTokenSoftCap.ValueInt64()
-	}
-	if !model.DailyTokenHardCap.IsNull() && !model.DailyTokenHardCap.IsUnknown() {
-		body["daily_token_hard_cap"] = model.DailyTokenHardCap.ValueInt64()
-	}
+	body := aiSpendCapBody(model)
 
 	var stored *client.OrganisationAISpendCap
 	var err error

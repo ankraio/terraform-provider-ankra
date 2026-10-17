@@ -32,13 +32,14 @@ const aiTestInstallation = "4242"
 // lowercases its preview names.
 type aiFake struct {
 	*routeFake
-	rules          map[string]map[string]any
-	related        map[string]map[string]any
-	spendCap       map[string]any
-	environment    map[string]any
-	ruleWrites     []map[string]json.RawMessage
-	spendCapWrites []map[string]json.RawMessage
-	created        int
+	rules             map[string]map[string]any
+	related           map[string]map[string]any
+	spendCap          map[string]any
+	environment       map[string]any
+	ruleWrites        []map[string]json.RawMessage
+	spendCapWrites    []map[string]json.RawMessage
+	environmentWrites []map[string]json.RawMessage
+	created           int
 }
 
 func aiFakeEnvironmentDefaults() map[string]any {
@@ -201,6 +202,7 @@ func newAIFake(t *testing.T) *aiFake {
 	fake.handle("PUT /api/v1/org/ai-environment", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]json.RawMessage
 		decodeJSON(t, request, &body)
+		fake.environmentWrites = append(fake.environmentWrites, body)
 		if _, present := body["dns_root_domain"]; present {
 			t.Errorf("the AI environment write must not touch dns_root_domain")
 		}
@@ -352,23 +354,25 @@ func TestAIReviewPairMatchesEitherOrder(t *testing.T) {
 	}
 }
 
+// TestAccAISpendCapAndEnvironmentLifecycle pins that the singletons manage
+// only what configuration sets: values set in the portal survive create,
+// update and destroy, and destroy resets only the managed fields.
 func TestAccAISpendCapAndEnvironmentLifecycle(t *testing.T) {
 	fake := newAIFake(t)
-	capped := fake.providerBlock() + `
+	fake.spendCap["daily_token_soft_cap"] = float64(1000000)
+	fake.environment["staging_cluster_id"] = "12121212-0000-0000-0000-000000000001"
+	fake.environment["demo_ttl_hours"] = float64(36)
+	first := fake.providerBlock() + `
 resource "ankra_ai_spend_cap" "this" {
-  daily_chat_usd_cap   = 25
-  daily_token_soft_cap = 2000000
-  daily_token_hard_cap = 5000000
+  daily_chat_usd_cap = 25
 }
 
 resource "ankra_ai_environment" "this" {
-  staging_cluster_id   = "12121212-0000-0000-0000-000000000001"
-  demo_ttl_hours       = 48
   default_gateway_mode = "agent"
   demo_base_domain     = "Previews.Example.com"
 }
 `
-	relaxed := fake.providerBlock() + `
+	second := fake.providerBlock() + `
 resource "ankra_ai_spend_cap" "this" {
   daily_token_hard_cap = 5000000
 }
@@ -381,43 +385,53 @@ resource "ankra_ai_environment" "this" {
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
-			for key, value := range fake.spendCap {
-				if value != nil {
-					return fmt.Errorf("destroy left spend cap %s = %v", key, value)
-				}
+			if fake.spendCap["daily_token_hard_cap"] != nil {
+				return fmt.Errorf("destroy did not clear the managed hard cap: %v", fake.spendCap)
 			}
-			for key, value := range aiFakeEnvironmentDefaults() {
-				if fake.environment[key] != value {
-					return fmt.Errorf("destroy left AI environment %s = %v, want %v", key, fake.environment[key], value)
-				}
+			if fake.spendCap["daily_token_soft_cap"] != float64(1000000) || fake.spendCap["daily_chat_usd_cap"] != float64(25) {
+				return fmt.Errorf("destroy touched caps Terraform no longer manages: %v", fake.spendCap)
+			}
+			if fake.environment["demo_ttl_hours"] != float64(24) {
+				return fmt.Errorf("destroy did not reset the managed demo_ttl_hours: %v", fake.environment)
+			}
+			if fake.environment["staging_cluster_id"] == nil || fake.environment["default_gateway_mode"] != "agent" || fake.environment["demo_base_domain"] != "previews.example.com" {
+				return fmt.Errorf("destroy touched settings Terraform no longer manages: %v", fake.environment)
 			}
 			return nil
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: capped,
+				Config: first,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("ankra_ai_spend_cap.this", "effective_usd", "25"),
-					resource.TestCheckResourceAttr("ankra_ai_spend_cap.this", "plan_default_usd", "5"),
+					resource.TestCheckResourceAttr("ankra_ai_spend_cap.this", "daily_token_soft_cap", "1000000"),
 					resource.TestCheckResourceAttr("ankra_ai_environment.this", "demo_base_domain", "Previews.Example.com"),
 					resource.TestCheckResourceAttr("ankra_ai_environment.this", "staging_cluster_name", "staging"),
-					resource.TestCheckResourceAttr("ankra_ai_environment.this", "workspace_ttl_hours", "8"),
+					resource.TestCheckResourceAttr("ankra_ai_environment.this", "demo_ttl_hours", "36"),
+					func(_ *terraform.State) error {
+						if len(fake.spendCapWrites) != 1 || len(fake.spendCapWrites[0]) != 1 {
+							return fmt.Errorf("the cap write must name only the configured cap, got %v", fake.spendCapWrites)
+						}
+						if len(fake.environmentWrites) != 1 || len(fake.environmentWrites[0]) != 2 {
+							return fmt.Errorf("the environment write must name only the configured settings, got %v", fake.environmentWrites)
+						}
+						return nil
+					},
 				),
 			},
 			{
-				Config: relaxed,
+				Config: second,
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckNoResourceAttr("ankra_ai_spend_cap.this", "daily_chat_usd_cap"),
-					resource.TestCheckResourceAttr("ankra_ai_spend_cap.this", "effective_usd", "5"),
-					resource.TestCheckNoResourceAttr("ankra_ai_environment.this", "staging_cluster_id"),
-					resource.TestCheckResourceAttr("ankra_ai_environment.this", "default_gateway_mode", "ask"),
+					resource.TestCheckResourceAttr("ankra_ai_spend_cap.this", "daily_chat_usd_cap", "25"),
+					resource.TestCheckResourceAttr("ankra_ai_environment.this", "default_gateway_mode", "agent"),
 					func(_ *terraform.State) error {
 						write := fake.spendCapWrites[len(fake.spendCapWrites)-1]
-						if string(write["daily_chat_usd_cap"]) != "null" || string(write["daily_token_soft_cap"]) != "null" {
-							return fmt.Errorf("removed caps must be sent as null to clear them, got %v", write)
+						if len(write) != 1 || string(write["daily_token_hard_cap"]) != "5000000" {
+							return fmt.Errorf("a dropped cap must stop being written, got %v", write)
 						}
-						if fake.environment["demo_base_domain"] != nil || fake.environment["staging_cluster_id"] != nil {
-							return fmt.Errorf("removed environment settings were not cleared: %v", fake.environment)
+						environmentWrite := fake.environmentWrites[len(fake.environmentWrites)-1]
+						if _, present := environmentWrite["staging_cluster_id"]; present {
+							return fmt.Errorf("the provider must never send staging_cluster_id it was not given, got %v", environmentWrite)
 						}
 						return nil
 					},
@@ -430,17 +444,18 @@ resource "ankra_ai_environment" "this" {
 				ImportStateVerify: true,
 			},
 			{
-				ResourceName:      "ankra_ai_environment.this",
-				ImportState:       true,
-				ImportStateId:     "ai_environment",
-				ImportStateVerify: true,
+				ResourceName:            "ankra_ai_environment.this",
+				ImportState:             true,
+				ImportStateId:           "ai_environment",
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"demo_base_domain"},
 			},
 			{
 				PreConfig: func() {
-					fake.spendCap["daily_token_hard_cap"] = float64(9)
+					fake.spendCap["daily_token_hard_cap"] = float64(9000000)
 					fake.environment["demo_ttl_hours"] = float64(12)
 				},
-				Config: relaxed,
+				Config: second,
 				Check: func(_ *terraform.State) error {
 					if fake.spendCap["daily_token_hard_cap"] != float64(5000000) || fake.environment["demo_ttl_hours"] != float64(48) {
 						return fmt.Errorf("drift was not corrected: cap %v, environment %v", fake.spendCap, fake.environment)

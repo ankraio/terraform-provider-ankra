@@ -4,14 +4,14 @@ page_title: "ankra_organisation_member Resource - ankra"
 subcategory: ""
 description: |-
   A member of an organisation, added by invitation. The counterpart of ankra org invite and ankra org remove.
-  The API offers API tokens no role change, so changing role removes the member and invites them again; an active member is then pending until they accept.
+  API tokens have no role change, and removing and re-inviting a member would retire their role assignments, delete their GitHub credentials and leave them pending, so a change of role (in configuration, or made in the portal) stops the plan with an error: change the role in the portal and set role to match. A plan that would remove or replace the provider's own membership is refused too. Destroy removes the member, which retires their role assignments.
 ---
 
 # ankra_organisation_member (Resource)
 
 A member of an organisation, added by invitation. The counterpart of `ankra org invite` and `ankra org remove`.
 
-The API offers API tokens no role change, so changing `role` removes the member and invites them again; an active member is then pending until they accept.
+API tokens have no role change, and removing and re-inviting a member would retire their role assignments, delete their GitHub credentials and leave them pending, so a change of `role` (in configuration, or made in the portal) stops the plan with an error: change the role in the portal and set `role` to match. A plan that would remove or replace the provider's own membership is refused too. Destroy removes the member, which retires their role assignments.
 
 ## Example Usage
 
@@ -27,8 +27,8 @@ resource "ankra_organisation_member" "alice" {
 
 ### Required
 
-- `email` (String) Email address invited. The member's account may carry a different address (a relay address, for example), so this is not read back.
-- `role` (String) Role: `member`, `admin` or `read-only`. Changing it re-invites the member.
+- `email` (String) Email address invited. The member's account may carry a different address (a relay address, for example), so it is never read back, and a change of letter case is not a change. Changing it invites someone else.
+- `role` (String) Role at invitation: `member`, `admin` or `read-only`. It cannot be changed here; change it in the portal and set this to match.
 
 ### Optional
 

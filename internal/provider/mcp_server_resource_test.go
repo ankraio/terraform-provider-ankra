@@ -75,11 +75,12 @@ func newMCPFake(t *testing.T) *mcpFake {
 		fake.env[identifier] = env
 		delete(body, "env")
 		body["id"] = identifier
+		body["organisation"] = request.Header.Get("X-Ankra-Organisation-Id")
 		fake.servers[identifier] = body
 		writeJSON(t, writer, http.StatusOK, fake.public(identifier))
 	})
 	fake.handle("GET /api/v1/org/mcp-servers/{server_id}", func(writer http.ResponseWriter, request *http.Request) {
-		if _, exists := fake.servers[request.PathValue("server_id")]; !exists {
+		if !fake.visible(request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP server not found"})
 			return
 		}
@@ -87,8 +88,8 @@ func newMCPFake(t *testing.T) *mcpFake {
 	})
 	fake.handle("PUT /api/v1/org/mcp-servers/{server_id}", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("server_id")
-		server, exists := fake.servers[identifier]
-		if !exists {
+		server := fake.servers[identifier]
+		if !fake.visible(request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP server not found"})
 			return
 		}
@@ -100,12 +101,15 @@ func newMCPFake(t *testing.T) *mcpFake {
 			_ = json.Unmarshal(raw, &value)
 			switch key {
 			case "env":
-				if env, isMap := value.(map[string]any); isMap {
-					if refusal := mcpFakeEnvRefusal(env); refusal != "" {
-						writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": refusal})
-						return
-					}
-					fake.env[identifier] = env
+				t.Errorf("the provider must patch env, never replace it: a replacement wipes keys set outside Terraform")
+			case "env_patch":
+				patch, _ := value.(map[string]any)
+				if refusal := mcpFakeEnvRefusal(patch); refusal != "" {
+					writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": refusal})
+					return
+				}
+				for key, patched := range patch {
+					fake.env[identifier][key] = patched
 				}
 			case "description", "url", "enabled", "permission_tier":
 				if value != nil {
@@ -119,7 +123,7 @@ func newMCPFake(t *testing.T) *mcpFake {
 	})
 	fake.handle("DELETE /api/v1/org/mcp-servers/{server_id}", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("server_id")
-		if _, exists := fake.servers[identifier]; !exists {
+		if !fake.visible(request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP server not found"})
 			return
 		}
@@ -129,7 +133,7 @@ func newMCPFake(t *testing.T) *mcpFake {
 	})
 	fake.handle("GET /api/v1/org/mcp-servers/{server_id}/grants", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("server_id")
-		if _, exists := fake.servers[identifier]; !exists {
+		if !fake.visible(request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP server not found"})
 			return
 		}
@@ -141,7 +145,7 @@ func newMCPFake(t *testing.T) *mcpFake {
 	})
 	fake.handle("POST /api/v1/org/mcp-servers/{server_id}/grants", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("server_id")
-		if _, exists := fake.servers[identifier]; !exists {
+		if !fake.visible(request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP server not found"})
 			return
 		}
@@ -172,7 +176,19 @@ func newMCPFake(t *testing.T) *mcpFake {
 		}
 		writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "MCP tool grant not found"})
 	})
+	fake.handle("GET /api/v1/org/organisation/roles", func(writer http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, writer, http.StatusOK, map[string]any{"roles": []map[string]any{
+			{"slug": "owner", "builtin": true}, {"slug": "admin", "builtin": true}, {"slug": "member", "builtin": true}, {"slug": "auditor", "builtin": false},
+		}})
+	})
 	return fake
+}
+
+// visible reports whether the server in the path exists in the organisation
+// the request acts in: another organisation sees a 404.
+func (fake *mcpFake) visible(request *http.Request) bool {
+	server, exists := fake.servers[request.PathValue("server_id")]
+	return exists && server["organisation"] == request.Header.Get("X-Ankra-Organisation-Id")
 }
 
 // public renders a server as GET does: env values never leave the platform.
@@ -273,6 +289,9 @@ resource "ankra_mcp_server" "leaky" {
 					resource.TestCheckResourceAttr("ankra_mcp_tool_grant.find_issues", "role", "admin"),
 					func(_ *terraform.State) error {
 						update := fake.updates[len(fake.updates)-1]
+						if string(update["env_patch"]) != `{"Authorization":"${SECRET_SLOT:slot-2}","Region":"eu"}` {
+							return fmt.Errorf("env must be patched with the configured keys, got %s", update["env_patch"])
+						}
 						if string(update["allowed_tools"]) != "null" || string(update["description"]) != `""` {
 							return fmt.Errorf("update must send an explicit null allowed_tools and an empty description to clear them, got %s and %s",
 								update["allowed_tools"], update["description"])
@@ -299,14 +318,52 @@ resource "ankra_mcp_server" "leaky" {
 				ImportStateVerify: true,
 			},
 			{
+				// A header added in the portal is not Terraform's: no diff.
 				PreConfig: func() {
 					for identifier := range fake.env {
-						fake.env[identifier] = map[string]any{"Authorization": "${SECRET_SLOT:other}"}
+						fake.env[identifier]["X-Portal-Header"] = "${SECRET_SLOT:portal}"
+					}
+				},
+				Config:   withoutTools,
+				PlanOnly: true,
+			},
+			{
+				// Without env in configuration nothing is patched, and the
+				// portal header survives.
+				Config: strings.Replace(withoutTools, `  env       = { Authorization = "$${SECRET_SLOT:slot-2}", Region = "eu" }`+"\n", "", 1),
+				Check: func(_ *terraform.State) error {
+					update := fake.updates[len(fake.updates)-1]
+					if _, present := update["env_patch"]; !present {
+						return fmt.Errorf("dropping env must blank the keys Terraform set, got %v", update)
+					}
+					for identifier := range fake.env {
+						if fake.env[identifier]["X-Portal-Header"] != "${SECRET_SLOT:portal}" {
+							return fmt.Errorf("the portal header was touched: %v", fake.env[identifier])
+						}
+						if fake.env[identifier]["Region"] != "" {
+							return fmt.Errorf("a dropped key must be blanked, got %v", fake.env[identifier])
+						}
+					}
+					return nil
+				},
+			},
+			{
+				Config: withoutTools,
+			},
+			{
+				// A configured key lost on the platform is drift.
+				PreConfig: func() {
+					for identifier := range fake.env {
+						delete(fake.env[identifier], "Region")
 					}
 				},
 				Config:             withoutTools,
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
+			},
+			{
+				Config:      strings.Replace(withoutTools, `role      = "admin"`, `role      = "admn"`, 1),
+				ExpectError: regexp.MustCompile("Unknown role"),
 			},
 			{
 				PreConfig: func() {
@@ -326,6 +383,48 @@ resource "ankra_mcp_server" "leaky" {
 			{
 				Config:      withoutTools + strings.TrimPrefix(plaintext, fake.providerBlock()),
 				ExpectError: regexp.MustCompile("Sensitive env values"),
+			},
+		},
+	})
+}
+
+// TestAccMCPServerOrganisationSwitchKeepsTheResource pins that pointing the
+// provider at another organisation, where the server answers 404, neither
+// drops the server nor lets destroy report success.
+func TestAccMCPServerOrganisationSwitchKeepsTheResource(t *testing.T) {
+	fake := newMCPFake(t)
+	inOrganisation := func(organisationID string) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token           = "test-token"
+  base_url        = %q
+  organisation_id = %q
+}
+
+resource "ankra_mcp_server" "sentry" {
+  name      = "sentry"
+  transport = "http"
+  url       = "https://mcp.sentry.dev/mcp"
+}
+`, fake.server.URL, organisationID)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: inOrganisation(organisationTestCurrent)},
+			{
+				Config:      inOrganisation("aaaaaaaa-0000-0000-0000-000000000099"),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: inOrganisation(organisationTestCurrent),
+				Check: func(_ *terraform.State) error {
+					if len(fake.servers) != 1 {
+						return fmt.Errorf("the switch created or lost a server: %v", fake.servers)
+					}
+					return nil
+				},
 			},
 		},
 	})

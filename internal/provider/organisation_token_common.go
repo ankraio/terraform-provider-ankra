@@ -46,18 +46,18 @@ const organisationTokenLifecycleNotes = "\n\n" +
 // failure to retire the old token is a warning: the new token is live and
 // must reach state.
 func organisationReplaceToken(ctx context.Context, operations organisationTokenOperations, oldTokenID string, isNameKept bool,
-	mint func() (string, error), diagnostics *diag.Diagnostics) (string, bool) {
+	mint func() (string, error), diagnostics *diag.Diagnostics) bool {
 	if isNameKept {
 		rotated, err := operations.rotate(ctx, oldTokenID)
 		if err != nil {
 			diagnostics.AddError("Unable to free the token name for its replacement", err.Error())
-			return "", false
+			return false
 		}
 		if err := organisationRetireToken(ctx, operations, rotated.ID); err != nil {
 			diagnostics.AddError("Unable to retire the intermediate renewal",
 				fmt.Sprintf("Renewing token %s to free its name produced token %s, which could not be revoked and deleted: %s. "+
 					"Revoke it with `ankra tokens revoke %s`, then apply again.", oldTokenID, rotated.ID, err, rotated.ID))
-			return "", false
+			return false
 		}
 	}
 	newTokenID, err := mint()
@@ -67,13 +67,13 @@ func organisationReplaceToken(ctx context.Context, operations organisationTokenO
 			detail += fmt.Sprintf("\n\nThe old token %s was renewed to free its name and keeps working for 24 hours; the next plan reports it.", oldTokenID)
 		}
 		diagnostics.AddError("Unable to mint the replacement token", detail)
-		return "", false
+		return false
 	}
 	if err := organisationRetireToken(ctx, operations, oldTokenID); err != nil {
 		diagnostics.AddWarning("Old token not retired",
 			fmt.Sprintf("The replacement %s is live, but the old token %s could not be revoked and deleted: %s. Revoke it by hand.", newTokenID, oldTokenID, err))
 	}
-	return newTokenID, true
+	return true
 }
 
 // organisationRetireToken revokes and deletes a token. Revoking one already

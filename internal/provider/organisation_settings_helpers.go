@@ -46,6 +46,24 @@ func organisationManagedKeys(ctx context.Context, private privateStateReader) []
 	return keys
 }
 
+// organisationManagedKeysChanged reports whether the fields the
+// configuration sets differ from the ones recorded at the last apply. A
+// singleton then plans an update even when no value changes, so that
+// dropping an attribute from configuration is recorded and destroy no longer
+// resets it.
+func organisationManagedKeysChanged(ctx context.Context, body map[string]any, private privateStateReader) bool {
+	recorded := organisationManagedKeys(ctx, private)
+	if len(recorded) != len(body) {
+		return true
+	}
+	for _, key := range recorded {
+		if _, present := body[key]; !present {
+			return true
+		}
+	}
+	return false
+}
+
 // organisationResetBody is the write that puts the managed fields back to
 // their platform defaults; a field without a default is left as it is.
 func organisationResetBody(managed []string, defaults map[string]any) map[string]any {

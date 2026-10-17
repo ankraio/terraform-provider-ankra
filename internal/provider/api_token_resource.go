@@ -215,7 +215,7 @@ func (token *apiTokenResource) Update(ctx context.Context, request resource.Upda
 	if response.Diagnostics.HasError() {
 		return
 	}
-	_, replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Name.Equal(state.Name),
+	replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Name.Equal(state.Name),
 		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
 	if !replaced {
 		return

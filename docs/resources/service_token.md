@@ -4,14 +4,26 @@ page_title: "ankra_service_token Resource - ankra"
 subcategory: ""
 description: |-
   An organisation service token: a token that belongs to a service account rather than a person, so it keeps working when its creator leaves. The counterpart of ankra tokens create --service; destroy revokes and then deletes it. Managing service tokens needs the members.manage permission.
-  The service account is created with role_slug when the organisation has none of that name; for an existing account role_slug must be the role it already holds. The token value is revealed once, at creation, and kept in state as a sensitive value. Every change mints a new token. A token revoked outside Terraform is treated as gone and planned for recreation.
+  The service account is created with role_slug when the organisation has none of that name; for an existing account role_slug must be the role it already holds. The provider never changes an account's role: a change of role_slug, or a role changed in the portal, stops the plan with an error until configuration and portal agree.
+  Account stand-down. When an account's last token is deleted, the platform stands the account down and retires its role assignments. Changing name (the account) therefore replaces the token on a new account and, if it was the old account's last token, stands the old account down; destroy does the same. Every other change keeps a token on the account throughout.
+  What changes the token value. The platform cannot edit a token, so changing expires_at, scopes or project_id (and name or label) mints a new token value in place: the provider mints the replacement first and only then revokes and deletes the old token, so there is no window without a working token, but every holder of the old value must be given the new token. When the name stays the same, the provider first renews the old token (-replaced- suffix, 24 hours of overlap) to free the name. Nothing else re-mints the token.
+  Drift. A token revoked outside Terraform stays in state with revoked = true and is replaced on the next apply. A token renewed outside Terraform (ankra tokens rotate, which renames it <name>-replaced-<stamp>) stops every plan with an error naming what to do. A change of expires_at, scopes or project_id made outside Terraform re-mints the token on the next apply.
+  ~> Do not compute expires_at from timestamp(), for example timeadd(timestamp(), "720h"): the value changes on every plan, so every apply mints a new token. Use a fixed date, or time_offset from the time provider.
 ---
 
 # ankra_service_token (Resource)
 
 An organisation service token: a token that belongs to a service account rather than a person, so it keeps working when its creator leaves. The counterpart of `ankra tokens create --service`; destroy revokes and then deletes it. Managing service tokens needs the `members.manage` permission.
 
-The service account is created with `role_slug` when the organisation has none of that name; for an existing account `role_slug` must be the role it already holds. The token value is revealed once, at creation, and kept in state as a sensitive value. Every change mints a new token. A token revoked outside Terraform is treated as gone and planned for recreation.
+The service account is created with `role_slug` when the organisation has none of that name; for an existing account `role_slug` must be the role it already holds. The provider never changes an account's role: a change of `role_slug`, or a role changed in the portal, stops the plan with an error until configuration and portal agree.
+
+**Account stand-down.** When an account's last token is deleted, the platform stands the account down and retires its role assignments. Changing `name` (the account) therefore replaces the token on a new account and, if it was the old account's last token, stands the old account down; destroy does the same. Every other change keeps a token on the account throughout.
+
+**What changes the token value.** The platform cannot edit a token, so changing `expires_at`, `scopes` or `project_id` (and `name` or `label`) mints a new token value in place: the provider mints the replacement first and only then revokes and deletes the old token, so there is no window without a working token, but every holder of the old value must be given the new `token`. When the name stays the same, the provider first renews the old token (`-replaced-` suffix, 24 hours of overlap) to free the name. Nothing else re-mints the token.
+
+**Drift.** A token revoked outside Terraform stays in state with `revoked = true` and is replaced on the next apply. A token renewed outside Terraform (`ankra tokens rotate`, which renames it `<name>-replaced-<stamp>`) stops every plan with an error naming what to do. A change of `expires_at`, `scopes` or `project_id` made outside Terraform re-mints the token on the next apply.
+
+~> Do not compute `expires_at` from `timestamp()`, for example `timeadd(timestamp(), "720h")`: the value changes on every plan, so every apply mints a new token. Use a fixed date, or `time_offset` from the `time` provider.
 
 ## Example Usage
 
@@ -28,21 +40,23 @@ resource "ankra_service_token" "ci" {
 
 ### Required
 
-- `name` (String) Service account name.
-- `role_slug` (String) Role the service account holds, such as `member` or a custom role's slug. It may not carry permissions the caller lacks.
+- `name` (String) Service account name. Changing it replaces the token on another account (destroy before create, so there is a window without a working token).
+- `role_slug` (String) Role the service account holds, such as `member` or a custom role's slug. It may not carry permissions the caller lacks, and the provider never changes it.
 
 ### Optional
 
 - `expires_at` (String) Expiry as an RFC 3339 timestamp. Defaults to 90 days after creation.
-- `label` (String) Name of this token among the account's tokens. Defaults to a timestamp of when it was minted.
-- `scopes` (Set of String) Permission allowlist: `mcp:read` and/or `mcp:write` make an MCP token, which ordinary REST requests refuse. Unset keeps the token at the full authority of its holder.
+- `label` (String) Name of this token among the account's tokens. Defaults to a timestamp of when it was minted; an empty label is refused, because the platform would substitute a timestamp and every plan would try to change it back.
+- `project_id` (String) Project the token is pinned to. Unset makes it organisation-wide; the provider always sends the choice, because the platform would otherwise pin an MCP token to whatever project the user last selected in the portal.
+- `scopes` (Set of String) Permission allowlist: `mcp:read` and/or `mcp:write` make an MCP token, which ordinary REST requests refuse. Unset keeps the token at the full authority of its holder; an empty set is refused, because the platform reads it as unset.
 
 ### Read-Only
 
 - `account_id` (String) Service account id.
-- `id` (String) Token id.
-- `project_id` (String) Project the token is pinned to, if any.
-- `token` (String, Sensitive) The token value. Revealed only at creation; null after an import.
+- `id` (String) Token id. It changes whenever the token value is re-minted.
+- `organisation_id` (String) Organisation the token was minted in.
+- `revoked` (Boolean) Whether the token was revoked outside Terraform; a revoked token is replaced on the next apply.
+- `token` (String, Sensitive) The token value. Revealed only when minted; null after an import.
 
 ## Import
 

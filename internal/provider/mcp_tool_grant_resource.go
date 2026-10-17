@@ -74,11 +74,11 @@ func (grant *mcpToolGrantResource) Schema(_ context.Context, _ resource.SchemaRe
 					"`member`, and the platform treats a `member` grant as granted to every role. The platform accepts any string and a " +
 					"grant to a role that does not exist grants nothing, so the provider checks the role against the organisation's " +
 					"roles at creation (skipped, with a warning, when the provider token cannot list roles).",
-				Optional:            true,
-				Computed:            true,
-				Default:             stringdefault.StaticString("member"),
-				Validators:          []validator.String{mcpGrantRoleValidator{}},
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Optional:      true,
+				Computed:      true,
+				Default:       stringdefault.StaticString("member"),
+				Validators:    []validator.String{mcpGrantRoleValidator{}},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 		},
 	}

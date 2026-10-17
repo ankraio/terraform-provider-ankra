@@ -4,14 +4,23 @@ page_title: "ankra_api_token Resource - ankra"
 subcategory: ""
 description: |-
   A personal API token of the provider token's user, in the current organisation. The counterpart of ankra tokens create; destroy revokes and then deletes it, like ankra tokens revoke followed by ankra tokens delete.
-  The token value is revealed once, at creation, and kept in state as a sensitive value. Nothing about a token can be changed in place, so every change mints a new token. A token revoked outside Terraform is treated as gone and planned for recreation.
+  The token value is revealed once, at creation, and kept in state as a sensitive value. A personal token belongs to the user who minted it: if the provider later authenticates as someone else (a CI service token, say) or in another organisation, every plan stops with an error instead of losing track of the token and minting a second one.
+  What changes the token value. The platform cannot edit a token, so changing expires_at, scopes or project_id (and name or label) mints a new token value in place: the provider mints the replacement first and only then revokes and deletes the old token, so there is no window without a working token, but every holder of the old value must be given the new token. When the name stays the same, the provider first renews the old token (-replaced- suffix, 24 hours of overlap) to free the name. Nothing else re-mints the token.
+  Drift. A token revoked outside Terraform stays in state with revoked = true and is replaced on the next apply. A token renewed outside Terraform (ankra tokens rotate, which renames it <name>-replaced-<stamp>) stops every plan with an error naming what to do. A change of expires_at, scopes or project_id made outside Terraform re-mints the token on the next apply.
+  ~> Do not compute expires_at from timestamp(), for example timeadd(timestamp(), "720h"): the value changes on every plan, so every apply mints a new token. Use a fixed date, or time_offset from the time provider.
 ---
 
 # ankra_api_token (Resource)
 
 A personal API token of the provider token's user, in the current organisation. The counterpart of `ankra tokens create`; destroy revokes and then deletes it, like `ankra tokens revoke` followed by `ankra tokens delete`.
 
-The token value is revealed once, at creation, and kept in state as a sensitive value. Nothing about a token can be changed in place, so every change mints a new token. A token revoked outside Terraform is treated as gone and planned for recreation.
+The token value is revealed once, at creation, and kept in state as a sensitive value. A personal token belongs to the user who minted it: if the provider later authenticates as someone else (a CI service token, say) or in another organisation, every plan stops with an error instead of losing track of the token and minting a second one.
+
+**What changes the token value.** The platform cannot edit a token, so changing `expires_at`, `scopes` or `project_id` (and `name` or `label`) mints a new token value in place: the provider mints the replacement first and only then revokes and deletes the old token, so there is no window without a working token, but every holder of the old value must be given the new `token`. When the name stays the same, the provider first renews the old token (`-replaced-` suffix, 24 hours of overlap) to free the name. Nothing else re-mints the token.
+
+**Drift.** A token revoked outside Terraform stays in state with `revoked = true` and is replaced on the next apply. A token renewed outside Terraform (`ankra tokens rotate`, which renames it `<name>-replaced-<stamp>`) stops every plan with an error naming what to do. A change of `expires_at`, `scopes` or `project_id` made outside Terraform re-mints the token on the next apply.
+
+~> Do not compute `expires_at` from `timestamp()`, for example `timeadd(timestamp(), "720h")`: the value changes on every plan, so every apply mints a new token. Use a fixed date, or `time_offset` from the `time` provider.
 
 ## Example Usage
 
@@ -39,14 +48,17 @@ output "mcp_token" {
 ### Optional
 
 - `expires_at` (String) Expiry as an RFC 3339 timestamp. Defaults to 90 days after creation.
-- `scopes` (Set of String) Permission allowlist: `mcp:read` and/or `mcp:write` make an MCP token, which ordinary REST requests refuse. Unset keeps the token at the full authority of its holder.
+- `project_id` (String) Project the token is pinned to. Unset makes it organisation-wide; the provider always sends the choice, because the platform would otherwise pin an MCP token to whatever project the user last selected in the portal.
+- `scopes` (Set of String) Permission allowlist: `mcp:read` and/or `mcp:write` make an MCP token, which ordinary REST requests refuse. Unset keeps the token at the full authority of its holder; an empty set is refused, because the platform reads it as unset.
 
 ### Read-Only
 
-- `created_at` (String) Creation time.
-- `id` (String) Token id.
-- `project_id` (String) Project the token is pinned to. The platform pins an MCP-scoped token to the project requests act in.
-- `token` (String, Sensitive) The token value. Revealed only at creation; null after an import.
+- `created_at` (String) Creation time of the current token value.
+- `id` (String) Token id. It changes whenever the token value is re-minted.
+- `organisation_id` (String) Organisation the token was minted in.
+- `owner_user_id` (String) User the token belongs to: the provider token's user when it was minted.
+- `revoked` (Boolean) Whether the token was revoked outside Terraform; a revoked token is replaced on the next apply.
+- `token` (String, Sensitive) The token value. Revealed only when minted; null after an import.
 
 ## Import
 

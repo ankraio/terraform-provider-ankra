@@ -4,10 +4,12 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -15,61 +17,66 @@ import (
 )
 
 // tokenFake holds personal and service tokens the way the token surface
-// does (go/internal/cliapi/tokens.go, servicetokens.go): the personal create
-// answers 200 with the value and an RFC 3339 expiry, the listing answers
-// naive UTC timestamps and never the value, a revoked token keeps its name,
-// revoke answers 409 for a token already revoked or gone, and delete answers
-// 409 for a live token and 404 for a gone one. Service tokens are the same
-// with a {"tokens": [...]} listing, a 201 create, and 404 on revoking a gone
-// token.
+// does (go/internal/cliapi/tokens.go, servicetokens.go, usecase/account,
+// usecase/servicetokens) on top of the organisation roster, which tells the
+// provider who it authenticates as. Personal tokens are the caller's own: the
+// listing shows only tokens of the current caller. Create answers 200
+// (personal) or 201 (service) with the value, the listing answers naive UTC
+// timestamps and never the value, a revoked token keeps its name, revoke
+// answers 409 for a token already revoked (and, personal, for one gone),
+// delete answers 409 for a live token and 404 for a gone one, and rotate
+// renames the old token "<name>-replaced-<stamp>" and mints a replacement
+// under the old name. Deleting a service account's last token stands the
+// account down.
 type tokenFake struct {
-	*routeFake
+	*organisationFake
 	personal     map[string]map[string]any
 	service      map[string]map[string]any
-	createBodies []map[string]any
+	createBodies []map[string]json.RawMessage
+	standDowns   []string
 	created      int
 }
 
 func newTokenFake(t *testing.T) *tokenFake {
-	fake := &tokenFake{routeFake: newRouteFake(t), personal: map[string]map[string]any{}, service: map[string]map[string]any{}}
+	fake := &tokenFake{organisationFake: newOrganisationFake(t), personal: map[string]map[string]any{}, service: map[string]map[string]any{}}
 
 	fake.handle("GET /api/v1/org/account/tokens", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(t, writer, http.StatusOK, tokenFakeListing(fake.personal))
+		visible := map[string]map[string]any{}
+		for identifier, row := range fake.personal {
+			if row["owner"] == fake.caller {
+				visible[identifier] = row
+			}
+		}
+		writeJSON(t, writer, http.StatusOK, tokenFakeListing(visible))
 	})
 	fake.handle("POST /api/v1/org/account/tokens", func(writer http.ResponseWriter, request *http.Request) {
-		var body map[string]any
-		decodeJSON(t, request, &body)
-		fake.createBodies = append(fake.createBodies, body)
+		var raw map[string]json.RawMessage
+		decodeJSON(t, request, &raw)
+		fake.createBodies = append(fake.createBodies, raw)
+		var name, expiresAt string
+		_ = json.Unmarshal(raw["name"], &name)
+		_ = json.Unmarshal(raw["expires_at"], &expiresAt)
 		for _, row := range fake.personal {
-			if row["name"] == body["name"] {
+			if row["name"] == name && row["owner"] == fake.caller {
 				writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Token name already exists"})
 				return
 			}
 		}
-		fake.created++
-		identifier := fmt.Sprintf("eeeeeeee-0000-0000-0000-%012d", fake.created)
-		expiresAt, _ := body["expires_at"].(string)
-		naiveExpiry := "2027-01-15T10:00:00.123456"
-		answeredExpiry := naiveExpiry + "Z"
-		if expiresAt != "" {
-			parsed, _ := organisationParseTimestamp(expiresAt)
-			naiveExpiry = parsed.Format("2006-01-02T15:04:05")
-			answeredExpiry = expiresAt
-		}
-		scopes := []any{}
-		if listed, ok := body["scopes"].([]any); ok {
-			scopes = listed
-		}
-		fake.personal[identifier] = map[string]any{
-			"id": identifier, "name": body["name"], "expires_at": naiveExpiry, "days_left": 90,
-			"created_at": "2026-10-17T09:00:00", "revoked_at": nil, "last_used_at": nil, "revoked": false,
-			"scopes": scopes, "project_id": nil, "project_name": nil,
-		}
-		writeJSON(t, writer, http.StatusOK, map[string]any{"id": identifier, "token": "ankra_secret" + identifier[len(identifier)-2:], "expires_at": answeredExpiry, "type": "Bearer"})
+		row, answeredExpiry := fake.mintRow("eeeeeeee", expiresAt)
+		row["name"] = name
+		row["owner"] = fake.caller
+		var scopes []any
+		_ = json.Unmarshal(raw["scopes"], &scopes)
+		row["scopes"] = tokenFakeScopes(scopes)
+		var project any
+		_ = json.Unmarshal(raw["project_id"], &project)
+		row["project_id"] = project
+		fake.personal[fmt.Sprint(row["id"])] = row
+		writeJSON(t, writer, http.StatusOK, map[string]any{"id": row["id"], "token": "ankra_" + fmt.Sprint(row["id"]), "expires_at": answeredExpiry, "type": "Bearer"})
 	})
 	fake.handle("POST /api/v1/org/account/tokens/{token_id}/revoke", func(writer http.ResponseWriter, request *http.Request) {
 		row, exists := fake.personal[request.PathValue("token_id")]
-		if !exists || row["revoked"] == true {
+		if !exists || row["revoked"] == true || row["owner"] != fake.caller {
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Failed to revoke user token"})
 			return
 		}
@@ -77,10 +84,20 @@ func newTokenFake(t *testing.T) *tokenFake {
 		row["revoked_at"] = "2026-10-17T10:00:00"
 		writeJSON(t, writer, http.StatusOK, map[string]any{"id": request.PathValue("token_id"), "revoked_at": "2026-10-17T10:00:00"})
 	})
+	fake.handle("POST /api/v1/org/account/tokens/{token_id}/rotate", func(writer http.ResponseWriter, request *http.Request) {
+		row, exists := fake.personal[request.PathValue("token_id")]
+		if !exists || row["owner"] != fake.caller {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Token not found"})
+			return
+		}
+		replacement := fake.rotate(row, "name", "eeeeeeee")
+		fake.personal[fmt.Sprint(replacement["id"])] = replacement
+		writeJSON(t, writer, http.StatusOK, map[string]any{"id": replacement["id"], "token": "ankra_rotated", "name": replacement["name"], "replaced_token_id": row["id"]})
+	})
 	fake.handle("DELETE /api/v1/org/account/tokens/{token_id}", func(writer http.ResponseWriter, request *http.Request) {
 		row, exists := fake.personal[request.PathValue("token_id")]
 		switch {
-		case !exists:
+		case !exists || row["owner"] != fake.caller:
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Failed to delete user token"})
 		case row["revoked"] != true:
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Token must be revoked before deletion"})
@@ -94,23 +111,45 @@ func newTokenFake(t *testing.T) *tokenFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"tokens": tokenFakeListing(fake.service)})
 	})
 	fake.handle("POST /api/v1/org/organisation/service-tokens", func(writer http.ResponseWriter, request *http.Request) {
-		var body map[string]any
-		decodeJSON(t, request, &body)
-		fake.createBodies = append(fake.createBodies, body)
-		label, _ := body["label"].(string)
+		var raw map[string]json.RawMessage
+		decodeJSON(t, request, &raw)
+		fake.createBodies = append(fake.createBodies, raw)
+		var name, label, roleSlug, expiresAt string
+		_ = json.Unmarshal(raw["name"], &name)
+		_ = json.Unmarshal(raw["label"], &label)
+		_ = json.Unmarshal(raw["role_slug"], &roleSlug)
+		_ = json.Unmarshal(raw["expires_at"], &expiresAt)
 		if label == "" {
-			label = "token-20261017-090000"
+			label = fmt.Sprintf("token-20261017-0900%02d", fake.created)
 		}
-		fake.created++
-		identifier := fmt.Sprintf("ffffffff-0000-0000-0000-%012d", fake.created)
-		fake.service[identifier] = map[string]any{
-			"id": identifier, "account_id": "acct-1", "account_name": body["name"], "label": label, "role_slug": body["role_slug"],
-			"expires_at": "2027-01-15T10:00:00", "days_left": 90, "created_at": "2026-10-17T09:00:00", "revoked_at": nil,
-			"last_used_at": nil, "revoked": false, "scopes": []any{}, "created_by": nil, "project_id": nil, "project_name": nil,
+		for _, row := range fake.service {
+			if row["account_name"] != name {
+				continue
+			}
+			if row["role_slug"] != roleSlug {
+				writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": fmt.Sprintf("Service account %q already holds the %s role", name, row["role_slug"])})
+				return
+			}
+			if row["label"] == label {
+				writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": fmt.Sprintf("Service account %q already has a token labelled %q", name, label)})
+				return
+			}
 		}
+		row, answeredExpiry := fake.mintRow("ffffffff", expiresAt)
+		row["account_id"] = "acct-" + name
+		row["account_name"] = name
+		row["label"] = label
+		row["role_slug"] = roleSlug
+		var scopes []any
+		_ = json.Unmarshal(raw["scopes"], &scopes)
+		row["scopes"] = tokenFakeScopes(scopes)
+		var project any
+		_ = json.Unmarshal(raw["project_id"], &project)
+		row["project_id"] = project
+		fake.service[fmt.Sprint(row["id"])] = row
 		writeJSON(t, writer, http.StatusCreated, map[string]any{
-			"id": identifier, "token": "ankra_service", "account_id": "acct-1", "account_name": body["name"], "label": label,
-			"role_slug": body["role_slug"], "expires_at": "2027-01-15T10:00:00Z", "type": "Bearer",
+			"id": row["id"], "token": "ankra_service_" + fmt.Sprint(row["id"]), "account_id": row["account_id"], "account_name": name,
+			"label": label, "role_slug": roleSlug, "expires_at": answeredExpiry, "type": "Bearer",
 		})
 	})
 	fake.handle("POST /api/v1/org/organisation/service-tokens/{token_id}/revoke", func(writer http.ResponseWriter, request *http.Request) {
@@ -125,6 +164,16 @@ func newTokenFake(t *testing.T) *tokenFake {
 			writeJSON(t, writer, http.StatusOK, map[string]any{"id": request.PathValue("token_id"), "revoked_at": "2026-10-17T10:00:00"})
 		}
 	})
+	fake.handle("POST /api/v1/org/organisation/service-tokens/{token_id}/rotate", func(writer http.ResponseWriter, request *http.Request) {
+		row, exists := fake.service[request.PathValue("token_id")]
+		if !exists {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Service token not found"})
+			return
+		}
+		replacement := fake.rotate(row, "label", "ffffffff")
+		fake.service[fmt.Sprint(replacement["id"])] = replacement
+		writeJSON(t, writer, http.StatusOK, map[string]any{"id": replacement["id"], "token": "ankra_rotated", "label": replacement["label"], "replaced_token_id": row["id"]})
+	})
 	fake.handle("DELETE /api/v1/org/organisation/service-tokens/{token_id}", func(writer http.ResponseWriter, request *http.Request) {
 		row, exists := fake.service[request.PathValue("token_id")]
 		switch {
@@ -134,10 +183,55 @@ func newTokenFake(t *testing.T) *tokenFake {
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Service token must be revoked before deletion"})
 		default:
 			delete(fake.service, request.PathValue("token_id"))
+			remaining := false
+			for _, other := range fake.service {
+				if other["account_name"] == row["account_name"] {
+					remaining = true
+				}
+			}
+			if !remaining {
+				fake.standDowns = append(fake.standDowns, fmt.Sprint(row["account_name"]))
+			}
 			writeJSON(t, writer, http.StatusOK, map[string]any{"id": request.PathValue("token_id"), "deleted_at": "2026-10-17T10:00:01"})
 		}
 	})
 	return fake
+}
+
+// mintRow builds a listing row; the listing renders expiries naive, while
+// the create answer echoes the request's spelling.
+func (fake *tokenFake) mintRow(prefix, expiresAt string) (map[string]any, string) {
+	fake.created++
+	naiveExpiry := "2027-01-15T10:00:00.123456"
+	answeredExpiry := naiveExpiry + "Z"
+	if expiresAt != "" {
+		parsed, _ := organisationParseTimestamp(expiresAt)
+		naiveExpiry = parsed.Format("2006-01-02T15:04:05")
+		answeredExpiry = expiresAt
+	}
+	return map[string]any{
+		"id": fmt.Sprintf("%s-0000-0000-0000-%012d", prefix, fake.created), "expires_at": naiveExpiry, "days_left": 90,
+		"created_at": "2026-10-17T09:00:00", "revoked_at": nil, "last_used_at": nil, "revoked": false, "project_name": nil,
+	}, answeredExpiry
+}
+
+// rotate renames a token and mints its replacement under the old name.
+func (fake *tokenFake) rotate(row map[string]any, nameKey, prefix string) map[string]any {
+	replacement, _ := fake.mintRow(prefix, "")
+	for key, value := range row {
+		if key != "id" {
+			replacement[key] = value
+		}
+	}
+	row[nameKey] = fmt.Sprint(row[nameKey]) + "-replaced-20261017-0900"
+	return replacement
+}
+
+func tokenFakeScopes(scopes []any) []any {
+	if scopes == nil {
+		return []any{}
+	}
+	return scopes
 }
 
 func tokenFakeListing(rows map[string]map[string]any) []map[string]any {
@@ -153,16 +247,26 @@ func tokenFakeListing(rows map[string]map[string]any) []map[string]any {
 	return listing
 }
 
+func (fake *tokenFake) personalNamed(name string) []map[string]any {
+	found := []map[string]any{}
+	for _, row := range fake.personal {
+		if row["name"] == name {
+			found = append(found, row)
+		}
+	}
+	return found
+}
+
 func TestAccAPITokenLifecycle(t *testing.T) {
 	fake := newTokenFake(t)
-	config := func(name string) string {
+	config := func(name, expiry string) string {
 		return fake.providerBlock() + fmt.Sprintf(`
 resource "ankra_api_token" "mcp" {
   name       = %q
-  expires_at = "2027-01-01T00:00:00Z"
+  expires_at = %q
   scopes     = ["mcp:read"]
 }
-`, name)
+`, name, expiry)
 	}
 	var firstID string
 
@@ -176,27 +280,52 @@ resource "ankra_api_token" "mcp" {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: config("laptop"),
+				Config: config("laptop", "2027-01-01T00:00:00Z"),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("ankra_api_token.mcp", "token"),
 					resource.TestCheckResourceAttr("ankra_api_token.mcp", "expires_at", "2027-01-01T00:00:00Z"),
-					resource.TestCheckResourceAttr("ankra_api_token.mcp", "created_at", "2026-10-17T09:00:00Z"),
+					resource.TestCheckResourceAttr("ankra_api_token.mcp", "owner_user_id", organisationTestCaller),
+					resource.TestCheckResourceAttr("ankra_api_token.mcp", "organisation_id", organisationTestCurrent),
+					resource.TestCheckNoResourceAttr("ankra_api_token.mcp", "project_id"),
 					func(state *terraform.State) error {
 						firstID = state.RootModule().Resources["ankra_api_token.mcp"].Primary.ID
 						body := fake.createBodies[0]
-						scopes, _ := body["scopes"].([]any)
-						if body["expires_at"] != "2027-01-01T00:00:00Z" || len(scopes) != 1 || scopes[0] != "mcp:read" {
-							return fmt.Errorf("create body %v does not match the backend contract", body)
+						if string(body["project_id"]) != "null" {
+							return fmt.Errorf("project_id must be sent as an explicit null, got %s", body["project_id"])
+						}
+						if string(body["scopes"]) != `["mcp:read"]` {
+							return fmt.Errorf("scopes sent as %s", body["scopes"])
 						}
 						return nil
 					},
 				),
 			},
 			{
-				Config: config("laptop-2"),
-				Check: func(state *terraform.State) error {
-					if _, exists := fake.personal[firstID]; exists {
-						return fmt.Errorf("replaced token %s was not revoked and deleted", firstID)
+				// A new expiry with the same name re-mints in place: renew to free
+				// the name, retire the renewal, mint, then retire the old token.
+				Config: config("laptop", "2027-06-01T00:00:00Z"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_api_token.mcp", "expires_at", "2027-06-01T00:00:00Z"),
+					func(state *terraform.State) error {
+						if state.RootModule().Resources["ankra_api_token.mcp"].Primary.ID == firstID {
+							return fmt.Errorf("token was not re-minted")
+						}
+						if _, exists := fake.personal[firstID]; exists {
+							return fmt.Errorf("old token %s was not retired", firstID)
+						}
+						if len(fake.personal) != 1 || len(fake.personalNamed("laptop")) != 1 {
+							return fmt.Errorf("expected exactly the new token, got %v", fake.personal)
+						}
+						return tokenFakeOrder(fake.served(), "POST /api/v1/org/account/tokens/"+firstID+"/rotate",
+							"POST /api/v1/org/account/tokens", "DELETE /api/v1/org/account/tokens/"+firstID)
+					},
+				),
+			},
+			{
+				Config: config("laptop-2", "2027-06-01T00:00:00Z"),
+				Check: func(_ *terraform.State) error {
+					if len(fake.personal) != 1 || len(fake.personalNamed("laptop-2")) != 1 {
+						return fmt.Errorf("rename did not leave exactly one token: %v", fake.personal)
 					}
 					return nil
 				},
@@ -208,18 +337,50 @@ resource "ankra_api_token" "mcp" {
 				ImportStateVerifyIgnore: []string{"token"},
 			},
 			{
+				Config:      strings.Replace(config("laptop-2", "2027-06-01T00:00:00Z"), `["mcp:read"]`, `[]`, 1),
+				ExpectError: regexp.MustCompile("Empty scopes"),
+			},
+			{
 				PreConfig: func() {
+					for _, row := range fake.personal {
+						row["name"] = "laptop-2-replaced-20261017-0900"
+					}
+				},
+				Config:      config("laptop-2", "2027-06-01T00:00:00Z"),
+				ExpectError: regexp.MustCompile("Token renewed outside Terraform"),
+			},
+			{
+				PreConfig: func() {
+					for _, row := range fake.personal {
+						row["name"] = "laptop-2"
+					}
+					fake.caller = "ci-service-account"
+					row := fake.organisations[organisationTestCurrent]
+					row.members = append(row.members, map[string]any{"id": "ci-service-account", "status": "active", "role": "member"})
+				},
+				Config:      config("laptop-2", "2027-06-01T00:00:00Z"),
+				ExpectError: regexp.MustCompile("API token belongs to another identity"),
+			},
+			{
+				PreConfig: func() {
+					fake.caller = organisationTestCaller
 					for _, row := range fake.personal {
 						row["revoked"] = true
 					}
 				},
-				Config:             config("laptop-2"),
+				Config:             config("laptop-2", "2027-06-01T00:00:00Z"),
 				PlanOnly:           true,
 				ExpectNonEmptyPlan: true,
 			},
 			{
-				Config:      config("laptop-2"),
-				ExpectError: regexp.MustCompile(`(?s)already exists.*revoked token keeps its name`),
+				Config: config("laptop-2", "2027-06-01T00:00:00Z"),
+				Check: func(_ *terraform.State) error {
+					rows := fake.personalNamed("laptop-2")
+					if len(rows) != 1 || rows[0]["revoked"] == true {
+						return fmt.Errorf("revoked token was not replaced by a live one: %v", fake.personal)
+					}
+					return nil
+				},
 			},
 			{
 				PreConfig: func() {
@@ -227,7 +388,7 @@ resource "ankra_api_token" "mcp" {
 						delete(fake.personal, identifier)
 					}
 				},
-				Config: config("laptop-2"),
+				Config: config("laptop-2", "2027-06-01T00:00:00Z"),
 				Check:  resource.TestCheckResourceAttrSet("ankra_api_token.mcp", "token"),
 			},
 		},
@@ -236,12 +397,20 @@ resource "ankra_api_token" "mcp" {
 
 func TestAccServiceTokenLifecycle(t *testing.T) {
 	fake := newTokenFake(t)
-	config := fake.providerBlock() + `
+	config := func(role, label, expiry string) string {
+		attributes := fmt.Sprintf("  role_slug = %q\n", role)
+		if label != "" {
+			attributes += fmt.Sprintf("  label = %q\n", label)
+		}
+		if expiry != "" {
+			attributes += fmt.Sprintf("  expires_at = %q\n", expiry)
+		}
+		return fake.providerBlock() + `
 resource "ankra_service_token" "ci" {
-  name      = "ci-deployer"
-  role_slug = "member"
-}
+  name = "ci-deployer"
+` + attributes + `}
 `
+	}
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -253,22 +422,68 @@ resource "ankra_service_token" "ci" {
 		},
 		Steps: []resource.TestStep{
 			{
-				Config: config,
+				Config: config("member", "", ""),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("ankra_service_token.ci", "token", "ankra_service"),
+					resource.TestCheckResourceAttrSet("ankra_service_token.ci", "token"),
 					resource.TestCheckResourceAttr("ankra_service_token.ci", "label", "token-20261017-090000"),
-					resource.TestCheckResourceAttr("ankra_service_token.ci", "expires_at", "2027-01-15T10:00:00Z"),
+					resource.TestCheckResourceAttr("ankra_service_token.ci", "expires_at", "2027-01-15T10:00:00.123456Z"),
 					func(_ *terraform.State) error {
 						body := fake.createBodies[0]
 						if _, present := body["label"]; present {
 							return fmt.Errorf("an unset label must be left out so the platform names it, got %v", body)
 						}
-						if body["name"] != "ci-deployer" || body["role_slug"] != "member" {
-							return fmt.Errorf("create body %v does not match the backend contract", body)
+						if string(body["project_id"]) != "null" || string(body["scopes"]) != "null" {
+							return fmt.Errorf("project_id and scopes must be sent as explicit nulls, got %s and %s", body["project_id"], body["scopes"])
 						}
 						return nil
 					},
 				),
+			},
+			{
+				// Same label, new expiry: renewed to free the label, so the account
+				// always holds a token and is never stood down.
+				Config: config("member", "", "2027-03-01T00:00:00Z"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_service_token.ci", "expires_at", "2027-03-01T00:00:00Z"),
+					resource.TestCheckResourceAttr("ankra_service_token.ci", "label", "token-20261017-090000"),
+					func(_ *terraform.State) error {
+						if len(fake.standDowns) != 0 || len(fake.service) != 1 {
+							return fmt.Errorf("re-mint stood the account down (%v) or left extra tokens (%v)", fake.standDowns, fake.service)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				Config: config("member", "pipelines", "2027-03-01T00:00:00Z"),
+				Check: func(_ *terraform.State) error {
+					if len(fake.standDowns) != 0 || len(fake.service) != 1 {
+						return fmt.Errorf("label change stood the account down (%v) or left extra tokens (%v)", fake.standDowns, fake.service)
+					}
+					return nil
+				},
+			},
+			{
+				Config:      config("admin", "pipelines", "2027-03-01T00:00:00Z"),
+				ExpectError: regexp.MustCompile("Service account role cannot change here"),
+			},
+			{
+				PreConfig: func() {
+					for _, row := range fake.service {
+						row["role_slug"] = "operator"
+					}
+				},
+				Config:      config("member", "pipelines", "2027-03-01T00:00:00Z"),
+				ExpectError: regexp.MustCompile("Service account role cannot change here"),
+			},
+			{
+				PreConfig: func() {
+					for _, row := range fake.service {
+						row["role_slug"] = "member"
+					}
+				},
+				Config:      strings.Replace(config("member", "pipelines", "2027-03-01T00:00:00Z"), `label = "pipelines"`, `label = ""`, 1),
+				ExpectError: regexp.MustCompile("Invalid token name"),
 			},
 			{
 				ResourceName:            "ankra_service_token.ci",
@@ -282,7 +497,7 @@ resource "ankra_service_token" "ci" {
 						delete(fake.service, identifier)
 					}
 				},
-				Config: config,
+				Config: config("member", "pipelines", "2027-03-01T00:00:00Z"),
 				Check: func(_ *terraform.State) error {
 					if len(fake.service) != 1 {
 						return fmt.Errorf("service token deleted outside Terraform was not recreated")
@@ -292,4 +507,18 @@ resource "ankra_service_token" "ci" {
 			},
 		},
 	})
+}
+
+// tokenFakeOrder checks that the expected requests were served in order.
+func tokenFakeOrder(served []string, expected ...string) error {
+	position := 0
+	for _, request := range served {
+		if position < len(expected) && request == expected[position] {
+			position++
+		}
+	}
+	if position != len(expected) {
+		return fmt.Errorf("requests out of order: wanted %v in sequence, served %v", expected, served)
+	}
+	return nil
 }

@@ -86,6 +86,7 @@ func (member *organisationMemberResource) Schema(_ context.Context, _ resource.S
 			"status": schema.StringAttribute{
 				MarkdownDescription: "Membership status, `pending` until the invite is accepted, then `active`.",
 				Computed:            true,
+				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"invite_id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the membership row the invite created.",

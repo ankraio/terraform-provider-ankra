@@ -225,7 +225,7 @@ func (token *serviceTokenResource) Update(ctx context.Context, request resource.
 	if plan.Label.IsUnknown() {
 		plan.Label = state.Label
 	}
-	_, replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Label.Equal(state.Label),
+	replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Label.Equal(state.Label),
 		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
 	if !replaced {
 		return
