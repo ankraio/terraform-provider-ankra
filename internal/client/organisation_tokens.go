@@ -59,9 +59,12 @@ type OrganisationServiceToken struct {
 	RoleSlug    string   `json:"role_slug"`
 	ExpiresAt   string   `json:"expires_at"`
 	CreatedAt   string   `json:"created_at"`
+	RevokedAt   *string  `json:"revoked_at"`
+	LastUsedAt  *string  `json:"last_used_at"`
 	Revoked     bool     `json:"revoked"`
 	Scopes      []string `json:"scopes"`
 	ProjectID   *string  `json:"project_id"`
+	ProjectName *string  `json:"project_name"`
 }
 
 // OrganisationServiceTokenCreate mints a token for the service account Name, creating

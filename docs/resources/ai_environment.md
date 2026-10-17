@@ -22,6 +22,15 @@ resource "ankra_ai_environment" "this" {
   demo_ttl_hours       = 48
   default_gateway_mode = "ask"
   demo_base_domain     = "previews.example.com"
+
+  # Only the tiers set here are managed; operator keeps the organisation's value.
+  demo_ttl_role_caps = {
+    admin  = 336
+    member = 48
+  }
+
+  home_slack_channel_id   = "C0123456789"
+  home_slack_channel_name = "ankra-ai"
 }
 ```
 
@@ -36,13 +45,26 @@ resource "ankra_ai_environment" "this" {
 - `demo_ingress_class_name` (String) Ingress class for demo ingresses. Stored lowercased.
 - `demo_tls_secret_name` (String) Secret holding a certificate for the preview domain. Stored lowercased.
 - `demo_ttl_hours` (Number) Demo lifetime, 1 to 720 hours. Platform default 24.
+- `demo_ttl_role_caps` (Attributes) Longest demo lifetime, in hours (1 to 720), each role tier may ask for. Owner shares the `admin` tier; viewer and custom roles share the `member` tier. Only the tiers you set are managed: an unset tier keeps the organisation's value. Platform defaults: admin 720, operator 168, member 72. (see [below for nested schema](#nestedatt--demo_ttl_role_caps))
+- `home_slack_channel_id` (String) Slack channel id of the organisation's home channel, where AI notifications go by default. Needs Slack connected to the organisation. Destroy clears it when the configuration set it.
+- `home_slack_channel_name` (String) Display name of the home Slack channel. Needs `home_slack_channel_id`.
 - `staging_cluster_id` (String) Cluster AI workspaces and demos run on. It must be an eligible cluster of the organisation. The provider never clears it.
 - `workspace_ttl_hours` (Number) AI workspace lifetime, 1 to 168 hours. Platform default 8.
 
 ### Read-Only
 
+- `home_slack_team_id` (String) Slack workspace of the home channel.
 - `id` (String) Always `ai_environment`.
 - `staging_cluster_name` (String) Name of the staging cluster.
+
+<a id="nestedatt--demo_ttl_role_caps"></a>
+### Nested Schema for `demo_ttl_role_caps`
+
+Optional:
+
+- `admin` (Number) Cap for the admin tier (owner and admin).
+- `member` (Number) Cap for the member tier (member, viewer and custom roles).
+- `operator` (Number) Cap for the operator tier.
 
 ## Import
 

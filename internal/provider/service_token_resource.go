@@ -64,6 +64,9 @@ func (token *serviceTokenResource) Schema(_ context.Context, _ resource.SchemaRe
 			"The service account is created with `role_slug` when the organisation has none of that name; for an existing account " +
 			"`role_slug` must be the role it already holds. The provider never changes an account's role: a change of `role_slug`, " +
 			"or a role changed in the portal, stops the plan with an error until configuration and portal agree.\n\n" +
+			"**Account without a role.** When every role assignment of the account was removed (in the portal, for example), its tokens " +
+			"still authenticate but act with read-only access. The token then reads back with an empty `role_slug`, so the plan shows the " +
+			"difference, and the next apply re-mints the token on the same account, which grants the account `role_slug` again.\n\n" +
 			"**Account stand-down.** When an account's last token is deleted, the platform stands the account down and retires its " +
 			"role assignments. Changing `name` (the account) therefore replaces the token on a new account and, if it was the old " +
 			"account's last token, stands the old account down; destroy does the same. Every other change keeps a token on the " +
@@ -135,7 +138,7 @@ func (token *serviceTokenResource) ModifyPlan(ctx context.Context, request resou
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if !plan.RoleSlug.IsUnknown() && !plan.RoleSlug.Equal(state.RoleSlug) {
+	if !plan.RoleSlug.IsUnknown() && !plan.RoleSlug.Equal(state.RoleSlug) && !serviceTokenAccountHasNoRole(state) {
 		response.Diagnostics.AddAttributeError(path.Root("role_slug"), "Service account role cannot change here",
 			fmt.Sprintf("Service account %q holds the %s role, and configuration says %s. Minting never changes an account's role, and "+
 				"re-creating the account would retire its assignments. Change the role in the portal (members), then set role_slug to match.",
@@ -157,7 +160,7 @@ func (token *serviceTokenResource) ModifyPlan(ctx context.Context, request resou
 // unknown planned label is the state's: the label is only computed at mint.
 func serviceTokenNeedsMint(state, plan serviceTokenModel) bool {
 	isLabelChanged := !plan.Label.IsUnknown() && !plan.Label.Equal(state.Label)
-	return state.Revoked.ValueBool() || isLabelChanged || !plan.ExpiresAt.Equal(state.ExpiresAt) ||
+	return state.Revoked.ValueBool() || serviceTokenAccountHasNoRole(state) || isLabelChanged || !plan.ExpiresAt.Equal(state.ExpiresAt) ||
 		!plan.Scopes.Equal(state.Scopes) || !plan.ProjectID.Equal(state.ProjectID)
 }
 
@@ -307,7 +310,14 @@ func (token *serviceTokenResource) finish(ctx context.Context, apiClient *client
 	}
 	listed, err := apiClient.GetServiceToken(ctx, plan.ID.ValueString())
 	if err == nil {
+		configuredRole := plan.RoleSlug
 		serviceTokenApplyListing(plan, listed)
+		if listed.RoleSlug == "" {
+			// The mint grants the configured role to an account without
+			// one; a listing that does not show it yet must not contradict
+			// the configuration. The next read records what holds.
+			plan.RoleSlug = configuredRole
+		}
 	}
 	diagnostics.Append(state.Set(ctx, plan)...)
 	diagnostics.Append(trackScope(ctx, apiClient, private)...)
@@ -403,14 +413,19 @@ func (token *serviceTokenResource) ImportState(ctx context.Context, request reso
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 }
 
+// serviceTokenAccountHasNoRole reports whether the account holds no role
+// assignment: its tokens act with read-only access until a mint on the
+// account grants the configured role again.
+func serviceTokenAccountHasNoRole(state serviceTokenModel) bool {
+	return !state.RoleSlug.IsNull() && !state.RoleSlug.IsUnknown() && state.RoleSlug.ValueString() == ""
+}
+
 // serviceTokenApplyListing copies the listing into state. An empty role
-// means the account was stood down; the recorded role is kept, since no
-// configuration value could match an absent role.
+// means the account holds no role assignment; it is recorded as such, so the
+// plan shows the drift and re-mints the token, which restores the role.
 func serviceTokenApplyListing(model *serviceTokenModel, listed *client.OrganisationServiceToken) {
 	model.Name = types.StringValue(listed.AccountName)
-	if listed.RoleSlug != "" {
-		model.RoleSlug = types.StringValue(listed.RoleSlug)
-	}
+	model.RoleSlug = types.StringValue(listed.RoleSlug)
 	model.Label = types.StringValue(listed.Label)
 	model.AccountID = types.StringValue(listed.AccountID)
 	model.ExpiresAt = organisationTimestampState(model.ExpiresAt, listed.ExpiresAt)

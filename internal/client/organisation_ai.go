@@ -31,10 +31,32 @@ type AIReviewRepositoryRule struct {
 // AIReviewBinding is one source-control binding (a GitHub App installation,
 // a GitLab or Bitbucket connection) with its repository rules.
 type AIReviewBinding struct {
-	Provider          string                   `json:"provider"`
-	BindingExternalID string                   `json:"binding_external_id"`
-	DisplayName       string                   `json:"display_name"`
-	RepoOverrides     []AIReviewRepositoryRule `json:"repo_overrides"`
+	Provider           string                   `json:"provider"`
+	BindingExternalID  string                   `json:"binding_external_id"`
+	DisplayName        string                   `json:"display_name"`
+	AIReview           bool                     `json:"ai_review"`
+	MentionReplies     bool                     `json:"mention_replies"`
+	PRPreviews         bool                     `json:"pr_previews"`
+	MergeWhenGreen     bool                     `json:"merge_when_green"`
+	ReviewModel        string                   `json:"review_model"`
+	ReviewDrafts       bool                     `json:"review_drafts"`
+	MaxReviewsPerPR    int64                    `json:"max_reviews_per_pr"`
+	CustomInstructions string                   `json:"custom_instructions"`
+	RepoOverrides      []AIReviewRepositoryRule `json:"repo_overrides"`
+}
+
+// AIReviewBindingSettingsWrite is the binding settings body. AIReview and
+// MentionReplies are always written; a nil optional field keeps the stored
+// value.
+type AIReviewBindingSettingsWrite struct {
+	AIReview           bool    `json:"ai_review"`
+	MentionReplies     bool    `json:"mention_replies"`
+	PRPreviews         *bool   `json:"pr_previews,omitempty"`
+	MergeWhenGreen     *bool   `json:"merge_when_green,omitempty"`
+	ReviewModel        *string `json:"review_model,omitempty"`
+	ReviewDrafts       *bool   `json:"review_drafts,omitempty"`
+	MaxReviewsPerPR    *int64  `json:"max_reviews_per_pr,omitempty"`
+	CustomInstructions *string `json:"custom_instructions,omitempty"`
 }
 
 // AIReviewRepositoryRuleWrite is the rule upsert body. A nil ReviewModel,
@@ -88,6 +110,12 @@ type OrganisationAIEnvironment struct {
 	DemoIngressClassName *string `json:"demo_ingress_class_name"`
 	DemoTLSSecretName    *string `json:"demo_tls_secret_name"`
 	DemoCertIssuerName   *string `json:"demo_cert_issuer_name"`
+	// DemoTTLRoleCaps caps a demo's lifetime per role tier (admin, operator,
+	// member). The platform always answers all three tiers.
+	DemoTTLRoleCaps      map[string]int64 `json:"demo_ttl_role_caps"`
+	HomeSlackChannelID   *string          `json:"home_slack_channel_id"`
+	HomeSlackChannelName *string          `json:"home_slack_channel_name"`
+	HomeSlackTeamID      *string          `json:"home_slack_team_id"`
 }
 
 type aiReviewBindingListEnvelope struct {
@@ -110,6 +138,28 @@ func (client *Client) ListAIReviewBindings(ctx context.Context) ([]AIReviewBindi
 		return nil, err
 	}
 	return envelope.Bindings, nil
+}
+
+// GetAIReviewBinding finds one binding in the listing, the only read the
+// platform offers. A missing binding is a NotFound APIError.
+func (client *Client) GetAIReviewBinding(ctx context.Context, provider, bindingExternalID string) (*AIReviewBinding, error) {
+	bindings, err := client.ListAIReviewBindings(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range bindings {
+		if bindings[index].Provider == provider && bindings[index].BindingExternalID == bindingExternalID {
+			return &bindings[index], nil
+		}
+	}
+	return nil, &APIError{Method: http.MethodGet, Path: scmBindingsPath, StatusCode: http.StatusNotFound, Body: "binding " + provider + "/" + bindingExternalID + " not found"}
+}
+
+// UpdateAIReviewBindingSettings writes a binding's settings. An unknown
+// binding is a NotFound APIError. The answer echoes only what was sent, so
+// callers read the binding back.
+func (client *Client) UpdateAIReviewBindingSettings(ctx context.Context, provider, bindingExternalID string, request AIReviewBindingSettingsWrite) error {
+	return client.doRequest(ctx, http.MethodPut, scmBindingPath(provider, bindingExternalID), request, nil)
 }
 
 // PutAIReviewRepositoryRule creates or replaces one repository's rule. An
