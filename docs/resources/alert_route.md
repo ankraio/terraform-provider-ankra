@@ -56,7 +56,7 @@ resource "ankra_alert_route" "critical_everywhere" {
 - `mode` (String) `include` delivers matching notifications to the destination, `exclude` withholds them from it. Defaults to `include`.
 - `organisation_wide` (Boolean) Make the route organisation-wide, so it matches every project's notifications, even when the provider sets `project_id`. Needs alert management rights at organisation scope. Conflicts with `project_id`. Defaults to `false`. Changing it replaces the route, with the same import rule as `project_id`.
 - `priority` (Number) Evaluation order; lower runs first. Defaults to `100`.
-- `project_id` (String) Project the route belongs to; it then matches only that project's notifications. Unset places the route in the provider's `project_id`, as the platform does with any create. When the provider sets `project_id`, this must be unset or equal to it, because a route in another project is not visible to the provider. Conflicts with `organisation_wide`. The platform cannot move a route, so changing it replaces the route. The platform does not return it: after `terraform import`, set it to match the route; the first apply adopts the configured value without replacing the route.
+- `project_id` (String) Project to create the route in, by ID or slug, instead of the provider's project; the route then matches only that project's notifications, and every request for it is made in that project. Conflicts with `organisation_wide`. The platform cannot move a route, so moving it to another project replaces it; writing the same project differently (its slug instead of its ID) does not. The platform does not report a route's project, so this is kept as configured. To import a route in another project, use `<project>/<route id>`; after any import, the first apply adopts the configured `project_id` and `organisation_wide` without replacing the route.
 - `reference_pattern` (String) Glob over the branch, tag or pull request a notification is about, such as `main`, `release/*` or `pull/*`. Unset matches every reference.
 - `severity` (String) Severity the route matches: `info`, `warning` or `critical`. Unset matches every severity.
 - `source_id` (String) Source (for example an alert id) whose notifications the route matches. Unset matches every source.
@@ -77,4 +77,8 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 ```shell
 # Alert routes are imported by id.
 terraform import ankra_alert_route.critical_to_pager 6b1c9e7a-2d4f-4e8a-b3c5-7f9d0a1e2b3c
+
+# A route in another project than the provider's is imported as
+# <project>/<route id>, the project by ID or slug.
+terraform import ankra_alert_route.team_alerts data-team/0d2e8f4a-6c1b-4a7e-9f3d-2b5c8e1a4d6f
 ```

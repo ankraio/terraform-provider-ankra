@@ -241,47 +241,84 @@ resource "ankra_alert_route" "upgraded" {
 	})
 }
 
-func TestAccAlertRouteProjectOutsideProviderProject(t *testing.T) {
+// TestAccAlertRouteInAnotherProject pins that a route's own project_id, by
+// slug or ID, scopes every request for it to that project, so a provider in
+// another project still creates, reads and deletes it there.
+func TestAccAlertRouteInAnotherProject(t *testing.T) {
 	fake := newRouteProjectFake(t)
-	provider := fmt.Sprintf(`
-provider "ankra" {
-  token      = "test-token"
-  base_url   = %q
-  project_id = %q
+	listings := 0
+	registerProjects(fake.routeFake, map[string]string{"main": routeTestProject, "other": otherRouteTestProject}, &listings)
+	configuration := func(project string) string {
+		return slugProviderBlock(fake.routeFake, "main") + fmt.Sprintf(`
+resource "ankra_alert_route" "elsewhere" {
+  destination_id = %q
+  project_id     = %q
 }
-`, fake.server.URL, routeTestProject)
+`, routeTestDestination, project)
+	}
+	routeRequestsOutside := func(projectID string) []string {
+		outside := []string{}
+		for _, request := range fake.requestsOutsideProject(projectID) {
+			if strings.Contains(request, "/notifications/routes") {
+				outside = append(outside, request)
+			}
+		}
+		return outside
+	}
 
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: provider + fmt.Sprintf(`
-resource "ankra_alert_route" "elsewhere" {
-  destination_id = %q
-  project_id     = %q
-}
-`, routeTestDestination, otherRouteTestProject),
-				// Refused by the plan itself, before any apply.
-				PlanOnly:    true,
-				ExpectError: regexp.MustCompile(`Alert route project outside the provider's project`),
-			},
-			{
-				Config: provider + fmt.Sprintf(`
+				Config: slugProviderBlock(fake.routeFake, "main") + fmt.Sprintf(`
 resource "ankra_alert_route" "both" {
   destination_id    = %q
-  project_id        = %q
+  project_id        = "main"
   organisation_wide = true
 }
-`, routeTestDestination, routeTestProject),
+`, routeTestDestination),
 				ExpectError: regexp.MustCompile(`organisation_wide and project_id conflict`),
+			},
+			{
+				Config: configuration("other"),
+				Check: func(_ *terraform.State) error {
+					if got := lastRouteProject(fake); got != `"`+otherRouteTestProject+`"` {
+						return fmt.Errorf("route create sent project_id %s, want the slug resolved to %q", got, otherRouteTestProject)
+					}
+					if outside := routeRequestsOutside(otherRouteTestProject); len(outside) > 0 {
+						return fmt.Errorf("route requests left the route's project: %v", outside)
+					}
+					return nil
+				},
+			},
+			{
+				// The same project written as its ID is not a move.
+				Config: configuration(otherRouteTestProject),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("ankra_alert_route.elsewhere", plancheck.ResourceActionUpdate),
+					},
+				},
+			},
+			{
+				ResourceName: "ankra_alert_route.elsewhere",
+				ImportState:  true,
+				ImportStateIdFunc: func(state *terraform.State) (string, error) {
+					return "other/" + state.RootModule().Resources["ankra_alert_route.elsewhere"].Primary.ID, nil
+				},
+				ImportStateVerify:       true,
+				ImportStateVerifyIgnore: []string{"project_id"},
+			},
+			{
+				Config: configuration("main"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("ankra_alert_route.elsewhere", plancheck.ResourceActionDestroyBeforeCreate),
+					},
+				},
 			},
 		},
 	})
-	for _, served := range fake.served() {
-		if strings.HasPrefix(served, "POST ") {
-			t.Errorf("a refused route reached the platform: %s", served)
-		}
-	}
 }
 
 // newCatalogueFake serves the alert and DNS catalogues the way
