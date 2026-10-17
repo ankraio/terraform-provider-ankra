@@ -73,10 +73,10 @@ type Client struct {
 	// projectScope caches FloatingProjectCount. It is a pointer so the
 	// copies resources make for a per-resource token share one lookup.
 	projectScope *projectScopeCheck
-	// projectSlug caches the ProjectSlug lookup, shared by copies like
+	// projectSlugs caches slug lookups, shared by copies like
 	// projectScope.
-	projectSlug *projectSlugResolution
-	HTTPClient  *http.Client
+	projectSlugs *projectSlugDirectory
+	HTTPClient   *http.Client
 }
 
 // NewClient returns a Client. An empty baseURL falls back to DefaultBaseURL.
@@ -90,7 +90,7 @@ func NewClient(baseURL, token, userAgent string) *Client {
 		UserAgent:    userAgent,
 		MaxRetries:   DefaultMaxRetries,
 		projectScope: &projectScopeCheck{},
-		projectSlug:  &projectSlugResolution{},
+		projectSlugs: &projectSlugDirectory{},
 		HTTPClient:   &http.Client{Timeout: DefaultTimeout},
 	}
 }

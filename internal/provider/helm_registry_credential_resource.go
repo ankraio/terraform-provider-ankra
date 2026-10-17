@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -23,6 +22,7 @@ var (
 	_ resource.Resource                = (*helmRegistryCredentialResource)(nil)
 	_ resource.ResourceWithConfigure   = (*helmRegistryCredentialResource)(nil)
 	_ resource.ResourceWithImportState = (*helmRegistryCredentialResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*helmRegistryCredentialResource)(nil)
 )
 
 type helmRegistryCredentialResource struct {
@@ -225,8 +225,17 @@ func (credentialResource *helmRegistryCredentialResource) Delete(ctx context.Con
 // ImportState imports by credential name. The password cannot be read back,
 // so the first plan after an import shows the configured password as a
 // change.
+//
+// A credential in another project than the provider's imports as
+// `<project>/<name>`.
 func (credentialResource *helmRegistryCredentialResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), request, response)
+	helmImportState(ctx, request, response)
+}
+
+// ModifyPlan replaces the credential when its project changes, but not when
+// project_id is only respelled (a slug for the same project's ID).
+func (credentialResource *helmRegistryCredentialResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	helmPlanProjectReplacement(ctx, credentialResource.client, request, response)
 }
 
 // helmRegistryCredentialRevealDenied reports a 403 from the credential detail

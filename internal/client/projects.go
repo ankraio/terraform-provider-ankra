@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"sync"
-	"sync/atomic"
 )
 
 const projectsPath = "/api/v1/org/projects"
@@ -29,56 +29,63 @@ type projectListEnvelope struct {
 	Projects []Project `json:"projects"`
 }
 
-type projectSlugResolution struct {
-	once       sync.Once
-	projectID  string
-	err        error
-	isResolved atomic.Bool
+// projectSlugDirectory caches the slug -> ID pairs of the organisation's
+// projects. Only a successful listing is cached, so a failed lookup (a
+// network error, say) is retried by the next request instead of failing the
+// rest of the run.
+type projectSlugDirectory struct {
+	// listing serialises project listings, so concurrent resources share one.
+	listing     sync.Mutex
+	identifiers sync.Map
 }
 
-// ResolveProject resolves ProjectSlug to the project's ID by listing the
-// organisation's projects, once per provider instance. Every request path
-// calls it first, so a slug never reaches the platform as the project header.
-// It is a no-op when ProjectID is set or no slug is configured.
+func (directory *projectSlugDirectory) lookup(slug string) (string, bool) {
+	if directory == nil {
+		return "", false
+	}
+	stored, found := directory.identifiers.Load(slug)
+	if !found {
+		return "", false
+	}
+	identifier, isString := stored.(string)
+	return identifier, isString
+}
+
+// ResolveProject resolves ProjectSlug to the project's ID from the
+// organisation's project list. Every request path calls it first, so a slug
+// never reaches the platform as the project header. It is a no-op when
+// ProjectID is set or no slug is configured.
 func (client *Client) ResolveProject(ctx context.Context) error {
 	if client.ProjectSlug == "" || client.ProjectID != "" {
 		return nil
 	}
-	resolution := client.projectSlug
-	if resolution == nil {
-		return fmt.Errorf("project %q cannot be resolved: client was not built with NewClient", client.ProjectSlug)
-	}
-	resolution.once.Do(func() {
-		resolution.projectID, resolution.err = client.lookupProjectSlug(ctx, client.ProjectSlug)
-		resolution.isResolved.Store(resolution.err == nil)
-	})
-	return resolution.err
+	_, err := client.projectIDForSlug(ctx, client.ProjectSlug)
+	return err
 }
 
 // ScopeProjectID is the project ID requests are scoped to: ProjectID, or the
 // ID ProjectSlug resolved to. It is "" when no project is set, and while a
 // slug is not resolved yet.
 func (client *Client) ScopeProjectID() string {
-	if client.ProjectID != "" || client.ProjectSlug == "" || client.projectSlug == nil {
+	if client.ProjectID != "" || client.ProjectSlug == "" {
 		return client.ProjectID
 	}
-	if !client.projectSlug.isResolved.Load() {
-		return ""
-	}
-	return client.projectSlug.projectID
+	identifier, _ := client.projectSlugs.lookup(client.ProjectSlug)
+	return identifier
 }
 
 // InProject returns a copy of the client scoped to another project, given by
-// ID or slug. A slug is resolved here, so the copy never sends one.
+// ID or slug. A slug is resolved here, from the shared cache when it was
+// resolved before, so the copy never sends one.
 func (client *Client) InProject(ctx context.Context, reference string) (*Client, error) {
+	reference = strings.TrimSpace(reference)
 	scoped := *client
 	scoped.ProjectSlug = ""
-	scoped.projectSlug = &projectSlugResolution{}
 	if projectIDPattern.MatchString(reference) {
 		scoped.ProjectID = reference
 		return &scoped, nil
 	}
-	projectID, err := client.lookupProjectSlug(ctx, reference)
+	projectID, err := client.projectIDForSlug(ctx, reference)
 	if err != nil {
 		return nil, err
 	}
@@ -86,24 +93,55 @@ func (client *Client) InProject(ctx context.Context, reference string) (*Client,
 	return &scoped, nil
 }
 
-func (client *Client) lookupProjectSlug(ctx context.Context, slug string) (string, error) {
+// ProjectIDFor resolves a project reference (an ID or a slug) to its ID.
+func (client *Client) ProjectIDFor(ctx context.Context, reference string) (string, error) {
+	scoped, err := client.InProject(ctx, reference)
+	if err != nil {
+		return "", err
+	}
+	return scoped.ProjectID, nil
+}
+
+func (client *Client) projectIDForSlug(ctx context.Context, slug string) (string, error) {
+	directory := client.projectSlugs
+	if directory == nil {
+		directory = &projectSlugDirectory{}
+		client.projectSlugs = directory
+	}
+	if identifier, found := directory.lookup(slug); found {
+		return identifier, nil
+	}
+	directory.listing.Lock()
+	defer directory.listing.Unlock()
+	if identifier, found := directory.lookup(slug); found {
+		return identifier, nil
+	}
+	projects, err := client.listProjectsForSlug(ctx, slug)
+	if err != nil {
+		return "", err
+	}
+	for _, project := range projects {
+		directory.identifiers.Store(project.Slug, project.ID)
+	}
+	if identifier, found := directory.lookup(slug); found {
+		return identifier, nil
+	}
+	return "", fmt.Errorf("no project with slug %q is visible to the token in this organisation", slug)
+}
+
+func (client *Client) listProjectsForSlug(ctx context.Context, slug string) ([]Project, error) {
 	var envelope projectListEnvelope
 	err := client.doRequest(ctx, http.MethodGet, projectsPath, nil, &envelope)
 	var apiError *APIError
 	switch {
 	case errors.As(err, &apiError) && apiError.StatusCode == http.StatusNotFound:
-		return "", fmt.Errorf("project %q cannot be resolved: projects are not enabled for this organisation, so leave project_id unset", slug)
+		return nil, fmt.Errorf("project %q cannot be resolved: projects are not enabled for this organisation, so leave project_id unset", slug)
 	case errors.As(err, &apiError) && apiError.StatusCode == http.StatusForbidden:
-		return "", fmt.Errorf("project %q cannot be resolved: the token may not list the organisation's projects; set project_id to the project's ID instead of its slug", slug)
+		return nil, fmt.Errorf("project %q cannot be resolved: the token may not list the organisation's projects; set project_id to the project's ID instead of its slug", slug)
 	case err != nil:
-		return "", fmt.Errorf("resolving project %q: %w", slug, err)
+		return nil, fmt.Errorf("resolving project %q: %w", slug, err)
 	}
-	for _, project := range envelope.Projects {
-		if project.Slug == slug {
-			return project.ID, nil
-		}
-	}
-	return "", fmt.Errorf("no project with slug %q is visible to the token in this organisation", slug)
+	return envelope.Projects, nil
 }
 
 type projectScopeCheck struct {

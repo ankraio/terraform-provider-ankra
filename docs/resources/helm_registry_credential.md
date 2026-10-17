@@ -36,7 +36,7 @@ variable "acme_registry_token" {
 
 ### Optional
 
-- `project_id` (String) Project to create the credential in, by ID or slug, instead of the provider's project. Every request for this credential is then made in that project. The platform does not report a credential's project, so this is kept as configured and a move made outside Terraform is not detected; it is null after an import. Changing it replaces the credential.
+- `project_id` (String) Project to create the credential in, by ID or slug, instead of the provider's project. Every request for this credential is then made in that project. The platform does not report a credential's project, so this is kept as configured and a move made outside Terraform is not detected. To import a credential in another project, use `<project>/<name>` as the import ID (the project by ID or slug); a bare name imports from the provider's project and leaves this null. Moving the credential to another project replaces it; writing the same project differently (its slug instead of its ID) does not. The provider cannot create an organisation-wide credential (one visible in every project): leaving this unset creates it in the provider's project.
 
 ### Read-Only
 
@@ -52,4 +52,8 @@ The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/c
 # Helm registry credentials are imported by name. The password cannot be read
 # back, so the first plan after an import shows it as a change.
 terraform import ankra_helm_registry_credential.acme acme-charts
+
+# A credential in another project than the provider's is imported as
+# <project>/<name>, the project by ID or slug.
+terraform import ankra_helm_registry_credential.team data-team/team-charts
 ```
