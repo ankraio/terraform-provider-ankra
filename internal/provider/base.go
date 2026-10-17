@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -74,6 +75,64 @@ func stringPointer(value types.String) *string {
 	}
 	text := value.ValueString()
 	return &text
+}
+
+// boolPointer is stringPointer for booleans.
+func boolPointer(value types.Bool) *bool {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	flag := value.ValueBool()
+	return &flag
+}
+
+// int64Pointer is stringPointer for integers.
+func int64Pointer(value types.Int64) *int64 {
+	if value.IsNull() || value.IsUnknown() {
+		return nil
+	}
+	number := value.ValueInt64()
+	return &number
+}
+
+// optionalString maps an API string that may be empty to a state value:
+// empty becomes null, so an unset optional attribute does not plan a diff.
+func optionalString(value string) types.String {
+	if value == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(value)
+}
+
+// stringsFromList reads a list-of-strings attribute; null and unknown read as
+// nil, and unknown elements are skipped.
+func stringsFromList(ctx context.Context, list types.List, diagnostics *diag.Diagnostics) []string {
+	if list.IsNull() || list.IsUnknown() {
+		return nil
+	}
+	var elements []types.String
+	diagnostics.Append(list.ElementsAs(ctx, &elements, false)...)
+	values := make([]string, 0, len(elements))
+	for _, element := range elements {
+		if element.IsNull() || element.IsUnknown() {
+			continue
+		}
+		values = append(values, element.ValueString())
+	}
+	return values
+}
+
+// listFromStrings is the inverse of stringsFromList. A nil slice is a null
+// list, so an optional attribute the API leaves out stays unset.
+func listFromStrings(values []string) types.List {
+	if values == nil {
+		return types.ListNull(types.StringType)
+	}
+	elements := make([]attr.Value, 0, len(values))
+	for _, value := range values {
+		elements = append(elements, types.StringValue(value))
+	}
+	return types.ListValueMust(types.StringType, elements)
 }
 
 // removeWhenNotFound drops a resource from state when the platform reports it
