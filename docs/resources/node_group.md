@@ -41,7 +41,7 @@ resource "ankra_node_group" "gpu" {
 ### Required
 
 - `cluster_id` (String) Cluster the group belongs to. Changing it replaces the group.
-- `instance_type` (String) Instance type (server type, size, plan or flavor, in the cloud's vocabulary; a plan id for HPE Morpheus). Changing it resizes every node in place: the platform drains and power-cycles each one.
+- `instance_type` (String) Instance type (server type, size, plan or flavor, in the cloud's vocabulary; a plan id for HPE Morpheus). Changing it resizes every node in place: the platform drains and power-cycles each one. The apply waits, within the update timeout, until every node of the group is back up on the new type.
 - `name` (String) Group name, unique within the cluster. Changing it replaces the group.
 
 ### Optional

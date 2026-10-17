@@ -181,7 +181,9 @@ func (clusterResource *managedClusterResource) Schema(ctx context.Context, _ res
 			"read back, and pools the configuration does not list are released from management, never deleted, by " +
 			"that first apply.",
 		Attributes: attributes,
-		Blocks:     commonProvisionedBlocks(ctx),
+		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
+		},
 	}
 }
 
@@ -334,7 +336,7 @@ func applyPoolListing(model *managedClusterModel, pools []client.ManagedNodePool
 		if !tracked && !adoptListed {
 			continue
 		}
-		refreshManagedNodePoolFields(&fields, pool)
+		refreshManagedNodePoolFields(&fields, pool, adoptListed)
 		refreshed[pool.Name] = fields
 	}
 	model.NodePools = refreshed
@@ -368,6 +370,7 @@ func settleManagedCluster(ctx context.Context, apiClient *client.Client, cluster
 	var stepErrorSince time.Time
 	var stepErrorKey string
 	lastState := ""
+	hasWarnedStepError := false
 	for {
 		cluster, err := apiClient.GetClusterByID(waitContext, clusterID)
 		if err != nil && waitContext.Err() == nil {
@@ -387,12 +390,13 @@ func settleManagedCluster(ctx context.Context, apiClient *client.Client, cluster
 				key := cluster.LatestStepError.StepName + "\x00" + cluster.LatestStepError.Message
 				if key != stepErrorKey {
 					stepErrorKey, stepErrorSince = key, time.Now()
-				} else if time.Since(stepErrorSince) >= managedStepErrorPatience {
-					diagnostics.AddError("Cluster build is failing",
-						fmt.Sprintf("Managed cluster %s has been failing step %q for %s: %s. The platform keeps retrying it; "+
-							"fix the cause, or destroy the cluster.", clusterID, cluster.LatestStepError.StepName,
-							managedStepErrorPatience, cluster.LatestStepError.Message))
-					return nil
+				} else if time.Since(stepErrorSince) >= managedStepErrorPatience && !hasWarnedStepError {
+					hasWarnedStepError = true
+					diagnostics.AddWarning("Cluster build step is failing",
+						fmt.Sprintf("Managed cluster %s has been failing step %q for %s: %s. The platform keeps retrying it, "+
+							"and this apply keeps waiting until the create timeout. If the cause needs fixing on your side "+
+							"(a quota, a permission), fix it now: the cluster then continues where it stopped.",
+							clusterID, cluster.LatestStepError.StepName, managedStepErrorPatience, cluster.LatestStepError.Message))
 				}
 			default:
 				stepErrorKey = ""
@@ -500,11 +504,41 @@ func (clusterResource *managedClusterResource) Update(ctx context.Context, reque
 		settleUnknownPoolFields(&fields, prior.Count.ValueInt64())
 		plan.NodePools[name] = fields
 	}
-	if !isAdopting {
-		for _, name := range sortedPoolNames(state.NodePools) {
-			if _, kept := plan.NodePools[name]; kept {
+	var removedPools []string
+	for _, name := range sortedPoolNames(state.NodePools) {
+		if _, kept := plan.NodePools[name]; !kept {
+			removedPools = append(removedPools, name)
+		}
+	}
+	if !isAdopting && len(removedPools) > 0 {
+		wait := resolveTimeout(ctx, plan.Timeouts.Update, defaultManagedPoolTimeout, &response.Diagnostics)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		waitContext, cancel := context.WithTimeout(ctx, wait)
+		defer cancel()
+		for _, name := range sortedPoolNames(plan.NodePools) {
+			if _, existed := state.NodePools[name]; existed {
 				continue
 			}
+			if readinessError := awaitManagedPoolReady(waitContext, apiClient, provider, clusterID, name, plan.NodePools[name]); readinessError != nil {
+				// The new pools exist and the removed ones are kept, so state
+				// records both and the next apply retries the delete.
+				keepRemovedPools(&plan, state, removedPools)
+				plan.ID, plan.ClusterID, plan.State, plan.Kind = state.ID, state.ClusterID, state.State, state.Kind
+				if plan.DestroyMode.IsUnknown() {
+					plan.DestroyMode = state.DestroyMode
+				}
+				clusterResource.refreshPools(ctx, apiClient, &plan, plan.NodePools)
+				response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+				response.Diagnostics.AddError("Removed node pools were kept", fmt.Sprintf(
+					"Pool %q is not ready yet, so %s was not deleted: deleting it first would leave its workloads with "+
+						"nowhere to run (%s). Apply again to delete it once the new pool is ready.",
+					name, strings.Join(removedPools, ", "), readinessError.Error()))
+				return
+			}
+		}
+		for _, name := range removedPools {
 			err := apiClient.DeleteManagedNodePool(ctx, provider, clusterID, name)
 			if err != nil && !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) {
 				if !response.Diagnostics.HasError() {
@@ -525,6 +559,62 @@ func (clusterResource *managedClusterResource) Update(ctx context.Context, reque
 	clusterResource.refreshPools(ctx, apiClient, &plan, plannedPools)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(clearClusterImported(ctx, response.Private)...)
+}
+
+// defaultManagedPoolTimeout bounds the wait for a new pool's nodes when the
+// configuration sets no update timeout.
+const defaultManagedPoolTimeout = 30 * time.Minute
+
+// managedPoolPollInterval paces the wait for a new pool; tests shorten it.
+var managedPoolPollInterval = 15 * time.Second
+
+// awaitManagedPoolReady waits until the pool's Kubernetes nodes are Ready
+// and as many as it asked for: the provider accepts a new pool long before
+// its nodes can take workloads. The nodes are found by the provider's pool
+// label through the cluster agent; a provider whose pool label Ankra does not
+// know (UKS, OVH MKS) cannot be verified, and the caller then keeps the pools
+// it would have deleted, as the platform's own blue/green replacement does.
+func awaitManagedPoolReady(ctx context.Context, apiClient *client.Client, provider, clusterID, poolName string, fields managedNodePoolFields) error {
+	labelKey, isKnown := client.ManagedNodePoolLabelKeys[provider]
+	if !isKnown {
+		return fmt.Errorf("ankra cannot find a %s pool's nodes, so it cannot tell when the new pool is ready", provider)
+	}
+	want := fields.Count.ValueInt64()
+	if fields.Autoscaling != nil && fields.Autoscaling.Enabled.ValueBool() {
+		want = fields.Autoscaling.MinCount.ValueInt64()
+	}
+	if want < 1 {
+		want = 1
+	}
+	var ready int64
+	var lastError error
+	for {
+		count, err := apiClient.CountReadyKubernetesNodes(ctx, clusterID, labelKey, poolName)
+		if err == nil {
+			ready, lastError = count, nil
+			if ready >= want {
+				return nil
+			}
+		} else if ctx.Err() == nil {
+			lastError = err
+		}
+		select {
+		case <-ctx.Done():
+			if lastError != nil {
+				return fmt.Errorf("its nodes could not be read before the update timeout: %w", lastError)
+			}
+			return fmt.Errorf("only %d of its %d nodes were Ready before the update timeout", ready, want)
+		case <-time.After(managedPoolPollInterval):
+		}
+	}
+}
+
+// keepRemovedPools puts the pools an update would have deleted back into the
+// model, with their prior state.
+func keepRemovedPools(model *managedClusterModel, prior managedClusterModel, removedPools []string) {
+	for _, name := range removedPools {
+		model.NodePools[name] = prior.NodePools[name]
+	}
 }
 
 // Delete disconnects or deletes the cluster (destroy_mode) and waits until
@@ -555,6 +645,14 @@ func (clusterResource *managedClusterResource) Delete(ctx context.Context, reque
 		mode = client.ManagedDestroyModeDisconnect
 	}
 	clusterID := state.ClusterID.ValueString()
+	if current, readError := apiClient.GetClusterByID(deleteContext, clusterID); readError == nil && current != nil &&
+		current.State == clusterDeprovisioningState {
+		// A delete is already running (an earlier destroy timed out):
+		// re-sending it would cancel and re-dispatch the platform's
+		// deprovision jobs, so only wait for it.
+		awaitClusterGone(deleteContext, apiClient, clusterID, &response.Diagnostics)
+		return
+	}
 	result, err := apiClient.DeleteManagedCluster(deleteContext, state.Provider.ValueString(), clusterID, mode,
 		state.ForceDestroy.ValueBool(), state.RetentionPolicy.ValueString())
 	if err != nil {
@@ -656,12 +754,22 @@ func (managedNodePoolsShapeModifier) PlanModifyMap(ctx context.Context, request 
 	if response.Diagnostics.HasError() {
 		return
 	}
+	marker, _ := request.Private.GetKey(ctx, clusterImportedKey)
+	isAdopting := len(marker) > 0
+	for _, name := range sortedPoolNames(prior) {
+		if _, kept := planned[name]; kept || isAdopting {
+			continue
+		}
+		response.Diagnostics.AddAttributeWarning(request.Path.AtMapKey(name), "Node pool will be deleted",
+			fmt.Sprintf("Pool %q and its nodes will be deleted. The apply first adds any new pools and waits until "+
+				"their nodes are Ready, so workloads can move; it keeps %q if it cannot confirm that.", name, name))
+	}
 	for _, name := range sortedPoolNames(planned) {
 		priorFields, exists := prior[name]
 		if !exists {
 			continue
 		}
-		if changes := managedPoolShapeChanges(planned[name], priorFields); len(changes) > 0 {
+		if changes := managedPoolShapeChanges(planned[name], priorFields, isAdopting); len(changes) > 0 {
 			response.Diagnostics.AddAttributeError(request.Path.AtMapKey(name), "Node pool cannot change in place",
 				fmt.Sprintf("The provider cannot change %s of the existing pool %q. Give the pool a new key "+
 					"(for example %q): the apply adds the new pool, then deletes this one, without replacing the cluster.",

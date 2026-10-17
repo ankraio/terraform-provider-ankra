@@ -18,12 +18,15 @@ import (
 
 func lanesFastPolling(t *testing.T) {
 	t.Helper()
-	previous := []time.Duration{nodeGroupPollInterval, playgroundPollInterval, clusterGonePollInterval, managedWaitPollInterval}
+	previous := []time.Duration{nodeGroupPollInterval, playgroundPollInterval, clusterGonePollInterval,
+		managedWaitPollInterval, managedPoolPollInterval, managedStepErrorPatience}
 	nodeGroupPollInterval, playgroundPollInterval = 10*time.Millisecond, 10*time.Millisecond
 	clusterGonePollInterval, managedWaitPollInterval = 10*time.Millisecond, 10*time.Millisecond
+	managedPoolPollInterval, managedStepErrorPatience = 10*time.Millisecond, 0
 	t.Cleanup(func() {
 		nodeGroupPollInterval, playgroundPollInterval = previous[0], previous[1]
 		clusterGonePollInterval, managedWaitPollInterval = previous[2], previous[3]
+		managedPoolPollInterval, managedStepErrorPatience = previous[4], previous[5]
 	})
 }
 
@@ -370,6 +373,9 @@ data "ankra_node_groups" "all" {
 					resource.TestCheckResourceAttr("ankra_node_group.gpu", "taints.0.value", ""),
 					resource.TestCheckResourceAttr("ankra_node_group.gpu", "autoscaling.max_count", "5"),
 					lanesCheck(func() error {
+						if err := lanesExpect("roll followed", fake.events, []string{"nodes gpu updating", "nodes gpu updating"}); err != nil {
+							return err
+						}
 						want := []string{"add gpu", "instance-type gpu", "autoscaling gpu", "scale gpu", "labels gpu", "taints gpu"}
 						if err := lanesExpect("writes", fake.nodeGroupWrites, want); err != nil {
 							return err
@@ -485,7 +491,7 @@ resource "ankra_managed_node_pool" "extra" {
   provider_name = "kapsule"
   cluster_id    = ankra_managed_cluster.kapsule.cluster_id
   name          = "extra"
-  size          = "DEV1-L"
+  size          = "dev1-l"
   node_count    = %s
 }
 `, pools, extraCount)
@@ -546,12 +552,15 @@ resource "ankra_managed_node_pool" "extra" {
 			),
 		},
 		{
-			Config: renamed,
+			// A rename deletes the old pool only after the new one's nodes
+			// are Ready.
+			PreConfig: func() { fake.events = nil },
+			Config:    renamed,
 			ConfigPlanChecks: resource.ConfigPlanChecks{PreApply: []plancheck.PlanCheck{
 				plancheck.ExpectResourceAction("ankra_managed_cluster.kapsule", plancheck.ResourceActionUpdate),
 			}},
 			Check: lanesCheck(func() error {
-				if err := lanesExpect("pool deletes", fake.poolDeletes, []string{"default"}); err != nil {
+				if err := lanesExpect("pool order", fake.events, []string{"add pool general", "nodes general ready=False", "nodes general ready=True", "delete pool default"}); err != nil {
 					return err
 				}
 				return lanesExpect("general added", len(fake.createBodies["pool general"]), 1)
@@ -575,6 +584,9 @@ resource "ankra_managed_node_pool" "extra" {
 			ImportState:       true,
 			ImportStateIdFunc: func(*terraform.State) (string, error) { return "kapsule/" + clusterID + "/extra", nil },
 			ImportStateVerify: true,
+			// An import records the provider's spelling of the size and every label
+			// it reports; the first apply adopts the configured ones.
+			ImportStateVerifyIgnore: []string{"size", "labels"},
 		},
 	}
 	resource.Test(t, resource.TestCase{

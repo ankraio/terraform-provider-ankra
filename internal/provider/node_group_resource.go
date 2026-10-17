@@ -154,7 +154,8 @@ func (groupResource *nodeGroupResource) Schema(ctx context.Context, _ resource.S
 			},
 			"instance_type": schema.StringAttribute{
 				MarkdownDescription: "Instance type (server type, size, plan or flavor, in the cloud's vocabulary; a plan id " +
-					"for HPE Morpheus). Changing it resizes every node in place: the platform drains and power-cycles each one.",
+					"for HPE Morpheus). Changing it resizes every node in place: the platform drains and power-cycles each one. " +
+					"The apply waits, within the update timeout, until every node of the group is back up on the new type.",
 				Required: true,
 			},
 			"node_count": schema.Int64Attribute{
@@ -286,14 +287,55 @@ func nodeGroupNodesJoined(group *client.NodeGroup) bool {
 	return group.JoinedCount == nil || *group.JoinedCount == group.Count
 }
 
-// nodeGroupReadNotFound handles a 404 from the node-group routes. The
-// cluster routes answer "Cluster not found" when the cluster is outside the
-// provider's scope, which never means the group is gone.
-func nodeGroupReadNotFound(ctx context.Context, err error, apiClient *client.Client, clusterID string, response *resource.ReadResponse) bool {
-	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
-		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
-		return true
+// awaitNodeGroupRoll waits for an instance-type resize to finish on every
+// node. The group listing shows the new instance type as soon as the resize
+// is accepted, and joined_count stays equal to the count while nodes are
+// power-cycled one lane at a time, so neither says the roll is done. The
+// platform moves every worker of the group to "updating" in the same write
+// that accepts the resize and back to "up" once its part of the roll is
+// done, which the node listing shows per machine.
+func awaitNodeGroupRoll(ctx context.Context, apiClient *client.Client, lane, clusterID, groupName, instanceType string) error {
+	var pending []string
+	for {
+		nodes, err := apiClient.ListClusterNodes(ctx, lane, clusterID)
+		if err != nil {
+			if ctx.Err() != nil {
+				break
+			}
+			return fmt.Errorf("unable to read the cluster's nodes to follow the resize: %w", err)
+		}
+		pending = pending[:0]
+		seen := 0
+		for _, node := range nodes {
+			if node.IsDeleted || node.NodeGroup == nil || *node.NodeGroup != groupName {
+				continue
+			}
+			seen++
+			if node.State != client.ClusterNodeUpState || node.InstanceType != instanceType {
+				pending = append(pending, fmt.Sprintf("%s (%s, %s)", node.Name, node.State, node.InstanceType))
+			}
+		}
+		if seen > 0 && len(pending) == 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+		case <-time.After(nodeGroupPollInterval):
+			continue
+		}
+		break
 	}
+	return fmt.Errorf("the resize of group %s to %s was accepted but had not finished on every node before the update "+
+		"timeout; still rolling: %s. A node whose drain is refused stays here: see `ankra cluster operations list`, or set "+
+		"force_drain = true", groupName, instanceType, strings.Join(pending, ", "))
+}
+
+// nodeGroupReadNotFound handles a 404 from the node-group routes. They
+// answer "Cluster not found" both for a cluster outside the provider's scope
+// and for a cluster that was deleted: when the provider's scope moved since
+// the group was tracked it is reported, otherwise the cluster, and the group
+// with it, is gone.
+func nodeGroupReadNotFound(ctx context.Context, err error, apiClient *client.Client, response *resource.ReadResponse) bool {
 	return removeWhenNotFound(ctx, err, apiClient, response)
 }
 
@@ -324,7 +366,7 @@ func (groupResource *nodeGroupResource) Read(ctx context.Context, request resour
 	}
 
 	group, err := apiClient.GetNodeGroup(ctx, lane, clusterID, state.Name.ValueString())
-	if nodeGroupReadNotFound(ctx, err, apiClient, clusterID, response) {
+	if nodeGroupReadNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -400,6 +442,10 @@ func (groupResource *nodeGroupResource) Update(ctx context.Context, request reso
 		}, func(group *client.NodeGroup) bool {
 			return group != nil && group.InstanceType == instanceType && nodeGroupNodesJoined(group)
 		}) {
+			return
+		}
+		if rollError := awaitNodeGroupRoll(waitContext, apiClient, lane, clusterID, name, instanceType); rollError != nil {
+			response.Diagnostics.AddError("Node group resize did not finish", rollError.Error())
 			return
 		}
 	}
@@ -486,11 +532,9 @@ func (groupResource *nodeGroupResource) Delete(ctx context.Context, request reso
 	if !requireUnmovedScope(ctx, apiClient, request.Private, &response.Diagnostics) {
 		return
 	}
+	// The scope has not moved (checked above), so a "Cluster not found" here
+	// means the cluster, and the group with it, is gone.
 	if err := apiClient.DeleteNodeGroup(waitContext, lane, clusterID, name, state.ForceDrain.ValueBool()); err != nil {
-		if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
-			response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
-			return
-		}
 		if !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) && !response.Diagnostics.HasError() {
 			response.Diagnostics.AddError("Unable to delete node group", err.Error())
 		}
@@ -502,11 +546,7 @@ func (groupResource *nodeGroupResource) Delete(ctx context.Context, request reso
 			lastSeen = group
 			return group == nil
 		})
-	if err == nil {
-		return
-	}
-	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
-		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+	if err == nil || client.IsNotFound(err) {
 		return
 	}
 	detail := err.Error()
