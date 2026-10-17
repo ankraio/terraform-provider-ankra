@@ -119,7 +119,7 @@ func (related *aiReviewRelatedRepositoryResource) Read(ctx context.Context, requ
 		return
 	}
 	listing, err := apiClient.ListAIReviewRelatedRepositories(ctx, state.Provider.ValueString(), state.BindingExternalID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

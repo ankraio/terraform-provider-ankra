@@ -156,7 +156,7 @@ func (member *organisationMemberResource) Read(ctx context.Context, request reso
 	}
 
 	detail, err := apiClient.GetOrganisation(ctx, state.OrganisationID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

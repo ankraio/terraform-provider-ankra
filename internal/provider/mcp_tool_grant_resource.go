@@ -108,7 +108,7 @@ func (grant *mcpToolGrantResource) Read(ctx context.Context, request resource.Re
 	}
 
 	grants, err := apiClient.ListMCPToolGrants(ctx, state.ServerID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

@@ -162,7 +162,7 @@ func (token *serviceTokenResource) Read(ctx context.Context, request resource.Re
 	}
 
 	listed, err := apiClient.GetServiceToken(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

@@ -167,7 +167,7 @@ func (token *apiTokenResource) Read(ctx context.Context, request resource.ReadRe
 	}
 
 	listed, err := apiClient.GetAPIToken(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
