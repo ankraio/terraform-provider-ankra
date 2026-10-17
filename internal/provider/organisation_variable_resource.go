@@ -105,6 +105,7 @@ func (variableResource *organisationVariableResource) Create(ctx context.Context
 
 	plan.ID = types.StringValue(created.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (variableResource *organisationVariableResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -119,7 +120,7 @@ func (variableResource *organisationVariableResource) Read(ctx context.Context, 
 	}
 
 	variable, err := apiClient.GetOrganisationVariable(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -127,7 +128,7 @@ func (variableResource *organisationVariableResource) Read(ctx context.Context, 
 		return
 	}
 	if readTargetChanged(state.ID, variable.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 
@@ -138,6 +139,7 @@ func (variableResource *organisationVariableResource) Read(ctx context.Context, 
 		state.Value = types.StringValue(*variable.Value)
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (variableResource *organisationVariableResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -176,9 +178,11 @@ func (variableResource *organisationVariableResource) Delete(ctx context.Context
 		return
 	}
 
-	if err := apiClient.DeleteOrganisationVariable(ctx, state.Name.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete organisation variable", err.Error())
+	err := apiClient.DeleteOrganisationVariable(ctx, state.Name.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete organisation variable", err.Error())
 }
 
 // ImportState imports by variable name. A secret's value cannot be read back,

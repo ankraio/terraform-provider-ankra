@@ -6,7 +6,7 @@ description: |-
   A DigitalOcean API token credential, referenced by ankra_digitalocean_cluster.credential_id. The counterpart of ankra credentials digitalocean create and ankra credentials delete.
   The platform never returns a credential's secrets or connection settings, so a change made to them outside Terraform is not detected; the name, and the credential's existence, are. The token API cannot change a credential in place, so changing a setting replaces it.
   Permissions. The API token needs credentials.read as well as credentials.write (and credentials.delete to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the terraform import to run, because the credential already exists.
-  Projects. A credential is created in the provider's project (project_id, or the user's last-selected project) and is listed only in that project and its organisation. Changing the provider's project_id makes credentials pinned to the old project read as deleted, and recreating them fails because credential names are unique per provider across the whole organisation. Move them with terraform state rm and terraform import under the new project instead, or keep one provider block per project.
+  Projects. A credential belongs to the provider's project. After the provider's project_id changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
   Refresh cost. Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS credential's secret to fill in scope and auth_method, so a refresh costs one secret read per AWS credential in the organisation.
 ---
 
@@ -18,7 +18,7 @@ The platform never returns a credential's secrets or connection settings, so a c
 
 **Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the `terraform import` to run, because the credential already exists.
 
-**Projects.** A credential is created in the provider's project (`project_id`, or the user's last-selected project) and is listed only in that project and its organisation. Changing the provider's `project_id` makes credentials pinned to the old project read as deleted, and recreating them fails because credential names are unique per provider across the whole organisation. Move them with `terraform state rm` and `terraform import` under the new project instead, or keep one provider block per project.
+**Projects.** A credential belongs to the provider's project. After the provider's `project_id` changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
 
 **Refresh cost.** Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS credential's secret to fill in `scope` and `auth_method`, so a refresh costs one secret read per AWS credential in the organisation.
 
