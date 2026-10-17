@@ -33,6 +33,8 @@ type routeFake struct {
 	requests []string
 	// organisationHeaders records the organisation override each request carried.
 	organisationHeaders []string
+	// projectHeaders records the project override each request carried.
+	projectHeaders []string
 }
 
 func newRouteFake(t *testing.T) *routeFake {
@@ -52,6 +54,7 @@ func newRouteFake(t *testing.T) *routeFake {
 		fake.mutex.Lock()
 		fake.requests = append(fake.requests, request.Method+" "+request.URL.Path)
 		fake.organisationHeaders = append(fake.organisationHeaders, request.Header.Get("X-Ankra-Organisation-Id"))
+		fake.projectHeaders = append(fake.projectHeaders, request.Header.Get("X-Ankra-Project-Id"))
 		fake.mutex.Unlock()
 		writer.Header().Set("Content-Type", "application/json")
 		fake.mux.ServeHTTP(writer, request)
@@ -88,6 +91,20 @@ func (fake *routeFake) served() []string {
 	fake.mutex.Lock()
 	defer fake.mutex.Unlock()
 	return append([]string(nil), fake.requests...)
+}
+
+// requestsOutsideProject lists the requests, other than the project listing,
+// that did not carry projectID as their project override.
+func (fake *routeFake) requestsOutsideProject(projectID string) []string {
+	fake.mutex.Lock()
+	defer fake.mutex.Unlock()
+	var outside []string
+	for index, served := range fake.requests {
+		if served != "GET /api/v1/org/projects" && fake.projectHeaders[index] != projectID {
+			outside = append(outside, served+" with project "+fake.projectHeaders[index])
+		}
+	}
+	return outside
 }
 
 // writeJSON encodes body as the response.

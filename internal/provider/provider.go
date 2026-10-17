@@ -73,7 +73,8 @@ func (providerInstance *ankraProvider) Schema(_ context.Context, _ provider.Sche
 				Optional:            true,
 			},
 			"project_id": schema.StringAttribute{
-				MarkdownDescription: "ID (UUID) of the project to act in, for organisations that use projects. Sent as the `" + client.ProjectHeader + "` header. May also be set with the `ANKRA_PROJECT_ID` environment variable. " +
+				MarkdownDescription: "Project to act in, for organisations that use projects: its ID (UUID) or its slug. Sent as the `" + client.ProjectHeader + "` header. May also be set with the `ANKRA_PROJECT_ID` environment variable. " +
+					"A slug is resolved to the project's ID once, from the organisation's project list, before the first request; a slug that matches no project the token can see fails every resource and data source rather than falling back to another project. " +
 					"Set it whenever the organisation has projects: without it the platform scopes every request to the project the token's user last selected in the portal, so switching project there would change what Terraform sees.",
 				Optional: true,
 			},
@@ -98,8 +99,8 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 		baseURL = strings.TrimSpace(config.BaseURL.ValueString())
 	}
 
-	organisationID, organisationKnown := scopeIdentifier(config.OrganisationID, organisationIDEnvironmentVariable, "organisation_id", &response.Diagnostics)
-	projectID, projectKnown := scopeIdentifier(config.ProjectID, projectIDEnvironmentVariable, "project_id", &response.Diagnostics)
+	organisationID, organisationKnown := scopeIdentifier(config.OrganisationID, organisationIDEnvironmentVariable, "organisation_id", false, &response.Diagnostics)
+	projectReference, projectKnown := scopeIdentifier(config.ProjectID, projectIDEnvironmentVariable, "project_id", true, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -114,7 +115,7 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 	userAgent := "terraform-provider-ankra/" + providerInstance.version
 	apiClient := client.NewClient(baseURL, token, userAgent)
 	apiClient.OrganisationID = organisationID
-	apiClient.ProjectID = projectID
+	applyProjectReference(apiClient, projectReference)
 	switch {
 	case !organisationKnown:
 		apiClient.UnresolvedScope = "organisation_id"
@@ -128,13 +129,18 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
+// projectSlugPattern is the platform's project slug rule.
+var projectSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,62}$`)
+
 // scopeIdentifier resolves an organisation or project override from the
 // configuration, falling back to its environment variable. It reports false
 // when the configured value is not known yet: the caller must then refuse to
 // send requests, because leaving the header off silently scopes them to a
-// different organisation or project. The platform accepts only IDs here, so a
-// slug is rejected at configure time instead of failing every request.
-func scopeIdentifier(configured types.String, environmentVariable, attributeName string, diagnostics *diag.Diagnostics) (string, bool) {
+// different organisation or project. The organisation must be an ID; a
+// project may also be a slug (allowSlug), which the client resolves to its ID
+// before the first request. Anything else is rejected at configure time
+// instead of failing every request.
+func scopeIdentifier(configured types.String, environmentVariable, attributeName string, allowSlug bool, diagnostics *diag.Diagnostics) (string, bool) {
 	if configured.IsUnknown() {
 		return "", false
 	}
@@ -142,11 +148,28 @@ func scopeIdentifier(configured types.String, environmentVariable, attributeName
 	if !configured.IsNull() {
 		value = strings.TrimSpace(configured.ValueString())
 	}
-	if value != "" && !uuidPattern.MatchString(value) {
+	switch {
+	case value == "" || uuidPattern.MatchString(value):
+	case allowSlug && projectSlugPattern.MatchString(value):
+	case allowSlug:
+		diagnostics.AddAttributeError(path.Root(attributeName), "Invalid "+attributeName,
+			fmt.Sprintf("%q is neither a project ID nor a project slug (lowercase letters, digits and \"-\", starting with a letter or digit, at most 63 characters). "+
+				"Set the project's ID or slug as the portal shows it.", value))
+	default:
 		diagnostics.AddAttributeError(path.Root(attributeName), "Invalid "+attributeName,
 			fmt.Sprintf("%q is not an ID. Set the %s UUID (`ankra org list -o json`), not a name or slug.", value, strings.TrimSuffix(attributeName, "_id")))
 	}
 	return value, true
+}
+
+// applyProjectReference scopes the client to a project given by ID or slug.
+// A slug is held until the client resolves it, so it never reaches the wire.
+func applyProjectReference(apiClient *client.Client, reference string) {
+	if uuidPattern.MatchString(reference) {
+		apiClient.ProjectID = reference
+		return
+	}
+	apiClient.ProjectSlug = reference
 }
 
 func (providerInstance *ankraProvider) Resources(_ context.Context) []func() resource.Resource {

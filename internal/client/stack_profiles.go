@@ -325,6 +325,9 @@ func (client *Client) stackProfileLogoRequest(ctx context.Context, method, path 
 	if client.UnresolvedScope != "" {
 		return nil, fmt.Errorf("%s is not known until apply; refusing to call %s %s without it", client.UnresolvedScope, method, path)
 	}
+	if err := client.ResolveProject(ctx); err != nil {
+		return nil, err
+	}
 	attempts := client.MaxRetries
 	if attempts < 1 {
 		attempts = 1
@@ -374,8 +377,8 @@ func (client *Client) stackProfileLogoAttempt(ctx context.Context, method, path 
 	if client.OrganisationID != "" {
 		request.Header.Set(OrganisationHeader, client.OrganisationID)
 	}
-	if client.ProjectID != "" {
-		request.Header.Set(ProjectHeader, client.ProjectID)
+	if projectID := client.ScopeProjectID(); projectID != "" {
+		request.Header.Set(ProjectHeader, projectID)
 	}
 	response, err := client.HTTPClient.Do(request)
 	if err != nil {

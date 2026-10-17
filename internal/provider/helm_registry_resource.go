@@ -27,6 +27,7 @@ var (
 	_ resource.ResourceWithConfigure      = (*helmRegistryResource)(nil)
 	_ resource.ResourceWithImportState    = (*helmRegistryResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*helmRegistryResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*helmRegistryResource)(nil)
 )
 
 const (
@@ -47,6 +48,7 @@ type helmRegistryModel struct {
 	ExcludeCharts   types.List   `tfsdk:"exclude_charts"`
 	ReadJobInterval types.Int64  `tfsdk:"read_job_interval"`
 	LastSyncError   types.String `tfsdk:"last_sync_error"`
+	ProjectID       types.String `tfsdk:"project_id"`
 }
 
 // NewHelmRegistryResource returns the ankra_helm_registry resource, the
@@ -110,6 +112,7 @@ func (registryResource *helmRegistryResource) Schema(_ context.Context, _ resour
 				MarkdownDescription: "Why the most recent index sync failed, when it did.",
 				Computed:            true,
 			},
+			"project_id": helmProjectIDAttribute("registry"),
 		},
 	}
 }
@@ -152,11 +155,17 @@ func (registryResource *helmRegistryResource) Create(ctx context.Context, reques
 		return
 	}
 
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+
 	err := apiClient.CreateHelmRegistry(ctx, client.HelmRegistrySpecification{
 		Name:           plan.Name.ValueString(),
 		URL:            plan.URL.ValueString(),
 		ExcludeCharts:  stringsFromList(ctx, plan.ExcludeCharts, &response.Diagnostics),
 		CredentialName: stringPointer(plan.CredentialName),
+		ProjectID:      helmProjectIDBody(apiClient, plan.ProjectID),
 	})
 	if err != nil {
 		response.Diagnostics.AddError("Unable to create Helm registry", err.Error())
@@ -214,6 +223,10 @@ func (registryResource *helmRegistryResource) Read(ctx context.Context, request 
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	detail, err := apiClient.GetHelmRegistry(ctx, state.Name.ValueString())
 	if removeWhenNotFound(ctx, err, apiClient, response) {
@@ -243,6 +256,10 @@ func (registryResource *helmRegistryResource) Update(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	if !plan.ReadJobInterval.IsUnknown() && !plan.ReadJobInterval.IsNull() && !plan.ReadJobInterval.Equal(state.ReadJobInterval) {
 		if err := apiClient.UpdateHelmRegistry(ctx, plan.Name.ValueString(), plan.ReadJobInterval.ValueInt64()); err != nil {
@@ -266,6 +283,10 @@ func (registryResource *helmRegistryResource) Delete(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	err := apiClient.DeleteHelmRegistry(ctx, state.Name.ValueString())
 	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
@@ -274,9 +295,16 @@ func (registryResource *helmRegistryResource) Delete(ctx context.Context, reques
 	response.Diagnostics.AddError("Unable to delete Helm registry", err.Error())
 }
 
-// ImportState imports by registry name.
+// ModifyPlan replaces the registry when its project changes, but not when
+// project_id is only respelled (a slug for the same project's ID).
+func (registryResource *helmRegistryResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	helmPlanProjectReplacement(ctx, registryResource.client, request, response)
+}
+
+// ImportState imports by registry name, or by `<project>/<name>` for a
+// registry in another project than the provider's.
 func (registryResource *helmRegistryResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), request, response)
+	helmImportState(ctx, request, response)
 }
 
 // refresh reads the registry back into model, reporting whether it could.
@@ -288,6 +316,85 @@ func (registryResource *helmRegistryResource) refresh(ctx context.Context, apiCl
 	}
 	helmRegistryApplyDetail(model, detail)
 	return true
+}
+
+// helmProjectIDAttribute is the optional project a Helm registry or
+// credential is created in. The platform does not return it, so it is kept
+// as configured; every request for the resource is scoped to that project.
+// helmPlanProjectReplacement decides when a change replaces the object.
+func helmProjectIDAttribute(subject string) schema.StringAttribute {
+	return schema.StringAttribute{
+		MarkdownDescription: "Project to create the " + subject + " in, by ID or slug, instead of the provider's project. Every request for this " + subject +
+			" is then made in that project. The platform does not report a " + subject + "'s project, so this is kept as configured and a move " +
+			"made outside Terraform is not detected. To import a " + subject + " in another project, use `<project>/<name>` as the import ID " +
+			"(the project by ID or slug); a bare name imports from the provider's project and leaves this null. " +
+			"Moving the " + subject + " to another project replaces it; writing the same project differently (its slug instead of its ID) does not. " +
+			"The provider cannot create an organisation-wide " + subject + " (one visible in every project): leaving this unset creates it in the provider's project.",
+		Optional: true,
+	}
+}
+
+// helmPlanProjectReplacement plans a replacement when project_id moves the
+// object to another project. Both spellings are resolved to IDs first, so
+// swapping a slug for the same project's ID is an in-place change. When a
+// reference cannot be resolved at plan time the change is treated as a move.
+func helmPlanProjectReplacement(ctx context.Context, apiClient *client.Client, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var stateProject, planProject types.String
+	response.Diagnostics.Append(request.State.GetAttribute(ctx, path.Root("project_id"), &stateProject)...)
+	response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root("project_id"), &planProject)...)
+	if response.Diagnostics.HasError() || stateProject.Equal(planProject) {
+		return
+	}
+	if helmSameProject(ctx, apiClient, stateProject, planProject) {
+		return
+	}
+	response.RequiresReplace = append(response.RequiresReplace, path.Root("project_id"))
+}
+
+// helmSameProject reports whether two project_id values name the same
+// project. Null is the provider's project, which is never treated as equal
+// to an explicit one.
+func helmSameProject(ctx context.Context, apiClient *client.Client, first, second types.String) bool {
+	if first.IsNull() || second.IsNull() || first.IsUnknown() || second.IsUnknown() {
+		return false
+	}
+	if apiClient == nil || apiClient.Token == "" || apiClient.UnresolvedScope != "" {
+		return false
+	}
+	firstID, firstError := apiClient.ProjectIDFor(ctx, first.ValueString())
+	secondID, secondError := apiClient.ProjectIDFor(ctx, second.ValueString())
+	return firstError == nil && secondError == nil && firstID == secondID
+}
+
+// helmImportState imports a registry or credential by name, or by
+// `<project>/<name>` (project by ID or slug) for one in another project.
+// Neither a name nor a project may contain "/", so the split is unambiguous.
+func helmImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
+	project, name, isScoped := strings.Cut(request.ID, "/")
+	if !isScoped {
+		resource.ImportStatePassthroughID(ctx, path.Root("name"), request, response)
+		return
+	}
+	if project == "" || name == "" {
+		response.Diagnostics.AddError("Invalid import ID",
+			fmt.Sprintf("%q is neither a name nor `<project>/<name>`.", request.ID))
+		return
+	}
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("name"), name)...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("project_id"), project)...)
+}
+
+// helmProjectIDBody is the project_id a create sends: the resolved ID of the
+// resource's own project, or nil to leave the request's project in charge.
+func helmProjectIDBody(apiClient *client.Client, projectID types.String) *string {
+	if projectID.IsNull() || projectID.IsUnknown() {
+		return nil
+	}
+	resolved := apiClient.ScopeProjectID()
+	return &resolved
 }
 
 // helmRegistryTargetChanged is readTargetChanged for registries, whose API

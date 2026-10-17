@@ -70,6 +70,7 @@ output "upcloud_cluster_id" {
 - `cluster_id` (String) Identifier assigned to the cluster by the Ankra platform.
 - `id` (String) Identifier of the cluster (mirrors `cluster_id`).
 - `kind` (String) Cluster kind the platform reports (for example `hetzner`, `imported`).
+- `project_id` (String) ID of the project the cluster belongs to: the provider's `project_id`, resolved to an ID when it is a slug, since the platform shows a cluster only in its own project. Null when the provider sets no `project_id`. Moving a cluster to another project is not managed here; after a move the cluster is no longer visible in this project.
 - `state` (String) Lifecycle state the platform reports for the cluster, refreshed on every read (for example `creating`, `running`, `stopped`).
 
 <a id="nestedblock--timeouts"></a>

@@ -54,6 +54,7 @@ type managedClusterModel struct {
 	ClusterID            types.String                     `tfsdk:"cluster_id"`
 	State                types.String                     `tfsdk:"state"`
 	Kind                 types.String                     `tfsdk:"kind"`
+	ProjectID            types.String                     `tfsdk:"project_id"`
 	Provider             types.String                     `tfsdk:"provider_name"`
 	Name                 types.String                     `tfsdk:"name"`
 	Description          types.String                     `tfsdk:"description"`
@@ -260,6 +261,7 @@ func (clusterResource *managedClusterResource) Create(ctx context.Context, reque
 	plan.ClusterID = types.StringValue(clusterID)
 	plan.State = types.StringUnknown()
 	plan.Kind = types.StringUnknown()
+	plan.ProjectID = optionalString(apiClient.ScopeProjectID())
 	if plan.DestroyMode.IsUnknown() || plan.DestroyMode.IsNull() {
 		plan.DestroyMode = types.StringValue(client.ManagedDestroyModeDeleteProviderCluster)
 	}
@@ -278,7 +280,7 @@ func (clusterResource *managedClusterResource) Create(ctx context.Context, reque
 	if cluster == nil {
 		return
 	}
-	applyClusterIdentity(&plan.State, &plan.Kind, cluster)
+	applyClusterIdentity(&plan.State, &plan.Kind, &plan.ProjectID, apiClient, cluster)
 	clusterResource.refreshPools(ctx, apiClient, &plan, plannedPools)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
@@ -436,7 +438,7 @@ func (clusterResource *managedClusterResource) Read(ctx context.Context, request
 	if cluster.Name != "" {
 		state.Name = types.StringValue(cluster.Name)
 	}
-	applyClusterIdentity(&state.State, &state.Kind, cluster)
+	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, apiClient, cluster)
 
 	pools, err := apiClient.ListManagedNodePools(ctx, state.Provider.ValueString(), clusterID)
 	if removeWhenNotFound(ctx, err, apiClient, response) {

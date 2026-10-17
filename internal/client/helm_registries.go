@@ -56,6 +56,9 @@ type HelmRegistrySpecification struct {
 	URL            string   `json:"url"`
 	ExcludeCharts  []string `json:"exclude_charts,omitempty"`
 	CredentialName *string  `json:"credential_name,omitempty"`
+	// ProjectID names the project the registry is created in; nil leaves the
+	// platform to use the request's project. It travels beside the spec.
+	ProjectID *string `json:"-"`
 }
 
 type helmRegistryCreateSpec struct {
@@ -64,7 +67,8 @@ type helmRegistryCreateSpec struct {
 }
 
 type helmRegistryCreateRequest struct {
-	Spec helmRegistryCreateSpec `json:"spec"`
+	Spec      helmRegistryCreateSpec `json:"spec"`
+	ProjectID *string                `json:"project_id,omitempty"`
 }
 
 type helmRegistryCreateResponse struct {
@@ -110,7 +114,7 @@ func (rejected *ConfigurationRejectedError) Error() string {
 // credential) come back as a 200 with an errors list, returned here as a
 // *ConfigurationRejectedError.
 func (client *Client) CreateHelmRegistry(ctx context.Context, specification HelmRegistrySpecification) error {
-	var request helmRegistryCreateRequest
+	request := helmRegistryCreateRequest{ProjectID: specification.ProjectID}
 	if HelmRegistryKind(specification.URL) == "oci" {
 		request.Spec.HelmOCIRegistry = &specification
 	} else {
@@ -189,6 +193,9 @@ type HelmRegistryCredentialCreate struct {
 	Name     string `json:"name"`
 	Username string `json:"username"`
 	Password string `json:"password"`
+	// ProjectID names the project the credential is created in; nil leaves
+	// the platform to use the request's project.
+	ProjectID *string `json:"project_id,omitempty"`
 }
 
 // HelmRegistryCredentialUpdate is the update body. The platform requires

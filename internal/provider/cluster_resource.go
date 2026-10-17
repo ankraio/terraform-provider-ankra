@@ -97,6 +97,7 @@ type clusterResourceModel struct {
 	HelmCommand          types.String   `tfsdk:"helm_command"`
 	State                types.String   `tfsdk:"state"`
 	Kind                 types.String   `tfsdk:"kind"`
+	ProjectID            types.String   `tfsdk:"project_id"`
 	WaitForOnline        types.Bool     `tfsdk:"wait_for_online"`
 	Timeouts             timeouts.Value `tfsdk:"timeouts"`
 }
@@ -163,6 +164,7 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
+			"project_id": clusterProjectIDAttribute(),
 			"wait_for_online": schema.BoolAttribute{
 				MarkdownDescription: "Wait for the cluster agent to check in before the resource is considered " +
 					"created. Defaults to `false`, because importing a cluster only registers it - somebody still " +
@@ -383,6 +385,7 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 	plan.HelmCommand = types.StringValue(importResponse.ImportCommand)
 	plan.State = types.StringNull()
 	plan.Kind = types.StringNull()
+	plan.ProjectID = optionalString(apiClient.ScopeProjectID())
 
 	// Persist the import result before any wait, so a timeout cannot lose the
 	// cluster the platform has already registered.
@@ -395,7 +398,7 @@ func (clusterResourceInstance *clusterResource) Create(ctx context.Context, requ
 	if cluster == nil {
 		return
 	}
-	applyClusterIdentity(&plan.State, &plan.Kind, cluster)
+	applyClusterIdentity(&plan.State, &plan.Kind, &plan.ProjectID, apiClient, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
@@ -423,7 +426,7 @@ func recoverFailedCreate(ctx context.Context, apiClient *client.Client, plan *cl
 			plan.ID = types.StringValue(registered.ID)
 			plan.ClusterID = types.StringValue(registered.ID)
 			plan.HelmCommand = types.StringValue("")
-			applyClusterIdentity(&plan.State, &plan.Kind, registered)
+			applyClusterIdentity(&plan.State, &plan.Kind, &plan.ProjectID, apiClient, registered)
 			response.Diagnostics.Append(response.State.Set(ctx, plan)...)
 			response.Diagnostics.AddError("Cluster registered but the import did not complete",
 				fmt.Sprintf("%s\n\nThe platform registered cluster %q (id %s) before the import failed, so it "+
@@ -496,7 +499,7 @@ func (clusterResourceInstance *clusterResource) Read(ctx context.Context, reques
 	if cluster.Name != "" {
 		state.ClusterName = types.StringValue(cluster.Name)
 	}
-	applyClusterIdentity(&state.State, &state.Kind, cluster)
+	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, apiClient, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 

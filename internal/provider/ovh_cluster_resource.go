@@ -32,6 +32,7 @@ type ovhClusterResourceModel struct {
 	ClusterID             types.String   `tfsdk:"cluster_id"`
 	State                 types.String   `tfsdk:"state"`
 	Kind                  types.String   `tfsdk:"kind"`
+	ProjectID             types.String   `tfsdk:"project_id"`
 	Name                  types.String   `tfsdk:"name"`
 	CredentialID          types.String   `tfsdk:"credential_id"`
 	Region                types.String   `tfsdk:"region"`
@@ -142,6 +143,7 @@ func (ovhResource *ovhClusterResource) Create(ctx context.Context, request resou
 	plan.ClusterID = types.StringValue(created.ClusterID)
 	plan.State = types.StringUnknown()
 	plan.Kind = types.StringUnknown()
+	plan.ProjectID = optionalString(ovhResource.client.ScopeProjectID())
 
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
@@ -155,7 +157,7 @@ func (ovhResource *ovhClusterResource) Create(ctx context.Context, request resou
 	if cluster == nil {
 		return
 	}
-	applyClusterIdentity(&plan.State, &plan.Kind, cluster)
+	applyClusterIdentity(&plan.State, &plan.Kind, &plan.ProjectID, ovhResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
@@ -190,7 +192,7 @@ func (ovhResource *ovhClusterResource) Read(ctx context.Context, request resourc
 	if cluster.Name != "" {
 		state.Name = types.StringValue(cluster.Name)
 	}
-	applyClusterIdentity(&state.State, &state.Kind, cluster)
+	applyClusterIdentity(&state.State, &state.Kind, &state.ProjectID, ovhResource.client, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 

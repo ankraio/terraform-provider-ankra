@@ -11,6 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
@@ -50,6 +51,10 @@ func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *cl
 	}
 	lookupContext, cancel := context.WithTimeout(context.Background(), client.DefaultTimeout)
 	defer cancel()
+	if err := holder.client.ResolveProject(lookupContext); err != nil {
+		diagnostics.AddError("Unable to resolve the provider's project_id", err.Error())
+		return nil
+	}
 	projectCount, err := holder.client.FloatingProjectCount(lookupContext)
 	if err != nil {
 		diagnostics.AddError("Unable to read the organisation's projects", err.Error())
@@ -64,6 +69,23 @@ func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *cl
 		return nil
 	}
 	return holder.client
+}
+
+// resourceProjectClient scopes apiClient to a resource's own project_id (an
+// ID or a slug) when it sets one, so every request for that resource, reads
+// and deletes included, acts in that project. It returns apiClient unchanged
+// when project_id is null, and nil after recording why the project could not
+// be resolved.
+func resourceProjectClient(ctx context.Context, apiClient *client.Client, projectID types.String, diagnostics *diag.Diagnostics) *client.Client {
+	if apiClient == nil || projectID.IsNull() || projectID.IsUnknown() {
+		return apiClient
+	}
+	scoped, err := apiClient.InProject(ctx, projectID.ValueString())
+	if err != nil {
+		diagnostics.AddAttributeError(path.Root("project_id"), "Unable to resolve project_id", err.Error())
+		return nil
+	}
+	return scoped
 }
 
 // readTargetChanged reports whether the object found for a resource is a
@@ -194,7 +216,7 @@ func trackScope(ctx context.Context, apiClient *client.Client, private privateSt
 	if apiClient == nil || private == nil {
 		return nil
 	}
-	encoded, err := json.Marshal(recordedScope{OrganisationID: apiClient.OrganisationID, ProjectID: apiClient.ProjectID})
+	encoded, err := json.Marshal(recordedScope{OrganisationID: apiClient.OrganisationID, ProjectID: apiClient.ScopeProjectID()})
 	if err != nil {
 		return nil
 	}
@@ -219,8 +241,8 @@ func scopeMoved(ctx context.Context, apiClient *client.Client, private privateSt
 	switch {
 	case recorded.OrganisationID != apiClient.OrganisationID:
 		return fmt.Sprintf("organisation_id was %q when Terraform last saw this object and is now %q", recorded.OrganisationID, apiClient.OrganisationID)
-	case recorded.ProjectID != apiClient.ProjectID:
-		return fmt.Sprintf("project_id was %q when Terraform last saw this object and is now %q", recorded.ProjectID, apiClient.ProjectID)
+	case recorded.ProjectID != apiClient.ScopeProjectID():
+		return fmt.Sprintf("project_id was %q when Terraform last saw this object and is now %q", recorded.ProjectID, apiClient.ScopeProjectID())
 	}
 	return ""
 }

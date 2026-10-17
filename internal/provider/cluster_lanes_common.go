@@ -38,6 +38,7 @@ type laneClusterCommonModel struct {
 	ClusterID         types.String   `tfsdk:"cluster_id"`
 	State             types.String   `tfsdk:"state"`
 	Kind              types.String   `tfsdk:"kind"`
+	ProjectID         types.String   `tfsdk:"project_id"`
 	Name              types.String   `tfsdk:"name"`
 	Description       types.String   `tfsdk:"description"`
 	Distribution      types.String   `tfsdk:"distribution"`
@@ -168,6 +169,7 @@ func (laneResource *laneClusterResource[Model]) Create(ctx context.Context, requ
 	common.ClusterID = types.StringValue(created.ClusterID)
 	common.State = types.StringUnknown()
 	common.Kind = types.StringUnknown()
+	common.ProjectID = optionalString(apiClient.ScopeProjectID())
 
 	// Persist the id before waiting. A wait that times out must not lose the
 	// cluster the platform already started building.
@@ -181,7 +183,7 @@ func (laneResource *laneClusterResource[Model]) Create(ctx context.Context, requ
 	if cluster == nil {
 		return
 	}
-	applyClusterIdentity(&common.State, &common.Kind, cluster)
+	applyClusterIdentity(&common.State, &common.Kind, &common.ProjectID, apiClient, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
@@ -212,7 +214,7 @@ func (laneResource *laneClusterResource[Model]) Read(ctx context.Context, reques
 	if cluster.Name != "" {
 		common.Name = types.StringValue(cluster.Name)
 	}
-	applyClusterIdentity(&common.State, &common.Kind, cluster)
+	applyClusterIdentity(&common.State, &common.Kind, &common.ProjectID, apiClient, cluster)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }

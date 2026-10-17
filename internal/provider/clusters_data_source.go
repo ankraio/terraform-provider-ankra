@@ -6,9 +6,11 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -24,13 +26,15 @@ type clustersDataSource struct {
 }
 
 type clusterItemModel struct {
-	ID   types.String `tfsdk:"id"`
-	Name types.String `tfsdk:"name"`
+	ID        types.String `tfsdk:"id"`
+	Name      types.String `tfsdk:"name"`
+	ProjectID types.String `tfsdk:"project_id"`
 }
 
 type clustersDataSourceModel struct {
 	ID         types.String       `tfsdk:"id"`
 	AnkraToken types.String       `tfsdk:"ankra_token"`
+	ProjectID  types.String       `tfsdk:"project_id"`
 	Clusters   []clusterItemModel `tfsdk:"clusters"`
 }
 
@@ -45,7 +49,7 @@ func (clustersDataSourceInstance *clustersDataSource) Metadata(_ context.Context
 
 func (clustersDataSourceInstance *clustersDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, response *datasource.SchemaResponse) {
 	response.Schema = schema.Schema{
-		MarkdownDescription: "Lists the clusters visible to the authenticated Ankra token.",
+		MarkdownDescription: "Lists the clusters visible to the authenticated Ankra token, in the provider's project, or in the project `project_id` names.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Placeholder identifier for the data source.",
@@ -56,6 +60,11 @@ func (clustersDataSourceInstance *clustersDataSource) Schema(_ context.Context, 
 				Optional:            true,
 				Sensitive:           true,
 				DeprecationMessage:  tokenDeprecationMessage,
+			},
+			"project_id": schema.StringAttribute{
+				MarkdownDescription: "List the clusters of this project (its ID or slug) instead of the provider's project. " +
+					"The platform shows a cluster only in its own project, so this is how to read another project's clusters from one provider configuration.",
+				Optional: true,
 			},
 			"clusters": schema.ListNestedAttribute{
 				MarkdownDescription: "Clusters returned by the platform.",
@@ -68,6 +77,10 @@ func (clustersDataSourceInstance *clustersDataSource) Schema(_ context.Context, 
 						},
 						"name": schema.StringAttribute{
 							MarkdownDescription: "Name of the cluster.",
+							Computed:            true,
+						},
+						"project_id": schema.StringAttribute{
+							MarkdownDescription: "ID of the project the cluster belongs to: the project the listing ran in. Null when neither the data source nor the provider names a project.",
 							Computed:            true,
 						},
 					},
@@ -113,6 +126,14 @@ func (clustersDataSourceInstance *clustersDataSource) Read(ctx context.Context, 
 		response.Diagnostics.AddError("Missing API token", missingTokenDetail)
 		return
 	}
+	if !config.ProjectID.IsNull() && !config.ProjectID.IsUnknown() {
+		var projectError error
+		apiClient, projectError = apiClient.InProject(ctx, strings.TrimSpace(config.ProjectID.ValueString()))
+		if projectError != nil {
+			response.Diagnostics.AddAttributeError(path.Root("project_id"), "Unable to resolve project_id", projectError.Error())
+			return
+		}
+	}
 
 	clusters, err := apiClient.ListClusters(ctx)
 	if err != nil {
@@ -123,8 +144,9 @@ func (clustersDataSourceInstance *clustersDataSource) Read(ctx context.Context, 
 	config.Clusters = make([]clusterItemModel, 0, len(clusters))
 	for _, cluster := range clusters {
 		config.Clusters = append(config.Clusters, clusterItemModel{
-			ID:   types.StringValue(cluster.ID),
-			Name: types.StringValue(cluster.Name),
+			ID:        types.StringValue(cluster.ID),
+			Name:      types.StringValue(cluster.Name),
+			ProjectID: optionalString(apiClient.ScopeProjectID()),
 		})
 	}
 	config.ID = types.StringValue("ankra_clusters")

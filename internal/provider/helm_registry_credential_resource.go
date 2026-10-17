@@ -8,7 +8,6 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -23,6 +22,7 @@ var (
 	_ resource.Resource                = (*helmRegistryCredentialResource)(nil)
 	_ resource.ResourceWithConfigure   = (*helmRegistryCredentialResource)(nil)
 	_ resource.ResourceWithImportState = (*helmRegistryCredentialResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*helmRegistryCredentialResource)(nil)
 )
 
 type helmRegistryCredentialResource struct {
@@ -30,10 +30,11 @@ type helmRegistryCredentialResource struct {
 }
 
 type helmRegistryCredentialModel struct {
-	ID       types.String `tfsdk:"id"`
-	Name     types.String `tfsdk:"name"`
-	Username types.String `tfsdk:"username"`
-	Password types.String `tfsdk:"password"`
+	ID        types.String `tfsdk:"id"`
+	Name      types.String `tfsdk:"name"`
+	Username  types.String `tfsdk:"username"`
+	Password  types.String `tfsdk:"password"`
+	ProjectID types.String `tfsdk:"project_id"`
 }
 
 // NewHelmRegistryCredentialResource returns the
@@ -73,6 +74,7 @@ func (credentialResource *helmRegistryCredentialResource) Schema(_ context.Conte
 				Required:            true,
 				Sensitive:           true,
 			},
+			"project_id": helmProjectIDAttribute("credential"),
 		},
 	}
 }
@@ -88,10 +90,16 @@ func (credentialResource *helmRegistryCredentialResource) Create(ctx context.Con
 		return
 	}
 
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+
 	err := apiClient.CreateHelmRegistryCredential(ctx, client.HelmRegistryCredentialCreate{
-		Name:     plan.Name.ValueString(),
-		Username: plan.Username.ValueString(),
-		Password: plan.Password.ValueString(),
+		Name:      plan.Name.ValueString(),
+		Username:  plan.Username.ValueString(),
+		Password:  plan.Password.ValueString(),
+		ProjectID: helmProjectIDBody(apiClient, plan.ProjectID),
 	})
 	if err != nil {
 		response.Diagnostics.AddError("Unable to create Helm registry credential", err.Error())
@@ -124,6 +132,10 @@ func (credentialResource *helmRegistryCredentialResource) Read(ctx context.Conte
 	var state helmRegistryCredentialModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
 		return
 	}
 
@@ -174,6 +186,10 @@ func (credentialResource *helmRegistryCredentialResource) Update(ctx context.Con
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, plan.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	err := apiClient.UpdateHelmRegistryCredential(ctx, plan.Name.ValueString(), client.HelmRegistryCredentialUpdate{
 		Username: plan.Username.ValueString(),
@@ -196,6 +212,10 @@ func (credentialResource *helmRegistryCredentialResource) Delete(ctx context.Con
 	if response.Diagnostics.HasError() {
 		return
 	}
+	apiClient = resourceProjectClient(ctx, apiClient, state.ProjectID, &response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 
 	if err := apiClient.DeleteHelmRegistryCredential(ctx, state.Name.ValueString()); err != nil {
 		response.Diagnostics.AddError("Unable to delete Helm registry credential", err.Error())
@@ -205,8 +225,17 @@ func (credentialResource *helmRegistryCredentialResource) Delete(ctx context.Con
 // ImportState imports by credential name. The password cannot be read back,
 // so the first plan after an import shows the configured password as a
 // change.
+//
+// A credential in another project than the provider's imports as
+// `<project>/<name>`.
 func (credentialResource *helmRegistryCredentialResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
-	resource.ImportStatePassthroughID(ctx, path.Root("name"), request, response)
+	helmImportState(ctx, request, response)
+}
+
+// ModifyPlan replaces the credential when its project changes, but not when
+// project_id is only respelled (a slug for the same project's ID).
+func (credentialResource *helmRegistryCredentialResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	helmPlanProjectReplacement(ctx, credentialResource.client, request, response)
 }
 
 // helmRegistryCredentialRevealDenied reports a 403 from the credential detail

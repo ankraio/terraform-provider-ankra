@@ -85,7 +85,7 @@ func TestAccProviderRejectsScopeSlugs(t *testing.T) {
 provider "ankra" {
   token    = "test-token"
   base_url = %q
-  %s = "acme"
+  %s = "Acme Corp"
 }
 
 data "ankra_clusters" "all" {}

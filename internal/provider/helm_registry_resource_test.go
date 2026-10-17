@@ -4,6 +4,7 @@
 package provider
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"regexp"
@@ -30,7 +31,10 @@ type helmFake struct {
 	charts             map[string]map[string]any
 	credentialsCreated int
 	registriesCreated  int
-	isRevealDenied     bool
+	// registryProjects records, per created registry, the raw project_id
+	// its create body carried, or "absent".
+	registryProjects map[string]string
+	isRevealDenied   bool
 	// Failure injection for the create paths: a 500 on the interval update,
 	// and on the next registry detail reads or credential listings.
 	isIntervalUpdateFailing bool
@@ -40,17 +44,26 @@ type helmFake struct {
 
 func newHelmFake(t *testing.T) *helmFake {
 	fake := &helmFake{
-		routeFake:   newRouteFake(t),
-		registries:  map[string]map[string]any{},
-		credentials: map[string]map[string]any{},
-		charts:      map[string]map[string]any{},
+		routeFake:        newRouteFake(t),
+		registries:       map[string]map[string]any{},
+		credentials:      map[string]map[string]any{},
+		charts:           map[string]map[string]any{},
+		registryProjects: map[string]string{},
 	}
 
 	fake.handle("POST /api/v1/org/helm/registries", func(writer http.ResponseWriter, request *http.Request) {
 		var body struct {
-			Spec map[string]map[string]any `json:"spec"`
+			Spec      map[string]map[string]any `json:"spec"`
+			ProjectID json.RawMessage           `json:"project_id"`
 		}
 		decodeJSON(t, request, &body)
+		sentProject := "absent"
+		if body.ProjectID != nil {
+			sentProject = string(body.ProjectID)
+		}
+		for _, specification := range body.Spec {
+			fake.registryProjects[fmt.Sprint(specification["name"])] = sentProject
+		}
 		if len(body.Spec) != 1 {
 			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "spec must contain exactly one registry kind"})
 			return
