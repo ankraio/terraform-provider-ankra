@@ -98,12 +98,12 @@ func clusterSettingsScopeError(err error, clusterID string) error {
 // clusterSettingsReadNotFound handles a Read error that is a 404: an object
 // really gone is removed from state, and a 404 that only means the cluster
 // is out of scope is reported as an error. It reports whether it handled err.
-func clusterSettingsReadNotFound(ctx context.Context, err error, clusterID string, response *resource.ReadResponse) bool {
+func clusterSettingsReadNotFound(ctx context.Context, err error, apiClient *client.Client, clusterID string, response *resource.ReadResponse) bool {
 	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
 		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
 		return true
 	}
-	return removeWhenNotFound(ctx, err, response)
+	return removeWhenNotFound(ctx, err, apiClient, response)
 }
 
 // clusterSettingsDeleteError is the error a Delete reports: nil when the

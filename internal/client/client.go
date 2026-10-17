@@ -65,7 +65,10 @@ type Client struct {
 	// different organisation or project.
 	UnresolvedScope string
 	MaxRetries      int
-	HTTPClient      *http.Client
+	// projectScope caches FloatingProjectCount. It is a pointer so the
+	// copies resources make for a per-resource token share one lookup.
+	projectScope *projectScopeCheck
+	HTTPClient   *http.Client
 }
 
 // NewClient returns a Client. An empty baseURL falls back to DefaultBaseURL.
@@ -74,11 +77,12 @@ func NewClient(baseURL, token, userAgent string) *Client {
 		baseURL = DefaultBaseURL
 	}
 	return &Client{
-		BaseURL:    strings.TrimRight(baseURL, "/"),
-		Token:      token,
-		UserAgent:  userAgent,
-		MaxRetries: DefaultMaxRetries,
-		HTTPClient: &http.Client{Timeout: DefaultTimeout},
+		BaseURL:      strings.TrimRight(baseURL, "/"),
+		Token:        token,
+		UserAgent:    userAgent,
+		MaxRetries:   DefaultMaxRetries,
+		projectScope: &projectScopeCheck{},
+		HTTPClient:   &http.Client{Timeout: DefaultTimeout},
 	}
 }
 

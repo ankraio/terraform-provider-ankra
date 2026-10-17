@@ -10,9 +10,10 @@ import (
 	"testing"
 )
 
-// TestDeleteOrganisationVariableGoneIsDone pins that a variable already gone
-// (the platform's 404) counts as deleted, while a refusal stays an error.
-func TestDeleteOrganisationVariableGoneIsDone(t *testing.T) {
+// TestDeleteOrganisationVariableReportsNotFound pins that a 404 reaches the
+// caller as NotFound (which decides, knowing the scope, whether it means
+// deleted), while a refusal stays a different error.
+func TestDeleteOrganisationVariableReportsNotFound(t *testing.T) {
 	statuses := map[string]int{"gone": http.StatusNotFound, "refused": http.StatusForbidden}
 	mux := http.NewServeMux()
 	mux.HandleFunc("DELETE /api/v1/org/variables/{name}", func(writer http.ResponseWriter, request *http.Request) {
@@ -22,11 +23,11 @@ func TestDeleteOrganisationVariableGoneIsDone(t *testing.T) {
 	defer server.Close()
 
 	apiClient := NewClient(server.URL, "test-token", "test")
-	if err := apiClient.DeleteOrganisationVariable(context.Background(), "gone"); err != nil {
-		t.Errorf("deleting a variable already gone failed: %v", err)
+	if err := apiClient.DeleteOrganisationVariable(context.Background(), "gone"); !IsNotFound(err) {
+		t.Errorf("deleting a variable already gone returned %v, want NotFound", err)
 	}
-	if err := apiClient.DeleteOrganisationVariable(context.Background(), "refused"); err == nil {
-		t.Error("a refused delete was reported as success")
+	if err := apiClient.DeleteOrganisationVariable(context.Background(), "refused"); err == nil || IsNotFound(err) {
+		t.Errorf("a refused delete returned %v, want a non-NotFound error", err)
 	}
 }
 

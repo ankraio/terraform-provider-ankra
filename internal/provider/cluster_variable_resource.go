@@ -104,6 +104,7 @@ func (variableResource *clusterVariableResource) Create(ctx context.Context, req
 
 	plan.ID = types.StringValue(created.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (variableResource *clusterVariableResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -118,7 +119,7 @@ func (variableResource *clusterVariableResource) Read(ctx context.Context, reque
 	}
 
 	variable, err := apiClient.GetClusterVariable(ctx, state.ClusterID.ValueString(), state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -126,7 +127,7 @@ func (variableResource *clusterVariableResource) Read(ctx context.Context, reque
 		return
 	}
 	if readTargetChanged(state.ID, variable.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 
@@ -134,6 +135,7 @@ func (variableResource *clusterVariableResource) Read(ctx context.Context, reque
 	state.Value = types.StringValue(variable.Value)
 	state.Description = types.StringPointerValue(variable.Description)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (variableResource *clusterVariableResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
