@@ -1,4 +1,4 @@
-## 0.3.0 (Unreleased)
+## 0.3.0 (2026-10-17)
 
 0.3.0 brings the provider to parity with the `ankra` CLI: every object the CLI creates, updates or deletes has a resource, and the objects worth referencing have data sources (97 resources and 42 data sources, up from 6 and 1). Operational commands (logs, exec, metrics, runs, scale, upgrade, chat) stay in the CLI.
 
