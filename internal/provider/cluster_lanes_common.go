@@ -26,6 +26,10 @@ import (
 // leave the listing; tests shorten it.
 var clusterGonePollInterval = 15 * time.Second
 
+// clusterDeprovisioningState is the state of a cluster whose deprovision is
+// already running.
+const clusterDeprovisioningState = "deprovisioning"
+
 // laneClusterCommonModel holds the attributes every lane in this file family
 // shares. Each lane's model embeds it and adds its own placement and sizing
 // vocabulary.
@@ -260,6 +264,14 @@ func (laneResource *laneClusterResource[Model]) Delete(ctx context.Context, requ
 	deleteContext, cancel := context.WithTimeout(ctx, wait)
 	defer cancel()
 
+	if current, readError := apiClient.GetClusterByID(deleteContext, clusterID); readError == nil && current != nil &&
+		current.State == clusterDeprovisioningState {
+		// A deprovision is already running (an earlier destroy timed out):
+		// re-sending it would cancel and re-dispatch the platform's jobs, so
+		// only wait for it.
+		awaitClusterGone(deleteContext, apiClient, clusterID, &response.Diagnostics)
+		return
+	}
 	options := client.LaneDeprovisionOptions{Force: common.ForceDestroy.ValueBool()}
 	if laneResource.definition.acceptVolumeDataLoss != nil {
 		options.AcceptVolumeDataLoss = laneResource.definition.acceptVolumeDataLoss(&state)

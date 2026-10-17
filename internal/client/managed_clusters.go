@@ -42,6 +42,19 @@ var ManagedClusterProviderReadyStates = []string{"provider_without_access", "pro
 // agent has connected.
 var ManagedClusterOnlineStates = []string{"online", "running"}
 
+// ManagedNodePoolLabelKeys is the node label each managed provider stamps
+// with the name of the pool a node belongs to (cluster enginekit
+// clusterengine.managedNodePoolLabelKeys). UKS and OVH MKS have none Ankra
+// knows, so their pools' nodes cannot be found.
+var ManagedNodePoolLabelKeys = map[string]string{
+	ManagedProviderGKE:           "cloud.google.com/gke-nodepool",
+	ManagedProviderEKS:           "eks.amazonaws.com/nodegroup",
+	ManagedProviderAKS:           "kubernetes.azure.com/agentpool",
+	ManagedProviderDOKS:          "doks.digitalocean.com/node-pool",
+	ManagedProviderKapsule:       "k8s.scaleway.com/pool-name",
+	ManagedProviderAnkraCloudK8s: "kubernetes.ankra.cloud/node-pool",
+}
+
 // ManagedClusterFailureStates end a managed cluster wait with an error.
 var ManagedClusterFailureStates = []string{"deprovisioning", "stopped"}
 

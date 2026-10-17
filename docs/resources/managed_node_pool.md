@@ -38,7 +38,7 @@ resource "ankra_managed_node_pool" "batch" {
 - `cluster_id` (String) Managed cluster the pool belongs to. Changing it forces replacement.
 - `name` (String) Pool name, unique within the cluster. Changing it forces replacement.
 - `provider_name` (String) Managed Kubernetes provider of the cluster. One of `doks`, `uks`, `gke`, `ovh_mks`, `aks`, `eks`, `kapsule`, `ankracloud_k8s`. Changing it forces replacement.
-- `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan).
+- `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan). Compared case-insensitively, since providers report sizes in their own case.
 
 ### Optional
 

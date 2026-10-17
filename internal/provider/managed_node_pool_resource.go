@@ -109,7 +109,7 @@ func (poolResource *managedNodePoolResource) Create(ctx context.Context, request
 	}
 	plan.ID = types.StringValue(provider + "/" + clusterID + "/" + name)
 	if pool, err := apiClient.GetManagedNodePool(ctx, provider, clusterID, name); err == nil {
-		refreshManagedNodePoolFields(&plan.managedNodePoolFields, *pool)
+		refreshManagedNodePoolFields(&plan.managedNodePoolFields, *pool, false)
 	}
 	settleUnknownPoolFields(&plan.managedNodePoolFields, createRequest.Count)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
@@ -134,7 +134,8 @@ func (poolResource *managedNodePoolResource) Read(ctx context.Context, request r
 		response.Diagnostics.AddError("Unable to read managed node pool", err.Error())
 		return
 	}
-	refreshManagedNodePoolFields(&state.managedNodePoolFields, *pool)
+	marker, _ := request.Private.GetKey(ctx, clusterImportedKey)
+	refreshManagedNodePoolFields(&state.managedNodePoolFields, *pool, len(marker) > 0)
 	state.ID = types.StringValue(state.Provider.ValueString() + "/" + state.ClusterID.ValueString() + "/" + pool.Name)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
@@ -162,6 +163,7 @@ func (poolResource *managedNodePoolResource) Update(ctx context.Context, request
 	plan.ID = state.ID
 	settleUnknownPoolFields(&plan.managedNodePoolFields, state.Count.ValueInt64())
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(clearClusterImported(ctx, response.Private)...)
 }
 
 func (poolResource *managedNodePoolResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -193,4 +195,5 @@ func (poolResource *managedNodePoolResource) ImportState(ctx context.Context, re
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("provider_name"), parts[0])...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("cluster_id"), parts[1])...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("name"), parts[2])...)
+	response.Diagnostics.Append(markClusterImported(ctx, response.Private)...)
 }

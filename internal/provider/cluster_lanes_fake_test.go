@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -22,6 +23,11 @@ import (
 //     that is still taken, including by a cluster being deprovisioned;
 //   - deprovision answers 200 and leaves the cluster listed as
 //     "deprovisioning" for one more read; 404 when the cluster is unknown;
+//   - an instance-type resize leaves the group's nodes "updating" for two
+//     node-listing reads; a new managed pool's Kubernetes nodes report
+//     NotReady for one read;
+//   - managed pool listings report sizes upper-cased and carry a label the
+//     provider added;
 //   - node-group writes refuse anything but wait=false, answer 202
 //     {"status":"accepted"}, and the listing derives groups from what was
 //     submitted, with joined_count; a write naming a missing group is a 409;
@@ -46,6 +52,18 @@ type lanesFake struct {
 	poolDeletes      []string
 	managedDeletes   []string
 	playgroundCalls  []string
+	// events records the pool and node writes and reads in order, so a test
+	// can assert that a pool is deleted only after its replacement is ready.
+	events []string
+	// rollReads is how many node-listing reads a resized group's workers
+	// stay "updating" for, keyed by cluster id and group.
+	rollReads map[string]int
+	// poolReadyReads is how many Kubernetes node reads a new pool's nodes
+	// stay NotReady for, keyed by pool name.
+	poolReadyReads map[string]int
+	// managedStepErrorReads holds every managed cluster created from now on
+	// in "creating" with a failed step for that many listing reads.
+	managedStepErrorReads int
 }
 
 type lanesFakeCluster struct {
@@ -60,6 +78,13 @@ type lanesFakeCluster struct {
 	phase     string
 	plan      string
 	orderedAt any
+	// deprovisionReads is how many more listing reads a deprovisioning
+	// cluster stays listed for.
+	deprovisionReads int
+	// stepError and stepErrorReads hold a creating cluster in "creating"
+	// with a failed step for that many listing reads.
+	stepError      map[string]any
+	stepErrorReads int
 }
 
 const lanesFakeProjectHeader = "X-Ankra-Project-Id"
@@ -70,6 +95,8 @@ func newLanesFake(t *testing.T) *lanesFake {
 		clusters:        map[string]*lanesFakeCluster{},
 		createBodies:    map[string][]map[string]any{},
 		nodeGroupBodies: map[string]map[string]any{},
+		rollReads:       map[string]int{},
+		poolReadyReads:  map[string]int{},
 	}
 
 	fake.handle("GET /api/v1/clusters", func(writer http.ResponseWriter, request *http.Request) {
@@ -80,9 +107,18 @@ func newLanesFake(t *testing.T) *lanesFake {
 			if cluster.kind == "playground" || (wanted != "" && wanted != id) || !fake.visible(cluster, request) {
 				continue
 			}
-			rows = append(rows, map[string]any{"id": id, "name": cluster.name, "kind": cluster.kind, "state": cluster.state})
+			row := map[string]any{"id": id, "name": cluster.name, "kind": cluster.kind, "state": cluster.state}
+			if cluster.stepErrorReads > 0 {
+				cluster.stepErrorReads--
+				row["state"] = "creating"
+				row["latest_step_error"] = cluster.stepError
+			}
+			rows = append(rows, row)
 			if cluster.state == "deprovisioning" {
-				delete(fake.clusters, id)
+				cluster.deprovisionReads--
+				if cluster.deprovisionReads < 0 {
+					delete(fake.clusters, id)
+				}
 			}
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{
@@ -116,6 +152,7 @@ func newLanesFake(t *testing.T) *lanesFake {
 		}
 		fake.deprovisionQuery = append(fake.deprovisionQuery, request.URL.RawQuery)
 		cluster.state = "deprovisioning"
+		cluster.deprovisionReads = 1
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "cluster_id": cluster.id})
 	})
 
@@ -276,7 +313,52 @@ func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 		row["count"] = body["count"]
 		row["joined_count"] = body["count"]
 	})
-	put("instance-type", func(row, body map[string]any) { row["instance_type"] = body["instance_type"] })
+	fake.handle("PUT /api/v1/clusters/{lane}/{id}/node-groups/{group}/instance-type", func(writer http.ResponseWriter, request *http.Request) {
+		found := cluster(writer, request)
+		if found == nil {
+			return
+		}
+		row := group(writer, request, found)
+		if row == nil {
+			return
+		}
+		var body map[string]any
+		decodeJSON(t, request, &body)
+		accepted(request, "instance-type "+request.PathValue("group"))
+		fake.nodeGroupBodies["instance-type "+request.PathValue("group")] = body
+		row["instance_type"] = body["instance_type"]
+		fake.rollReads[found.id+"/"+request.PathValue("group")] = 2
+		writeJSON(t, writer, http.StatusAccepted, map[string]any{"status": "accepted"})
+	})
+	fake.handle("GET /api/v1/clusters/{lane}/{id}/nodes", func(writer http.ResponseWriter, request *http.Request) {
+		found := cluster(writer, request)
+		if found == nil {
+			return
+		}
+		nodes := []any{}
+		for _, name := range sortedGroupNames(found.groups) {
+			row := found.groups[name]
+			key := found.id + "/" + name
+			state := "up"
+			if fake.rollReads[key] > 0 {
+				fake.rollReads[key]--
+				state = "updating"
+				fake.events = append(fake.events, "nodes "+name+" updating")
+			}
+			count := 1
+			if number, ok := row["count"].(float64); ok {
+				count = int(number)
+			}
+			for index := 0; index < count; index++ {
+				groupName := name
+				nodes = append(nodes, map[string]any{
+					"id": fmt.Sprintf("%s-%d", name, index), "kind": found.kind + "_server", "name": fmt.Sprintf("%s-%d", name, index),
+					"node_group": groupName, "instance_type": row["instance_type"], "state": state, "is_deleted": false,
+				})
+			}
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"nodes": nodes})
+	})
 	put("labels", func(row, body map[string]any) { row["labels"] = body["labels"] })
 	put("taints", func(row, body map[string]any) { row["taints"] = body["taints"] })
 	put("autoscaling", func(row, body map[string]any) {
@@ -302,7 +384,62 @@ func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 // request named no placement.
 var lanesFakeProviderPlacement = map[string]any{"zone": "fr-par-1", "root_volume_type": "b_ssd", "root_volume_size_gb": 20}
 
+// lanesFakePoolLabelKeys mirrors the provider pool labels Ankra knows.
+var lanesFakePoolLabelKeys = map[string]string{
+	"doks": "doks.digitalocean.com/node-pool", "aks": "kubernetes.azure.com/agentpool",
+	"kapsule": "k8s.scaleway.com/pool-name",
+}
+
+func sortedGroupNames(groups map[string]map[string]any) []string {
+	names := make([]string, 0, len(groups))
+	for name := range groups {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
+	fake.handle("POST /api/v1/clusters/{id}/kubernetes/resources/get", func(writer http.ResponseWriter, request *http.Request) {
+		found := fake.clusters[request.PathValue("id")]
+		if found == nil || !fake.visible(found, request) {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster not found"})
+			return
+		}
+		var body struct {
+			ResourceRequests []struct {
+				Kind          string `json:"kind"`
+				LabelSelector string `json:"label_selector"`
+			} `json:"resource_requests"`
+		}
+		decodeJSON(t, request, &body)
+		responses := []any{}
+		for _, resourceRequest := range body.ResourceRequests {
+			items := []any{}
+			for name, pool := range found.pools {
+				if resourceRequest.LabelSelector != lanesFakePoolLabelKeys[found.kind]+"="+name {
+					continue
+				}
+				readyStatus := "True"
+				if fake.poolReadyReads[name] > 0 {
+					fake.poolReadyReads[name]--
+					readyStatus = "False"
+				}
+				fake.events = append(fake.events, "nodes "+name+" ready="+readyStatus)
+				count := 1
+				if number, ok := pool["count"].(float64); ok {
+					count = int(number)
+				}
+				for index := 0; index < count; index++ {
+					items = append(items, map[string]any{"status": map[string]any{
+						"conditions": []any{map[string]any{"type": "Ready", "status": readyStatus}},
+					}})
+				}
+			}
+			responses = append(responses, map[string]any{"status": "success", "kind": resourceRequest.Kind, "items": items})
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"resource_responses": responses})
+	})
 	managedCluster := func(writer http.ResponseWriter, request *http.Request) *lanesFakeCluster {
 		found := fake.clusters[request.PathValue("id")]
 		if found == nil || !fake.visible(found, request) {
@@ -322,9 +459,14 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 				row[field] = requested
 			}
 		}
-		if labels, ok := body["labels"].(map[string]any); ok {
-			row["labels"] = labels
+		labels := map[string]any{"provider.example/managed-by": "provider"}
+		if requested, ok := body["labels"].(map[string]any); ok {
+			for key, value := range requested {
+				labels[key] = value
+			}
 		}
+		row["labels"] = labels
+		row["size"] = strings.ToUpper(fmt.Sprint(body["size"]))
 		if taints, ok := body["taints"].([]any); ok {
 			row["taints"] = taints
 		}
@@ -345,6 +487,8 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 		fake.createBodies[provider] = append(fake.createBodies[provider], body)
 		cluster := fake.addCluster(provider, fmt.Sprint(body["name"]), "provider_without_access")
 		cluster.project = request.Header.Get(lanesFakeProjectHeader)
+		cluster.stepErrorReads = fake.managedStepErrorReads
+		cluster.stepError = map[string]any{"step_name": "create_cluster", "message": "quota exceeded for instances"}
 		pools, _ := body["node_pools"].([]any)
 		for _, rawPool := range pools {
 			pool, _ := rawPool.(map[string]any)
@@ -406,6 +550,8 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 			return
 		}
 		fake.createBodies["pool "+name] = append(fake.createBodies["pool "+name], body)
+		fake.events = append(fake.events, "add pool "+name)
+		fake.poolReadyReads[name] = 1
 		found.pools[name] = poolRow(body)
 		writeJSON(t, writer, http.StatusOK, map[string]any{"cluster_id": found.id, "node_pool_name": name, "count": body["count"]})
 	})
@@ -445,6 +591,7 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 			return
 		}
 		fake.poolDeletes = append(fake.poolDeletes, request.PathValue("pool"))
+		fake.events = append(fake.events, "delete pool "+request.PathValue("pool"))
 		delete(found.pools, request.PathValue("pool"))
 		writeJSON(t, writer, http.StatusOK, map[string]any{"cluster_id": found.id, "node_pool_name": request.PathValue("pool")})
 	})

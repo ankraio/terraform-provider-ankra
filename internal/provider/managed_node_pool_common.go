@@ -5,7 +5,9 @@ package provider
 
 import (
 	"context"
+	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -124,17 +126,21 @@ func managedNodePoolSizingUpdate(planned, prior managedNodePoolFields) (client.M
 // fields (zone, root volume) are computed: the provider fills them in when
 // the configuration leaves them unset (AKS reports its OS disk, Ankra Cloud
 // its zone), so they are recorded rather than diffed against null.
-func refreshManagedNodePoolFields(fields *managedNodePoolFields, pool client.ManagedNodePool) {
-	fields.Size = types.StringValue(pool.Size)
+//
+// Providers report sizes in their own case (AKS answers Standard_D4s_v5 for
+// standard_d4s_v5) and add labels of their own to a pool, so the size keeps
+// the configured spelling when it differs only in case, and only the label
+// keys the state already tracks are refreshed. keepAllLabels records every
+// listed label, for a pool just imported, whose state tracks none yet.
+func refreshManagedNodePoolFields(fields *managedNodePoolFields, pool client.ManagedNodePool, keepAllLabels bool) {
+	if fields.Size.IsNull() || fields.Size.IsUnknown() || !strings.EqualFold(fields.Size.ValueString(), pool.Size) {
+		fields.Size = types.StringValue(pool.Size)
+	}
 	isAutoscaled := pool.Autoscaling != nil && pool.Autoscaling.Enabled
 	if !isAutoscaled || fields.Count.IsNull() || fields.Count.IsUnknown() {
 		fields.Count = types.Int64Value(pool.Count)
 	}
-	labels := make(map[string]any, len(pool.Labels))
-	for key, value := range pool.Labels {
-		labels[key] = value
-	}
-	fields.Labels = nodeGroupLabelsFromAPI(labels, fields.Labels)
+	fields.Labels = managedPoolLabelsFromAPI(pool.Labels, fields.Labels, keepAllLabels)
 	fields.Taints = nodeGroupTaintsFromAPI(managedPoolTaints(pool.Taints), fields.Taints)
 	if fields.Autoscaling != nil || isAutoscaled {
 		autoscaling := &nodeGroupAutoscalingModel{Enabled: types.BoolValue(isAutoscaled)}
@@ -169,6 +175,42 @@ func refreshManagedNodePoolFields(fields *managedNodePoolFields, pool client.Man
 			MaxPrice: types.Float64PointerValue(pool.Spot.MaxPrice),
 		}
 	}
+}
+
+// managedPoolLabelsFromAPI refreshes the label keys the state tracks and
+// ignores the labels a provider adds by itself. A tracked label that changed
+// or disappeared is reported; a label the configuration never set is not.
+func managedPoolLabelsFromAPI(listed map[string]string, prior types.Map, keepAll bool) types.Map {
+	if keepAll {
+		values := make(map[string]any, len(listed))
+		for key, value := range listed {
+			values[key] = value
+		}
+		return nodeGroupLabelsFromAPI(values, types.MapValueMust(types.StringType, nil))
+	}
+	if prior.IsNull() || prior.IsUnknown() {
+		return prior
+	}
+	elements := make(map[string]attr.Value, len(prior.Elements()))
+	for key := range prior.Elements() {
+		if value, present := listed[key]; present {
+			elements[key] = types.StringValue(value)
+		}
+	}
+	return types.MapValueMust(types.StringType, elements)
+}
+
+// managedPoolLabelsCovered reports whether every planned label is present,
+// with the same value, among the state's labels. Extra labels in the state
+// (those a provider added, or an import read back) are not a change.
+func managedPoolLabelsCovered(planned, prior types.Map) bool {
+	priorElements := prior.Elements()
+	for key, value := range planned.Elements() {
+		if priorValue, present := priorElements[key]; !present || !priorValue.Equal(value) {
+			return false
+		}
+	}
+	return true
 }
 
 // settleUnknownPoolFields gives a pool that was just added, and that the
@@ -212,9 +254,28 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 	if isStandalone {
 		replaceString = []planmodifier.String{stringplanmodifier.RequiresReplace()}
 		replaceInt64 = []planmodifier.Int64{int64planmodifier.RequiresReplace()}
-		replaceMap = []planmodifier.Map{mapplanmodifier.RequiresReplace()}
+		replaceMap = []planmodifier.Map{mapplanmodifier.RequiresReplaceIf(
+			func(ctx context.Context, request planmodifier.MapRequest, response *mapplanmodifier.RequiresReplaceIfFuncResponse) {
+				marker, _ := request.Private.GetKey(ctx, clusterImportedKey)
+				isAdopting := len(marker) > 0
+				response.RequiresReplace = !managedPoolLabelsCovered(request.PlanValue, request.StateValue) ||
+					(!isAdopting && len(request.StateValue.Elements()) > len(request.PlanValue.Elements()))
+			},
+			"Changing a label replaces the pool; labels the provider added by itself are ignored.",
+			"Changing a label replaces the pool; labels the provider added by itself are ignored.",
+		)}
 		replaceList = []planmodifier.List{listplanmodifier.RequiresReplace()}
 		replaceObject = []planmodifier.Object{objectplanmodifier.RequiresReplace()}
+	}
+	var sizeModifiers []planmodifier.String
+	if isStandalone {
+		sizeModifiers = []planmodifier.String{stringplanmodifier.RequiresReplaceIf(
+			func(_ context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+				response.RequiresReplace = !strings.EqualFold(request.PlanValue.ValueString(), request.StateValue.ValueString())
+			},
+			"Changing the size replaces the pool; a change of case only is not a change.",
+			"Changing the size replaces the pool; a change of case only is not a change.",
+		)}
 	}
 	computedString := func(description string) schema.StringAttribute {
 		return schema.StringAttribute{
@@ -226,9 +287,10 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 	}
 	return map[string]schema.Attribute{
 		"size": schema.StringAttribute{
-			MarkdownDescription: "Node size in the provider's vocabulary (droplet size, machine type, VM size, plan).",
-			Required:            true,
-			PlanModifiers:       replaceString,
+			MarkdownDescription: "Node size in the provider's vocabulary (droplet size, machine type, VM size, plan). " +
+				"Compared case-insensitively, since providers report sizes in their own case.",
+			Required:      true,
+			PlanModifiers: sizeModifiers,
 		},
 		"node_count": schema.Int64Attribute{
 			MarkdownDescription: "Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While " +
@@ -264,14 +326,23 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 // managedPoolShapeChanges lists the pool arguments that differ between plan
 // and state other than node_count and autoscaling. Unknown or null planned
 // placement fields are not changes: they take the provider's value.
-func managedPoolShapeChanges(planned, prior managedNodePoolFields) []string {
+//
+// Sizes compare case-insensitively. Labels must all be present in the state;
+// a label the state holds and the plan drops is a change too, except while an
+// import is adopted, when the state holds every label the provider reported.
+func managedPoolShapeChanges(planned, prior managedNodePoolFields, isAdopting bool) []string {
 	var changes []string
-	if !planned.Size.IsUnknown() && !planned.Size.Equal(prior.Size) {
+	if !planned.Size.IsUnknown() && !strings.EqualFold(planned.Size.ValueString(), prior.Size.ValueString()) {
 		changes = append(changes, "size")
 	}
-	if !planned.Labels.IsUnknown() && len(planned.Labels.Elements())+len(prior.Labels.Elements()) > 0 &&
-		!planned.Labels.Equal(prior.Labels) {
-		changes = append(changes, "labels")
+	if !planned.Labels.IsUnknown() {
+		labelsChanged := !managedPoolLabelsCovered(planned.Labels, prior.Labels)
+		if !isAdopting && len(prior.Labels.Elements()) > len(planned.Labels.Elements()) {
+			labelsChanged = true
+		}
+		if labelsChanged {
+			changes = append(changes, "labels")
+		}
 	}
 	if !nodeGroupTaintsEqual(planned.Taints, prior.Taints) {
 		changes = append(changes, "taints")
