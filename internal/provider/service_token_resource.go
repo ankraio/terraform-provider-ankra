@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -109,7 +110,7 @@ func (token *serviceTokenResource) Schema(_ context.Context, _ resource.SchemaRe
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"revoked": schema.BoolAttribute{
-				MarkdownDescription: "Whether the token was revoked outside Terraform; a revoked token is replaced on the next apply.",
+				MarkdownDescription: "Whether the token needs re-minting: it was revoked outside Terraform, or an earlier re-mint was interrupted. The next apply re-mints it in place.",
 				Computed:            true,
 			},
 			"token": schema.StringAttribute{
@@ -141,19 +142,64 @@ func (token *serviceTokenResource) ModifyPlan(ctx context.Context, request resou
 				state.Name.ValueString(), state.RoleSlug.ValueString(), plan.RoleSlug.ValueString()))
 		return
 	}
-	if state.Revoked.ValueBool() {
-		organisationTokenRevokedReplacement(ctx, state.Revoked, plan.Revoked, response)
+	if organisationTokenPlanRemint(ctx, state.Revoked, request, response) {
 		return
 	}
-	if plan.Name.Equal(state.Name) && plan.Label.Equal(state.Label) && plan.ExpiresAt.Equal(state.ExpiresAt) &&
-		plan.Scopes.Equal(state.Scopes) && plan.ProjectID.Equal(state.ProjectID) {
-		plan.ID, plan.Revoked, plan.Token = state.ID, state.Revoked, state.Token
-		response.Diagnostics.Append(response.Plan.Set(ctx, &plan)...)
+	if serviceTokenNeedsMint(state, plan) {
+		return
 	}
+	plan.ID, plan.Revoked, plan.Token = state.ID, state.Revoked, state.Token
+	response.Diagnostics.Append(response.Plan.Set(ctx, &plan)...)
+	organisationTokenPlanPendingRetire(ctx, request, response)
 }
 
-func (token *serviceTokenResource) operations(apiClient *client.Client) organisationTokenOperations {
-	return organisationTokenOperations{rotate: apiClient.RotateServiceToken, revoke: apiClient.RevokeServiceToken, delete: apiClient.DeleteServiceToken}
+// serviceTokenNeedsMint reports whether the plan needs a new token value. An
+// unknown planned label is the state's: the label is only computed at mint.
+func serviceTokenNeedsMint(state, plan serviceTokenModel) bool {
+	isLabelChanged := !plan.Label.IsUnknown() && !plan.Label.Equal(state.Label)
+	return state.Revoked.ValueBool() || isLabelChanged || !plan.ExpiresAt.Equal(state.ExpiresAt) ||
+		!plan.Scopes.Equal(state.Scopes) || !plan.ProjectID.Equal(state.ProjectID)
+}
+
+// serviceTokenCondition classifies the token in state for a re-mint.
+func serviceTokenCondition(ctx context.Context, apiClient *client.Client, tokenID string) (organisationTokenCondition, error) {
+	listed, err := apiClient.GetServiceToken(ctx, tokenID)
+	switch {
+	case client.IsNotFound(err):
+		return organisationTokenGone, nil
+	case err != nil:
+		return organisationTokenLive, err
+	case organisationTokenIsRenamed(listed.Label):
+		return organisationTokenRenamed, nil
+	case listed.Revoked:
+		return organisationTokenRevoked, nil
+	}
+	return organisationTokenLive, nil
+}
+
+// serviceTokenBridgeLifetime bounds a bridge token, whose value nobody
+// holds, in case retiring it fails.
+const serviceTokenBridgeLifetime = time.Hour
+
+func (token *serviceTokenResource) operations(apiClient *client.Client, plan serviceTokenModel) organisationTokenOperations {
+	return organisationTokenOperations{
+		rotate: apiClient.RotateServiceToken,
+		revoke: apiClient.RevokeServiceToken,
+		delete: apiClient.DeleteServiceToken,
+		bridge: func(ctx context.Context) (string, error) {
+			expiresAt := time.Now().UTC().Add(serviceTokenBridgeLifetime).Format(time.RFC3339)
+			created, err := apiClient.CreateServiceToken(ctx, client.OrganisationServiceTokenCreate{
+				Name:      plan.Name.ValueString(),
+				Label:     fmt.Sprintf("terraform-bridge-%d", time.Now().UnixNano()),
+				RoleSlug:  plan.RoleSlug.ValueString(),
+				ExpiresAt: &expiresAt,
+			})
+			if err != nil {
+				return "", err
+			}
+			return created.ID, nil
+		},
+	}
 }
 
 func (token *serviceTokenResource) mint(ctx context.Context, apiClient *client.Client, plan *serviceTokenModel) (string, error) {
@@ -225,13 +271,34 @@ func (token *serviceTokenResource) Update(ctx context.Context, request resource.
 	if plan.Label.IsUnknown() {
 		plan.Label = state.Label
 	}
-	replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Label.Equal(state.Label),
-		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
-	if !replaced {
+	operations := token.operations(apiClient, plan)
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
+	plan.OrganisationID = state.OrganisationID
+
+	if !serviceTokenNeedsMint(state, plan) {
+		organisationRetirePending(ctx, operations, &lifecycle, &response.Diagnostics)
+		plan.ID, plan.Revoked, plan.Token = state.ID, state.Revoked, state.Token
+		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
 		return
 	}
-	plan.OrganisationID = state.OrganisationID
+
+	condition, err := serviceTokenCondition(ctx, apiClient, state.ID.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read the service token before re-minting it", err.Error())
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		return
+	}
+	replaced := organisationReplaceToken(ctx, operations, &lifecycle, state.ID.ValueString(), condition, plan.Label.Equal(state.Label),
+		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
+	if !replaced {
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
+		return
+	}
+	organisationRetirePending(ctx, operations, &lifecycle, &response.Diagnostics)
 	token.finish(ctx, apiClient, &plan, &response.State, response.Private, &response.Diagnostics)
+	response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
 }
 
 func (token *serviceTokenResource) finish(ctx context.Context, apiClient *client.Client, plan *serviceTokenModel, state *tfsdk.State, private privateStateWriter, diagnostics *diag.Diagnostics) {
@@ -271,7 +338,15 @@ func (token *serviceTokenResource) Read(ctx context.Context, request resource.Re
 		return
 	}
 
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
 	listed, err := apiClient.GetServiceToken(ctx, state.ID.ValueString())
+	if client.IsNotFound(err) && len(lifecycle.PendingRetire) > 0 {
+		// An interrupted re-mint cleared the old token and left a bridge or
+		// others to retire: re-mint in place rather than forget them.
+		state.Revoked = types.BoolValue(true)
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		return
+	}
 	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
@@ -280,6 +355,13 @@ func (token *serviceTokenResource) Read(ctx context.Context, request resource.Re
 		return
 	}
 	if organisationTokenIsRenamed(listed.Label) {
+		if lifecycle.Rotating == state.ID.ValueString() {
+			// Terraform renewed it to free the label and the mint after that
+			// failed: the next apply finishes the re-mint.
+			state.Revoked = types.BoolValue(true)
+			response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+			return
+		}
 		summary, detail := organisationTokenRenewedError("ankra_service_token", listed.ID, listed.Label)
 		response.Diagnostics.AddError(summary, detail)
 		return
@@ -303,6 +385,8 @@ func (token *serviceTokenResource) Delete(ctx context.Context, request resource.
 	if response.Diagnostics.HasError() {
 		return
 	}
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
+	organisationRetirePending(ctx, token.operations(apiClient, state), &lifecycle, &response.Diagnostics)
 	err := apiClient.RevokeServiceToken(ctx, state.ID.ValueString())
 	if err == nil {
 		err = apiClient.DeleteServiceToken(ctx, state.ID.ValueString())

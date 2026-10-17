@@ -117,7 +117,7 @@ func (token *apiTokenResource) Schema(_ context.Context, _ resource.SchemaReques
 				Computed:            true,
 			},
 			"revoked": schema.BoolAttribute{
-				MarkdownDescription: "Whether the token was revoked outside Terraform; a revoked token is replaced on the next apply.",
+				MarkdownDescription: "Whether the token needs re-minting: it was revoked outside Terraform, or an earlier re-mint was interrupted. The next apply re-mints it in place.",
 				Computed:            true,
 			},
 			"token": schema.StringAttribute{
@@ -130,7 +130,8 @@ func (token *apiTokenResource) Schema(_ context.Context, _ resource.SchemaReques
 }
 
 // ModifyPlan keeps the computed values while nothing that mints a new token
-// changes, and plans a revoked token for replacement.
+// changes, plans an in-place re-mint for a token marked revoked, and plans an
+// update while an earlier apply left old tokens to retire.
 func (token *apiTokenResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
 	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
 		return
@@ -141,14 +142,38 @@ func (token *apiTokenResource) ModifyPlan(ctx context.Context, request resource.
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if state.Revoked.ValueBool() {
-		organisationTokenRevokedReplacement(ctx, state.Revoked, plan.Revoked, response)
+	if organisationTokenPlanRemint(ctx, state.Revoked, request, response) {
+		response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("created_at"), types.StringUnknown())...)
 		return
 	}
-	if plan.Name.Equal(state.Name) && plan.ExpiresAt.Equal(state.ExpiresAt) && plan.Scopes.Equal(state.Scopes) && plan.ProjectID.Equal(state.ProjectID) {
-		plan.ID, plan.CreatedAt, plan.Revoked, plan.Token = state.ID, state.CreatedAt, state.Revoked, state.Token
-		response.Diagnostics.Append(response.Plan.Set(ctx, &plan)...)
+	if apiTokenNeedsMint(state, plan) {
+		return
 	}
+	plan.ID, plan.CreatedAt, plan.Revoked, plan.Token = state.ID, state.CreatedAt, state.Revoked, state.Token
+	response.Diagnostics.Append(response.Plan.Set(ctx, &plan)...)
+	organisationTokenPlanPendingRetire(ctx, request, response)
+}
+
+// apiTokenNeedsMint reports whether the plan needs a new token value.
+func apiTokenNeedsMint(state, plan apiTokenModel) bool {
+	return state.Revoked.ValueBool() || !plan.Name.Equal(state.Name) || !plan.ExpiresAt.Equal(state.ExpiresAt) ||
+		!plan.Scopes.Equal(state.Scopes) || !plan.ProjectID.Equal(state.ProjectID)
+}
+
+// apiTokenCondition classifies the token in state for a re-mint.
+func apiTokenCondition(ctx context.Context, apiClient *client.Client, tokenID string) (organisationTokenCondition, error) {
+	listed, err := apiClient.GetAPIToken(ctx, tokenID)
+	switch {
+	case client.IsNotFound(err):
+		return organisationTokenGone, nil
+	case err != nil:
+		return organisationTokenLive, err
+	case organisationTokenIsRenamed(listed.Name):
+		return organisationTokenRenamed, nil
+	case listed.Revoked:
+		return organisationTokenRevoked, nil
+	}
+	return organisationTokenLive, nil
 }
 
 func (token *apiTokenResource) operations(apiClient *client.Client) organisationTokenOperations {
@@ -215,13 +240,34 @@ func (token *apiTokenResource) Update(ctx context.Context, request resource.Upda
 	if response.Diagnostics.HasError() {
 		return
 	}
-	replaced := organisationReplaceToken(ctx, token.operations(apiClient), state.ID.ValueString(), plan.Name.Equal(state.Name),
-		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
-	if !replaced {
+	operations := token.operations(apiClient)
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
+	plan.OwnerUserID, plan.OrganisationID = state.OwnerUserID, state.OrganisationID
+
+	if !apiTokenNeedsMint(state, plan) {
+		organisationRetirePending(ctx, operations, &lifecycle, &response.Diagnostics)
+		plan.ID, plan.CreatedAt, plan.Revoked, plan.Token = state.ID, state.CreatedAt, state.Revoked, state.Token
+		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
 		return
 	}
-	plan.OwnerUserID, plan.OrganisationID = state.OwnerUserID, state.OrganisationID
+
+	condition, err := apiTokenCondition(ctx, apiClient, state.ID.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read the API token before re-minting it", err.Error())
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		return
+	}
+	replaced := organisationReplaceToken(ctx, operations, &lifecycle, state.ID.ValueString(), condition, plan.Name.Equal(state.Name),
+		func() (string, error) { return token.mint(ctx, apiClient, &plan) }, &response.Diagnostics)
+	if !replaced {
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
+		return
+	}
+	organisationRetirePending(ctx, operations, &lifecycle, &response.Diagnostics)
 	token.finish(ctx, apiClient, &plan, &response.State, response.Private, &response.Diagnostics)
+	response.Diagnostics.Append(organisationWriteTokenLifecycle(ctx, lifecycle, response.Private)...)
 }
 
 // finish stores a freshly minted token, completed from the listing.
@@ -262,7 +308,15 @@ func (token *apiTokenResource) Read(ctx context.Context, request resource.ReadRe
 		return
 	}
 
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
 	listed, err := apiClient.GetAPIToken(ctx, state.ID.ValueString())
+	if client.IsNotFound(err) && len(lifecycle.PendingRetire) > 0 {
+		// An interrupted re-mint cleared the old token and left others to
+		// retire: re-mint in place rather than forget them.
+		state.Revoked = types.BoolValue(true)
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		return
+	}
 	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
@@ -271,6 +325,13 @@ func (token *apiTokenResource) Read(ctx context.Context, request resource.ReadRe
 		return
 	}
 	if organisationTokenIsRenamed(listed.Name) {
+		if lifecycle.Rotating == state.ID.ValueString() {
+			// Terraform renewed it to free the name and the mint after that
+			// failed: the next apply finishes the re-mint.
+			state.Revoked = types.BoolValue(true)
+			response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+			return
+		}
 		summary, detail := organisationTokenRenewedError("ankra_api_token", listed.ID, listed.Name)
 		response.Diagnostics.AddError(summary, detail)
 		return
@@ -295,6 +356,8 @@ func (token *apiTokenResource) Delete(ctx context.Context, request resource.Dele
 	if response.Diagnostics.HasError() {
 		return
 	}
+	lifecycle := organisationReadTokenLifecycle(ctx, request.Private)
+	organisationRetirePending(ctx, token.operations(apiClient), &lifecycle, &response.Diagnostics)
 	if err := apiClient.RevokeAPIToken(ctx, state.ID.ValueString()); err != nil {
 		response.Diagnostics.AddError("Unable to revoke API token", err.Error())
 		return

@@ -5,6 +5,8 @@ package provider
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -26,6 +28,7 @@ var (
 	_ resource.Resource                = (*mcpServerResource)(nil)
 	_ resource.ResourceWithConfigure   = (*mcpServerResource)(nil)
 	_ resource.ResourceWithImportState = (*mcpServerResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*mcpServerResource)(nil)
 )
 
 type mcpServerResource struct {
@@ -98,6 +101,7 @@ func (server *mcpServerResource) Schema(_ context.Context, _ resource.SchemaRequ
 				ElementType: types.StringType,
 				Optional:    true,
 				Sensitive:   true,
+				Validators:  []validator.Map{mcpServerEnvKeysValidator{}},
 			},
 			"allowed_tools": schema.SetAttribute{
 				MarkdownDescription: "Tools agent runs may call. Unset allows every tool the server offers.",
@@ -307,6 +311,78 @@ func mcpServerEnvState(ctx context.Context, stateValue types.Map, storedKeys []s
 		}
 	}
 	return types.MapValueMust(types.StringType, elements)
+}
+
+// mcpServerEnvKeysValidator refuses env keys that differ only in letter
+// case: the platform sends them as HTTP headers, which are canonicalised, so
+// two such keys collide and whichever wins varies between requests.
+type mcpServerEnvKeysValidator struct{}
+
+func (mcpServerEnvKeysValidator) Description(_ context.Context) string {
+	return "env keys must differ by more than letter case"
+}
+
+func (keysValidator mcpServerEnvKeysValidator) MarkdownDescription(ctx context.Context) string {
+	return keysValidator.Description(ctx)
+}
+
+func (mcpServerEnvKeysValidator) ValidateMap(_ context.Context, request validator.MapRequest, response *validator.MapResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	keys := make([]string, 0, len(request.ConfigValue.Elements()))
+	for key := range request.ConfigValue.Elements() {
+		keys = append(keys, key)
+	}
+	if first, second, collides := mcpServerEnvCollision(keys, keys); collides {
+		response.Diagnostics.AddAttributeError(request.Path, "Env keys collide",
+			fmt.Sprintf("%q and %q differ only in letter case. The platform sends env keys as HTTP headers, which ignore case, so the two would overwrite each other. Keep one.", first, second))
+	}
+}
+
+// mcpServerEnvCollision finds a key in planned that equals a different key
+// in existing apart from letter case.
+func mcpServerEnvCollision(planned, existing []string) (string, string, bool) {
+	sortedPlanned := append([]string{}, planned...)
+	sort.Strings(sortedPlanned)
+	for _, plannedKey := range sortedPlanned {
+		for _, existingKey := range existing {
+			if plannedKey != existingKey && strings.EqualFold(plannedKey, existingKey) {
+				return plannedKey, existingKey, true
+			}
+		}
+	}
+	return "", "", false
+}
+
+// ModifyPlan refuses an env key whose letter case changed from the key in
+// state: the old spelling cannot be deleted through the API, only blanked,
+// so both would be stored and collide as headers.
+func (server *mcpServerResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var state, plan mcpServerModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	plannedKeys := mcpServerEnvKeys(mcpServerEnv(ctx, plan.Env, &response.Diagnostics))
+	stateKeys := mcpServerEnvKeys(mcpServerEnv(ctx, state.Env, &response.Diagnostics))
+	if planned, existing, collides := mcpServerEnvCollision(plannedKeys, stateKeys); collides {
+		response.Diagnostics.AddAttributeError(path.Root("env"), "Env key changes only in letter case",
+			fmt.Sprintf("%q would be added next to %q, which is already stored. The API cannot delete a single env key, only blank it, so "+
+				"both would be sent as the same HTTP header. Delete %q from the server in the portal first, then apply.", planned, existing, existing))
+	}
+}
+
+func mcpServerEnvKeys(values map[string]string) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
 }
 
 // mcpServerNameValidator mirrors the platform's name rule: 1 to 120
