@@ -140,6 +140,7 @@ func (autopilotResource *costAutopilotResource) Create(ctx context.Context, requ
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	costRecordConfiguredAttributes(ctx, request.Config, costAutopilotAttributes, response.Private, &response.Diagnostics)
 }
 
@@ -175,6 +176,7 @@ func (autopilotResource *costAutopilotResource) Update(ctx context.Context, requ
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	costRecordConfiguredAttributes(ctx, request.Config, costAutopilotAttributes, response.Private, &response.Diagnostics)
 }
 
@@ -267,6 +269,7 @@ func (autopilotResource *costAutopilotResource) Read(ctx context.Context, reques
 		}
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete resets only what the configuration set: the kinds it named go back

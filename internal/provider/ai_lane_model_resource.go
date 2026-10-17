@@ -140,7 +140,7 @@ func (laneResource *aiLaneModelResource) Read(ctx context.Context, request resou
 		return
 	}
 	lane, err := apiClient.GetAILaneModel(ctx, state.Lane.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -154,6 +154,7 @@ func (laneResource *aiLaneModelResource) Read(ctx context.Context, request resou
 	state.applyAPI(lane)
 	state.ModelKey = types.StringValue(lane.SelectedModelKey)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete returns the lane to its default tier.
@@ -168,9 +169,10 @@ func (laneResource *aiLaneModelResource) Delete(ctx context.Context, request res
 		return
 	}
 	_, err := apiClient.SetAILaneModel(ctx, state.Lane.ValueString(), nil)
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to clear AI lane model", err.Error())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to clear AI lane model", err.Error())
 }
 
 // ImportState imports by lane name.

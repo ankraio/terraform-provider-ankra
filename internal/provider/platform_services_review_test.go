@@ -94,6 +94,52 @@ resource "ankra_ai_endpoint" "litellm" {
 	})
 }
 
+// Moving the provider to another organisation hides an AI endpoint. That
+// must neither plan a duplicate nor let destroy report success.
+func TestAccAIEndpointOrganisationMove(t *testing.T) {
+	fake := newAIFake(t)
+	inOrganisation := func(organisation string) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token           = "test-token"
+  base_url        = %q
+  organisation_id = %q
+}
+
+resource "ankra_ai_endpoint" "litellm" {
+  name     = "litellm"
+  base_url = "https://litellm.example.com/v1"
+  api_key  = "sk-endpoint-0001"
+}
+`, fake.server.URL, organisation)
+	}
+	const firstOrganisation = "11111111-aaaa-4aaa-8aaa-111111111111"
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: inOrganisation(firstOrganisation)},
+			{
+				Config:      inOrganisation(aiFakeOtherOrganisation),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config:      inOrganisation(aiFakeOtherOrganisation),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: inOrganisation(firstOrganisation),
+				Check: func(_ *terraform.State) error {
+					if len(fake.endpoints) != 1 {
+						return fmt.Errorf("endpoint lost or duplicated: %v", fake.endpoints)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 // Values the platform trims are refused with surrounding whitespace.
 func TestAccPlatformServicesTrimmedValues(t *testing.T) {
 	aiFake := newAIFake(t)

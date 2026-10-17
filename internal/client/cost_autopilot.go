@@ -140,8 +140,8 @@ func (client *Client) SetCostAutopilotOverride(ctx context.Context, clusterID st
 }
 
 // ClearCostAutopilotOverride returns one cluster to its environment's default
-// tier. Clearing a cluster with no override, or one already gone, is not an
-// error.
+// tier. Clearing a cluster with no override is not an error; a cluster
+// already gone answers a NotFound APIError.
 func (client *Client) ClearCostAutopilotOverride(ctx context.Context, clusterID string) error {
-	return client.doRequest(ctx, http.MethodDelete, costAutopilotPath+"/clusters/"+url.PathEscape(clusterID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, costAutopilotPath+"/clusters/"+url.PathEscape(clusterID), nil, nil)
 }

@@ -144,11 +144,11 @@ func (client *Client) UpdateSecurityDisposition(ctx context.Context, policyID st
 	return &policy, nil
 }
 
-// RevokeSecurityDisposition withdraws a policy. A policy already gone (404)
-// or already revoked (409) is not an error.
+// RevokeSecurityDisposition withdraws a policy. A policy already revoked
+// (409) is not an error; one already gone answers a NotFound APIError.
 func (client *Client) RevokeSecurityDisposition(ctx context.Context, policyID string, reason string) error {
 	body := map[string]string{"reason": reason}
-	return client.doRequest(ctx, http.MethodPost, securityDispositionsPath+"/"+url.PathEscape(policyID)+"/revoke", body, nil, http.StatusNotFound, http.StatusConflict)
+	return client.doRequest(ctx, http.MethodPost, securityDispositionsPath+"/"+url.PathEscape(policyID)+"/revoke", body, nil, http.StatusConflict)
 }
 
 // SecurityDispositionPreviewRequest asks what a policy anchored on one

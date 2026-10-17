@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 // costFake holds cost budgets, the autopilot policy and the pricing settings
@@ -26,6 +28,9 @@ type costFake struct {
 	// project: project_id=all is a 403 and the plain listing holds only that
 	// project's budgets.
 	isTokenPinned bool
+	// budgetOrganisations is the organisation each budget was created in; a
+	// listing or delete under another organisation does not see it.
+	budgetOrganisations map[string]string
 	// budgetUpdates records every budget update body as sent.
 	budgetUpdates []map[string]json.RawMessage
 
@@ -54,9 +59,10 @@ func costIsNull(raw json.RawMessage) bool {
 
 func newCostFake(t *testing.T) *costFake {
 	fake := &costFake{
-		routeFake:      newRouteFake(t),
-		budgets:        map[string]map[string]any{},
-		autopilotKinds: []string{"production", "staging", "development", "preview", "unknown"},
+		routeFake:           newRouteFake(t),
+		budgets:             map[string]map[string]any{},
+		budgetOrganisations: map[string]string{},
+		autopilotKinds:      []string{"production", "staging", "development", "preview", "unknown"},
 		autopilotDefaults: map[string]string{
 			"production": "hands-off", "staging": "hands-off", "development": "hands-off", "preview": "hands-off", "unknown": "hands-off",
 		},
@@ -82,6 +88,9 @@ func newCostFake(t *testing.T) *costFake {
 		identifiers := make([]string, 0, len(fake.budgets))
 		for identifier, budget := range fake.budgets {
 			if !isAll && budget["scope_kind"] != "project" {
+				continue
+			}
+			if organisation, isTracked := fake.budgetOrganisations[identifier]; isTracked && organisation != request.Header.Get(client.OrganisationHeader) {
 				continue
 			}
 			identifiers = append(identifiers, identifier)
@@ -123,6 +132,7 @@ func newCostFake(t *testing.T) *costFake {
 		budget["id"] = fmt.Sprintf("00000000-0000-0000-0000-%012d", created)
 		budget["scope_name"] = "scope " + fmt.Sprint(budget["scope_id"])
 		fake.budgets[platformServicesText(budget["id"])] = budget
+		fake.budgetOrganisations[platformServicesText(budget["id"])] = request.Header.Get(client.OrganisationHeader)
 		writeJSON(t, writer, http.StatusCreated, budget)
 	})
 	fake.handle("PUT /api/v1/org/cloud-cost/budgets/{budget_id}", func(writer http.ResponseWriter, request *http.Request) {
@@ -153,6 +163,11 @@ func newCostFake(t *testing.T) *costFake {
 		writeJSON(t, writer, http.StatusOK, budget)
 	})
 	fake.handle("DELETE /api/v1/org/cloud-cost/budgets/{budget_id}", func(writer http.ResponseWriter, request *http.Request) {
+		organisation, isTracked := fake.budgetOrganisations[request.PathValue("budget_id")]
+		if isTracked && organisation != request.Header.Get(client.OrganisationHeader) {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Budget not found"})
+			return
+		}
 		if _, exists := fake.budgets[request.PathValue("budget_id")]; !exists {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Budget not found"})
 			return

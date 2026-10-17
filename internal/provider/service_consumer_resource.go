@@ -139,6 +139,7 @@ func (consumerResource *serviceConsumerResource) Create(ctx context.Context, req
 	}
 	plan.applyAPI(consumer)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (consumerResource *serviceConsumerResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -152,7 +153,7 @@ func (consumerResource *serviceConsumerResource) Read(ctx context.Context, reque
 		return
 	}
 	consumer, err := apiClient.GetServiceConsumer(ctx, state.ID.ValueString())
-	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, response) {
+	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -164,6 +165,7 @@ func (consumerResource *serviceConsumerResource) Read(ctx context.Context, reque
 	state.Namespace = types.StringValue(consumer.Namespace)
 	state.applyAPI(consumer)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (consumerResource *serviceConsumerResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -184,6 +186,7 @@ func (consumerResource *serviceConsumerResource) Update(ctx context.Context, req
 	}
 	plan.applyAPI(consumer)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (consumerResource *serviceConsumerResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -197,7 +200,7 @@ func (consumerResource *serviceConsumerResource) Delete(ctx context.Context, req
 		return
 	}
 	err := apiClient.UnbindServiceConsumer(ctx, state.ID.ValueString(), state.BindingRevision.ValueInt64())
-	if err == nil || serviceAdmissionUnavailable(err, &response.Diagnostics) || client.IsNotFound(err) {
+	if err == nil || serviceAdmissionUnavailable(err, &response.Diagnostics) || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
 		return
 	}
 	response.Diagnostics.AddError("Unable to unbind service consumer",

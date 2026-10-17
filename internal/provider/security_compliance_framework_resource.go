@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"net/http"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -109,6 +108,7 @@ func (frameworkResource *securityComplianceFrameworkResource) Create(ctx context
 	}
 	securityApplyComplianceFramework(&plan, framework)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (frameworkResource *securityComplianceFrameworkResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -123,19 +123,24 @@ func (frameworkResource *securityComplianceFrameworkResource) Read(ctx context.C
 	}
 
 	framework, err := apiClient.GetSecurityComplianceFramework(ctx, state.Key.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read compliance framework", err.Error())
 		return
 	}
-	if readTargetChanged(state.ID, framework.Key) || !framework.Enabled {
+	if readTargetChanged(state.ID, framework.Key) {
+		removeWhenTargetChanged(ctx, apiClient, response)
+		return
+	}
+	if !framework.Enabled {
 		response.State.RemoveResource(ctx)
 		return
 	}
 	securityApplyComplianceFramework(&state, framework)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update is never called with a change: the key forces replacement and every
@@ -157,9 +162,11 @@ func (frameworkResource *securityComplianceFrameworkResource) Delete(ctx context
 		return
 	}
 
-	if _, err := apiClient.SetSecurityComplianceFrameworkEnabled(ctx, state.Key.ValueString(), false, http.StatusNotFound); err != nil {
-		response.Diagnostics.AddError("Unable to disable compliance framework", err.Error())
+	_, err := apiClient.SetSecurityComplianceFrameworkEnabled(ctx, state.Key.ValueString(), false)
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to disable compliance framework", err.Error())
 }
 
 // ImportState imports by framework key.

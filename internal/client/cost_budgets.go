@@ -130,7 +130,8 @@ func (client *Client) UpdateCostBudget(ctx context.Context, budgetID string, req
 	return &budget, nil
 }
 
-// DeleteCostBudget deletes a budget. A budget already gone is not an error.
+// DeleteCostBudget deletes a budget. A budget already gone answers a
+// NotFound APIError, which the caller tells apart from a scope move.
 func (client *Client) DeleteCostBudget(ctx context.Context, budgetID string) error {
-	return client.doRequest(ctx, http.MethodDelete, costBudgetsPath+"/"+url.PathEscape(budgetID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, costBudgetsPath+"/"+url.PathEscape(budgetID), nil, nil)
 }

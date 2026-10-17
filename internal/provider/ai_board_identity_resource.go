@@ -110,6 +110,7 @@ func (identityResource *aiBoardIdentityResource) Create(ctx context.Context, req
 	}
 	plan.applyAPI(identity)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (identityResource *aiBoardIdentityResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -133,6 +134,7 @@ func (identityResource *aiBoardIdentityResource) Read(ctx context.Context, reque
 	}
 	state.applyAPI(identity)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update is never called with a change: role_slug forces replacement and the

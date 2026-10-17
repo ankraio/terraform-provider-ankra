@@ -160,6 +160,7 @@ func (policyResource *servicePlacementPolicyResource) Create(ctx context.Context
 	}
 	plan.applyAPI(policy)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (policyResource *servicePlacementPolicyResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -173,7 +174,7 @@ func (policyResource *servicePlacementPolicyResource) Read(ctx context.Context, 
 		return
 	}
 	policy, err := apiClient.GetServicePlacementPolicy(ctx, state.ClusterID.ValueString())
-	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, response) {
+	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -182,6 +183,7 @@ func (policyResource *servicePlacementPolicyResource) Read(ctx context.Context, 
 	}
 	state.applyAPI(policy)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (policyResource *servicePlacementPolicyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -207,6 +209,7 @@ func (policyResource *servicePlacementPolicyResource) Update(ctx context.Context
 	}
 	plan.applyAPI(policy)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete removes the policy from state only: the platform has no route that

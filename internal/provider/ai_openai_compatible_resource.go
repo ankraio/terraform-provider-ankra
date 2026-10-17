@@ -150,6 +150,7 @@ func (compatibleResource *aiOpenAICompatibleResource) Read(ctx context.Context, 
 	state.Model = types.StringPointerValue(compatible.Model)
 	state.KeyPreview = types.StringPointerValue(compatible.KeyPreview)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (compatibleResource *aiOpenAICompatibleResource) Delete(ctx context.Context, _ resource.DeleteRequest, response *resource.DeleteResponse) {

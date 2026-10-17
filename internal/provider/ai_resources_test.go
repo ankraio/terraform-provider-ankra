@@ -13,6 +13,8 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+
+	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 // aiFake holds the organisation's AI settings the way the platform does:
@@ -230,7 +232,11 @@ func newAIFake(t *testing.T) *aiFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"deleted": true})
 	})
 
-	fake.handle("GET /api/v1/org/ai-settings/endpoints", func(writer http.ResponseWriter, _ *http.Request) {
+	fake.handle("GET /api/v1/org/ai-settings/endpoints", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.isOtherOrganisation(request) {
+			writeJSON(t, writer, http.StatusOK, map[string]any{"endpoints": []any{}})
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"endpoints": fake.endpoints})
 	})
 	fake.handle("POST /api/v1/org/ai-settings/endpoints", func(writer http.ResponseWriter, request *http.Request) {
@@ -273,7 +279,7 @@ func newAIFake(t *testing.T) *aiFake {
 		writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Endpoint not found"})
 	})
 	fake.handle("DELETE /api/v1/org/ai-settings/endpoints/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		if !fake.deleteEndpoint(request.PathValue("id")) {
+		if fake.isOtherOrganisation(request) || !fake.deleteEndpoint(request.PathValue("id")) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Endpoint not found"})
 			return
 		}
@@ -332,6 +338,14 @@ func newAIFake(t *testing.T) *aiFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"provisioned": false})
 	})
 	return fake
+}
+
+// aiFakeOtherOrganisation is an organisation the fake holds no AI settings
+// for: its endpoint listing is empty and its deletes answer 404.
+const aiFakeOtherOrganisation = "22222222-bbbb-4bbb-8bbb-222222222222"
+
+func (fake *aiFake) isOtherOrganisation(request *http.Request) bool {
+	return request.Header.Get(client.OrganisationHeader) == aiFakeOtherOrganisation
 }
 
 // deleteEndpoint removes an endpoint and cascades its catalogue models, as

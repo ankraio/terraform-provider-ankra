@@ -103,6 +103,57 @@ resource "ankra_cost_autopilot_override" "prod" {
 	})
 }
 
+// Budgets are listed across every project (project_id=all) and deleted by
+// organisation, so a project switch does not hide one; moving the provider
+// to another organisation does. That must neither plan a duplicate nor let
+// destroy report success while the budget lives on.
+func TestAccCostBudgetScopeMove(t *testing.T) {
+	fake := newCostFake(t)
+	const firstOrganisation = "11111111-aaaa-4aaa-8aaa-111111111111"
+	const otherOrganisation = "22222222-bbbb-4bbb-8bbb-222222222222"
+	inOrganisation := func(organisation string) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token           = "test-token"
+  base_url        = %q
+  organisation_id = %q
+}
+
+resource "ankra_cost_budget" "production" {
+  name          = "Production"
+  scope_kind    = "environment"
+  scope_id      = "prod"
+  monthly_cents = 500000
+  currency      = "eur"
+}
+`, fake.server.URL, organisation)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: inOrganisation(firstOrganisation)},
+			{
+				Config:      inOrganisation(otherOrganisation),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config:      inOrganisation(otherOrganisation),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: inOrganisation(firstOrganisation),
+				Check: func(_ *terraform.State) error {
+					if len(fake.budgets) != 1 {
+						return fmt.Errorf("budget lost or duplicated: %v", fake.budgets)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 func TestAccCostBudgetsDataSourcePartial(t *testing.T) {
 	fake := newCostFake(t)
 	fake.isTokenPinned = true

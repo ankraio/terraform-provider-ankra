@@ -137,6 +137,7 @@ func (scheduleResource *securityReportScheduleResource) Create(ctx context.Conte
 	}
 	securityApplyReportSchedule(&plan, status)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (scheduleResource *securityReportScheduleResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -168,6 +169,7 @@ func (scheduleResource *securityReportScheduleResource) Read(ctx context.Context
 	state.Recipients = securityRecipientsList(state.Recipients, status.Schedule.Recipients)
 	securityApplyReportSchedule(&state, status)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (scheduleResource *securityReportScheduleResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -192,6 +194,7 @@ func (scheduleResource *securityReportScheduleResource) Update(ctx context.Conte
 	}
 	securityApplyReportSchedule(&plan, status)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete pauses the schedule and clears its recipients: the platform offers

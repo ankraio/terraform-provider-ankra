@@ -129,6 +129,7 @@ func (settingsResource *costSettingsResource) Create(ctx context.Context, reques
 	}
 	plan.ID = types.StringValue(costSettingsID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	costRecordConfiguredAttributes(ctx, request.Config, costSettingsAttributes, response.Private, &response.Diagnostics)
 }
 
@@ -185,6 +186,7 @@ func (settingsResource *costSettingsResource) Read(ctx context.Context, request 
 	state.IncludeNetworkEgressEstimate = types.BoolValue(settings.IncludeNetworkEgressEstimate)
 	state.AnalysedClusterLimit = costObservedAnalysedClusterLimit(state.AnalysedClusterLimit, settings.AnalysedClusterLimit)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (settingsResource *costSettingsResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -203,6 +205,7 @@ func (settingsResource *costSettingsResource) Update(ctx context.Context, reques
 	}
 	plan.ID = types.StringValue(costSettingsID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	costRecordConfiguredAttributes(ctx, request.Config, costSettingsAttributes, response.Private, &response.Diagnostics)
 }
 

@@ -167,6 +167,7 @@ func (budgetResource *costBudgetResource) Create(ctx context.Context, request re
 	plan.ID = types.StringValue(created.ID)
 	plan.ScopeName = types.StringValue(created.ScopeName)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (budgetResource *costBudgetResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -181,7 +182,7 @@ func (budgetResource *costBudgetResource) Read(ctx context.Context, request reso
 	}
 
 	budget, err := apiClient.GetCostBudget(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if errors.Is(err, client.ErrCostBudgetNotVisible) {
@@ -205,6 +206,7 @@ func (budgetResource *costBudgetResource) Read(ctx context.Context, request reso
 	state.NotifyAtPct = types.Int64Value(budget.NotifyAtPct)
 	state.OwnerUserID = costKeepCaseInsensitive(state.OwnerUserID, budget.OwnerUserID)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (budgetResource *costBudgetResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -232,6 +234,7 @@ func (budgetResource *costBudgetResource) Update(ctx context.Context, request re
 
 	plan.ScopeName = types.StringValue(updated.ScopeName)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (budgetResource *costBudgetResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -245,9 +248,11 @@ func (budgetResource *costBudgetResource) Delete(ctx context.Context, request re
 		return
 	}
 
-	if err := apiClient.DeleteCostBudget(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete cost budget", err.Error())
+	err := apiClient.DeleteCostBudget(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete cost budget", err.Error())
 }
 
 // ImportState imports by budget id, as `ankra cost budgets list` prints it.

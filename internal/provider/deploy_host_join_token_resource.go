@@ -119,6 +119,7 @@ func (tokenResource *deployHostJoinTokenResource) Create(ctx context.Context, re
 	plan.JoinToken = types.StringValue(token.JoinToken)
 	plan.ExpiresAt = types.StringValue(token.ExpiresAt)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Read keeps state as it is, since no route reads a join token back, until

@@ -139,6 +139,7 @@ func (providerResource *aiProviderResource) Read(ctx context.Context, request re
 	state.ID = types.StringValue("ai_provider")
 	state.Provider = types.StringValue(status.Provider)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete returns the organisation to the Ankra-managed provider.

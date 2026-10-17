@@ -222,6 +222,7 @@ func (modelResource *aiModelResource) Create(ctx context.Context, request resour
 	}
 	plan.applyAPI(created)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (modelResource *aiModelResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -235,7 +236,7 @@ func (modelResource *aiModelResource) Read(ctx context.Context, request resource
 		return
 	}
 	entry, err := apiClient.GetAICatalogModel(ctx, state.reference())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -243,11 +244,12 @@ func (modelResource *aiModelResource) Read(ctx context.Context, request resource
 		return
 	}
 	if entry.ID != nil && readTargetChanged(state.ID, *entry.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	state.applyAPI(entry)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (modelResource *aiModelResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -268,6 +270,7 @@ func (modelResource *aiModelResource) Update(ctx context.Context, request resour
 	}
 	plan.applyAPI(updated)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (modelResource *aiModelResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -280,9 +283,11 @@ func (modelResource *aiModelResource) Delete(ctx context.Context, request resour
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteAICatalogModel(ctx, state.reference()); err != nil {
-		response.Diagnostics.AddError("Unable to delete AI model", err.Error())
+	err := apiClient.DeleteAICatalogModel(ctx, state.reference())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete AI model", err.Error())
 }
 
 // ImportState imports by row id or by catalogue key; a built-in entry the

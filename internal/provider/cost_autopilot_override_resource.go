@@ -99,6 +99,7 @@ func (overrideResource *costAutopilotOverrideResource) Create(ctx context.Contex
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (overrideResource *costAutopilotOverrideResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -115,6 +116,7 @@ func (overrideResource *costAutopilotOverrideResource) Update(ctx context.Contex
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // costPutAutopilotOverride replaces the cluster's override with the planned
@@ -145,7 +147,7 @@ func (overrideResource *costAutopilotOverrideResource) Read(ctx context.Context,
 	}
 
 	cluster, err := apiClient.GetCostAutopilotCluster(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -158,6 +160,7 @@ func (overrideResource *costAutopilotOverrideResource) Read(ctx context.Context,
 			// refused for its past expiry and block every apply, so the
 			// expired override is kept as it is, with no planned change.
 			response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+			response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 			return
 		}
 		response.State.RemoveResource(ctx)
@@ -169,6 +172,7 @@ func (overrideResource *costAutopilotOverrideResource) Read(ctx context.Context,
 	state.Reason = types.StringValue(cluster.Override.Reason)
 	state.ExpiresAt = costKeepSameInstant(state.ExpiresAt, cluster.Override.ExpiresAt)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (overrideResource *costAutopilotOverrideResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -182,9 +186,11 @@ func (overrideResource *costAutopilotOverrideResource) Delete(ctx context.Contex
 		return
 	}
 
-	if err := apiClient.ClearCostAutopilotOverride(ctx, state.ClusterID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to clear cost autopilot override", err.Error())
+	err := apiClient.ClearCostAutopilotOverride(ctx, state.ClusterID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to clear cost autopilot override", err.Error())
 }
 
 // ImportState imports by cluster id.

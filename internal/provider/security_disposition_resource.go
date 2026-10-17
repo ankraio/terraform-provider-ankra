@@ -265,6 +265,7 @@ func (dispositionResource *securityDispositionResource) Create(ctx context.Conte
 	plan.ID = types.StringValue(created.ID)
 	securityApplyDisposition(&plan, created)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (dispositionResource *securityDispositionResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -279,7 +280,7 @@ func (dispositionResource *securityDispositionResource) Read(ctx context.Context
 	}
 
 	policy, err := apiClient.GetSecurityDisposition(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -297,6 +298,7 @@ func (dispositionResource *securityDispositionResource) Read(ctx context.Context
 	state.ExpiresAt = securityReadExpiresAt(state.ExpiresAt, policy.ExpiresAt)
 	securityApplyDisposition(&state, policy)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (dispositionResource *securityDispositionResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -333,6 +335,7 @@ func (dispositionResource *securityDispositionResource) Update(ctx context.Conte
 		plan.CreatedAt = state.CreatedAt
 		plan.Scope = state.Scope
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		return
 	}
 
@@ -348,6 +351,7 @@ func (dispositionResource *securityDispositionResource) Update(ctx context.Conte
 
 	securityApplyDisposition(&plan, updated)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (dispositionResource *securityDispositionResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -365,9 +369,11 @@ func (dispositionResource *securityDispositionResource) Delete(ctx context.Conte
 	if reason == "" {
 		reason = securityDefaultRevokeReason
 	}
-	if err := apiClient.RevokeSecurityDisposition(ctx, state.ID.ValueString(), reason); err != nil {
-		response.Diagnostics.AddError("Unable to revoke security disposition", err.Error())
+	err := apiClient.RevokeSecurityDisposition(ctx, state.ID.ValueString(), reason)
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to revoke security disposition", err.Error())
 }
 
 // securityAnchorMatches checks, when the occurrence is first recorded after

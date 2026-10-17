@@ -262,9 +262,9 @@ func (client *Client) UpdateAICatalogModel(ctx context.Context, reference string
 }
 
 // DeleteAICatalogModel deletes a catalogue entry addressed by row id or key.
-// An entry already gone is not an error.
+// An entry already gone answers a NotFound APIError.
 func (client *Client) DeleteAICatalogModel(ctx context.Context, reference string) error {
-	return client.doRequest(ctx, http.MethodDelete, aiModelsPath+"/"+url.PathEscape(reference), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, aiModelsPath+"/"+url.PathEscape(reference), nil, nil)
 }
 
 // ListAIEndpoints returns the organisation's custom endpoints.
@@ -310,9 +310,9 @@ func (client *Client) UpdateAIEndpoint(ctx context.Context, endpointID string, w
 }
 
 // DeleteAIEndpoint deletes an endpoint, its key and every catalogue model on
-// it. An endpoint already gone is not an error.
+// it. An endpoint already gone answers a NotFound APIError.
 func (client *Client) DeleteAIEndpoint(ctx context.Context, endpointID string) error {
-	return client.doRequest(ctx, http.MethodDelete, aiEndpointsPath+"/"+url.PathEscape(endpointID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, aiEndpointsPath+"/"+url.PathEscape(endpointID), nil, nil)
 }
 
 // ListAILaneModels returns every AI lane with its model selection.

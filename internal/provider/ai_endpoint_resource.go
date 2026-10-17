@@ -107,6 +107,7 @@ func (endpointResource *aiEndpointResource) Create(ctx context.Context, request 
 	}
 	plan.applyAPI(created)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (endpointResource *aiEndpointResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -120,7 +121,7 @@ func (endpointResource *aiEndpointResource) Read(ctx context.Context, request re
 		return
 	}
 	endpoint, err := apiClient.GetAIEndpoint(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -133,6 +134,7 @@ func (endpointResource *aiEndpointResource) Read(ctx context.Context, request re
 	}
 	state.applyAPI(endpoint)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (endpointResource *aiEndpointResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -161,6 +163,7 @@ func (endpointResource *aiEndpointResource) Update(ctx context.Context, request 
 	plan.ID = state.ID
 	plan.applyAPI(updated)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (endpointResource *aiEndpointResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -173,9 +176,11 @@ func (endpointResource *aiEndpointResource) Delete(ctx context.Context, request 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteAIEndpoint(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete AI endpoint", err.Error())
+	err := apiClient.DeleteAIEndpoint(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete AI endpoint", err.Error())
 }
 
 // ImportState imports by endpoint id. The key cannot be read back, so the

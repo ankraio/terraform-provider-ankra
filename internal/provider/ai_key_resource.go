@@ -174,6 +174,7 @@ func (keyResource *aiKeyResource) Read(ctx context.Context, request resource.Rea
 	}
 	state.KeyPreview = types.StringPointerValue(keyStatus.KeyPreview)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (keyResource *aiKeyResource) Delete(ctx context.Context, _ resource.DeleteRequest, response *resource.DeleteResponse) {
