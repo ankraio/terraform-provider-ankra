@@ -120,11 +120,15 @@ stages:
     run: |-
       mkdir -p "${GOTMPDIR}"
       golangci-lint run ./...
+    # Its own module and build cache: it runs beside test on the same workspace.
+    env:
+      GOPATH: "/workspace/.ci-cache/go-lint"
+      GOCACHE: "/workspace/.ci-cache/go-build-lint"
     cache:
       - key: "go-lint-${{ hashFiles('go.sum') }}"
         paths:
-          - "/workspace/.ci-cache/go"
-          - "/workspace/.ci-cache/go-build"
+          - "/workspace/.ci-cache/go-lint"
+          - "/workspace/.ci-cache/go-build-lint"
           - "/workspace/.ci-cache/golangci-lint"
     resources:
       cpu: "2"
@@ -150,11 +154,17 @@ stages:
         echo "generate: run 'make generate' and commit the result" >&2
         exit 1
       }
+    # Its own module and build cache: test and lint run beside it on the same
+    # workspace, and a shared module cache restored or written by two stages
+    # at once left a module half on disk ("constraints.go: no such file").
+    env:
+      GOPATH: "/workspace/.ci-cache/go-tools"
+      GOCACHE: "/workspace/.ci-cache/go-build-tools"
     cache:
-      - key: "go-tools-${{ hashFiles('tools/go.sum') }}"
+      - key: "go-tools-${{ hashFiles('tools/go.sum', 'go.sum') }}"
         paths:
-          - "/workspace/.ci-cache/go"
-          - "/workspace/.ci-cache/go-build"
+          - "/workspace/.ci-cache/go-tools"
+          - "/workspace/.ci-cache/go-build-tools"
 
   - name: "release"
     kind: "run"
