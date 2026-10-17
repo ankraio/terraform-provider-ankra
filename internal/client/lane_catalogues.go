@@ -154,6 +154,15 @@ type AnkraCloudPlan struct {
 	Available         bool   `json:"available"`
 }
 
+// CataloguePricing is the completeness report the AWS and Ankra Cloud
+// catalogues carry next to their list: Complete is false when some prices
+// (or, for Ankra Cloud zones, some zone capabilities) could not be read,
+// and IncompleteReasons says which.
+type CataloguePricing struct {
+	Complete          bool     `json:"pricing_complete"`
+	IncompleteReasons []string `json:"incomplete_reasons"`
+}
+
 // laneCatalogueQuery builds a catalogue query from name/value pairs,
 // leaving out empty values.
 func laneCatalogueQuery(pairs ...string) string {
@@ -174,21 +183,23 @@ func (client *Client) getLaneCatalogue(ctx context.Context, lane, catalogue, que
 }
 
 // ListAWSRegions lists the regions enabled for an AWS credential.
-func (client *Client) ListAWSRegions(ctx context.Context, credentialID string) ([]AWSRegion, error) {
+func (client *Client) ListAWSRegions(ctx context.Context, credentialID string) ([]AWSRegion, CataloguePricing, error) {
 	var envelope struct {
 		Regions []AWSRegion `json:"regions"`
+		CataloguePricing
 	}
 	err := client.getLaneCatalogue(ctx, LaneAWS, "regions", laneCatalogueQuery("credential_id", credentialID), &envelope)
-	return envelope.Regions, err
+	return envelope.Regions, envelope.CataloguePricing, err
 }
 
 // ListAWSInstanceTypes lists the EC2 instance types offered in a region.
-func (client *Client) ListAWSInstanceTypes(ctx context.Context, credentialID, region string) ([]AWSInstanceType, error) {
+func (client *Client) ListAWSInstanceTypes(ctx context.Context, credentialID, region string) ([]AWSInstanceType, CataloguePricing, error) {
 	var envelope struct {
 		InstanceTypes []AWSInstanceType `json:"instance_types"`
+		CataloguePricing
 	}
 	err := client.getLaneCatalogue(ctx, LaneAWS, "instance-types", laneCatalogueQuery("credential_id", credentialID, "region", region), &envelope)
-	return envelope.InstanceTypes, err
+	return envelope.InstanceTypes, envelope.CataloguePricing, err
 }
 
 // ListAWSVPCs lists the VPCs of a region.
@@ -278,20 +289,22 @@ func (client *Client) ListMorpheusNetworks(ctx context.Context, credentialID str
 // ListAnkraCloudZones lists the Ankra Cloud zones a cluster can be deployed
 // in. An empty credentialID reads through the organisation's built-in Ankra
 // Cloud credential.
-func (client *Client) ListAnkraCloudZones(ctx context.Context, credentialID string) ([]AnkraCloudZone, error) {
+func (client *Client) ListAnkraCloudZones(ctx context.Context, credentialID string) ([]AnkraCloudZone, CataloguePricing, error) {
 	var envelope struct {
 		Zones []AnkraCloudZone `json:"zones"`
+		CataloguePricing
 	}
 	err := client.getLaneCatalogue(ctx, LaneAnkraCloud, "zones", laneCatalogueQuery("credential_id", credentialID), &envelope)
-	return envelope.Zones, err
+	return envelope.Zones, envelope.CataloguePricing, err
 }
 
 // ListAnkraCloudPlans lists the Ankra Cloud server plans, cheapest first. An
 // empty credentialID reads through the organisation's built-in credential.
-func (client *Client) ListAnkraCloudPlans(ctx context.Context, credentialID string) ([]AnkraCloudPlan, error) {
+func (client *Client) ListAnkraCloudPlans(ctx context.Context, credentialID string) ([]AnkraCloudPlan, CataloguePricing, error) {
 	var envelope struct {
 		Plans []AnkraCloudPlan `json:"plans"`
+		CataloguePricing
 	}
 	err := client.getLaneCatalogue(ctx, LaneAnkraCloud, "plans", laneCatalogueQuery("credential_id", credentialID), &envelope)
-	return envelope.Plans, err
+	return envelope.Plans, envelope.CataloguePricing, err
 }

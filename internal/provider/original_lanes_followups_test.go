@@ -89,29 +89,42 @@ resource %q "test" {
 	}
 }
 
-// TestAccOriginalLanesUnsetConsentPlansNoChange pins that the new attribute
-// has no computed default, so state written before it existed (or a
-// configuration that leaves it out) plans no change.
-func TestAccOriginalLanesUnsetConsentPlansNoChange(t *testing.T) {
+// TestAccOriginalLanesUpgradeFromPreviousReleasePlansNoChange pins the
+// upgrade path: a cluster created by the last release (state without
+// accept_volume_data_loss and without a recorded scope) plans no change once
+// this provider reads it, and the attribute stays unset.
+func TestAccOriginalLanesUpgradeFromPreviousReleasePlansNoChange(t *testing.T) {
 	lanesFastPolling(t)
-	fake := newLanesFake(t)
-	config := fake.providerBlock() + `
-resource "ankra_hetzner_cluster" "test" {
-  name          = "tf-hetzner"
-  credential_id = "cred-1"
-  location      = "fsn1"
+	for _, lane := range originalLaneConfigurations {
+		t.Run(lane.resourceType, func(subtest *testing.T) {
+			fake := newLanesFake(subtest)
+			config := fake.providerBlock() + fmt.Sprintf(`
+resource %q "test" {
+  name = "tf-%s"%s
 }
-`
-	resource.Test(t, resource.TestCase{
-		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
-		Steps: []resource.TestStep{
-			{
-				Config: config,
-				Check:  resource.TestCheckNoResourceAttr("ankra_hetzner_cluster.test", "accept_volume_data_loss"),
-			},
-			{Config: config, PlanOnly: true},
-		},
-	})
+`, lane.resourceType, lane.lane, lane.arguments)
+			resource.Test(subtest, resource.TestCase{
+				Steps: []resource.TestStep{
+					{
+						ExternalProviders: map[string]resource.ExternalProvider{
+							"ankra": {Source: "ankraio/ankra", VersionConstraint: "0.3.0"},
+						},
+						Config: config,
+					},
+					{
+						ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+						Config:                   config,
+						PlanOnly:                 true,
+					},
+					{
+						ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+						Config:                   config,
+						Check:                    resource.TestCheckNoResourceAttr(lane.resourceType+".test", "accept_volume_data_loss"),
+					},
+				},
+			})
+		})
+	}
 }
 
 // TestAccOriginalLanesScopeMoveKeepsCluster pins that moving the provider to

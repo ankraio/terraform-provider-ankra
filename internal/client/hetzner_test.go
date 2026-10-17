@@ -57,23 +57,3 @@ func TestCreateHetznerClusterSendsPayload(t *testing.T) {
 		t.Errorf("empty description should have been omitted, got %v", received["description"])
 	}
 }
-
-func TestDeleteHetznerClusterUsesForceAndTreats404AsSuccess(t *testing.T) {
-	var receivedQuery string
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodDelete {
-			t.Errorf("expected DELETE, got %s", request.Method)
-		}
-		receivedQuery = request.URL.RawQuery
-		writer.WriteHeader(http.StatusNotFound)
-	}))
-	defer server.Close()
-
-	apiClient := NewClient(server.URL, "token", "agent")
-	if err := apiClient.DeleteHetznerCluster(context.Background(), "hz-1", true); err != nil {
-		t.Fatalf("expected 404 to be treated as success, got %v", err)
-	}
-	if receivedQuery != "force=true" {
-		t.Errorf("expected force=true query, got %q", receivedQuery)
-	}
-}

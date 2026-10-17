@@ -59,6 +59,13 @@ type laneCatalogueDefinition struct {
 	listDescription string
 	fields          []laneCatalogueField
 	fetch           func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, error)
+	// fetchPriced replaces fetch for a catalogue that reports whether its
+	// prices are complete; the data source then carries pricing_complete and
+	// incomplete_reasons.
+	fetchPriced func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, client.CataloguePricing, error)
+	// pricingDescription says what pricing_complete covers for this
+	// catalogue.
+	pricingDescription string
 }
 
 // laneCatalogueDataSource is the shared implementation of the per-lane
@@ -88,6 +95,17 @@ func (catalogue *laneCatalogueDataSource) Schema(_ context.Context, _ datasource
 	entryAttributes := map[string]schema.Attribute{}
 	for _, field := range catalogue.definition.fields {
 		entryAttributes[field.name] = laneCatalogueFieldAttribute(field)
+	}
+	if catalogue.definition.fetchPriced != nil {
+		attributes["pricing_complete"] = schema.BoolAttribute{
+			MarkdownDescription: catalogue.definition.pricingDescription,
+			Computed:            true,
+		}
+		attributes["incomplete_reasons"] = schema.ListAttribute{
+			MarkdownDescription: "Why `pricing_complete` is false; empty when it is true.",
+			Computed:            true,
+			ElementType:         types.StringType,
+		}
 	}
 	attributes[catalogue.definition.listName] = schema.ListNestedAttribute{
 		MarkdownDescription: catalogue.definition.listDescription,
@@ -146,7 +164,14 @@ func (catalogue *laneCatalogueDataSource) Read(ctx context.Context, request data
 		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(filter.name), value)...)
 	}
 
-	entries, err := catalogue.definition.fetch(ctx, apiClient, filters)
+	var entries any
+	var pricing client.CataloguePricing
+	var err error
+	if catalogue.definition.fetchPriced != nil {
+		entries, pricing, err = catalogue.definition.fetchPriced(ctx, apiClient, filters)
+	} else {
+		entries, err = catalogue.definition.fetch(ctx, apiClient, filters)
+	}
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read "+strings.TrimPrefix(catalogue.definition.typeSuffix, "_"), err.Error())
 		return
@@ -157,6 +182,14 @@ func (catalogue *laneCatalogueDataSource) Read(ctx context.Context, request data
 		return
 	}
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(catalogue.definition.listName), list)...)
+	if catalogue.definition.fetchPriced != nil {
+		reasons := pricing.IncompleteReasons
+		if reasons == nil {
+			reasons = []string{}
+		}
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("pricing_complete"), types.BoolValue(pricing.Complete))...)
+		response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("incomplete_reasons"), listFromStrings(reasons))...)
+	}
 }
 
 // laneCatalogueList converts the client's typed entries into the list
@@ -332,9 +365,10 @@ func laneCatalogueDataSources() []func() datasource.DataSource {
 				{name: "slug", description: "Region code, e.g. `eu-central-1`.", kind: laneCatalogueString},
 				{name: "name", description: "Display name.", kind: laneCatalogueString},
 			},
-			fetch: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, error) {
+			fetchPriced: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, client.CataloguePricing, error) {
 				return apiClient.ListAWSRegions(ctx, filters["credential_id"])
 			},
+			pricingDescription: "Whether the platform could read prices for the account's regions.",
 		},
 		{
 			typeSuffix:  "_aws_instance_types",
@@ -351,9 +385,10 @@ func laneCatalogueDataSources() []func() datasource.DataSource {
 				{name: "monthly_price_usd", description: "Monthly price in USD; null when the price is unknown.", kind: laneCatalogueFloat64},
 				{name: "current_generation", description: "Whether the type is current generation.", kind: laneCatalogueBool},
 			},
-			fetch: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, error) {
+			fetchPriced: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, client.CataloguePricing, error) {
 				return apiClient.ListAWSInstanceTypes(ctx, filters["credential_id"], filters["region"])
 			},
+			pricingDescription: "Whether every instance type carries a price; when false, some `hourly_price_usd` and `monthly_price_usd` are null.",
 		},
 		{
 			typeSuffix:  "_aws_vpcs",
@@ -538,9 +573,10 @@ func laneCatalogueDataSources() []func() datasource.DataSource {
 				{name: "display_name", description: "Display name.", kind: laneCatalogueString},
 				{name: "country", description: "Country code.", kind: laneCatalogueString},
 			},
-			fetch: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, error) {
+			fetchPriced: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, client.CataloguePricing, error) {
 				return apiClient.ListAnkraCloudZones(ctx, filters["credential_id"])
 			},
+			pricingDescription: "Whether the platform could read every zone's capabilities; when false, a zone may be missing from `zones`.",
 		},
 		{
 			typeSuffix:  "_ankracloud_plans",
@@ -557,9 +593,10 @@ func laneCatalogueDataSources() []func() datasource.DataSource {
 				{name: "price_monthly_cents", description: "Monthly price in cents; 0 when the plan carries no price.", kind: laneCatalogueInt64},
 				{name: "available", description: "Whether the plan can be ordered.", kind: laneCatalogueBool},
 			},
-			fetch: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, error) {
+			fetchPriced: func(ctx context.Context, apiClient *client.Client, filters map[string]string) (any, client.CataloguePricing, error) {
 				return apiClient.ListAnkraCloudPlans(ctx, filters["credential_id"])
 			},
+			pricingDescription: "Whether every plan carries a monthly price; when false, some `price_monthly_cents` are 0.",
 		},
 	}
 	factories := make([]func() datasource.DataSource, 0, len(definitions))

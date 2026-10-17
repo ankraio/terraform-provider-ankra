@@ -31,6 +31,8 @@ output "aws_regions" {
 
 ### Read-Only
 
+- `incomplete_reasons` (List of String) Why `pricing_complete` is false; empty when it is true.
+- `pricing_complete` (Boolean) Whether the platform could read prices for the account's regions.
 - `regions` (Attributes List) Enabled regions. (see [below for nested schema](#nestedatt--regions))
 
 <a id="nestedatt--regions"></a>

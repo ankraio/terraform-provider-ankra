@@ -33,7 +33,9 @@ locals {
 
 ### Read-Only
 
+- `incomplete_reasons` (List of String) Why `pricing_complete` is false; empty when it is true.
 - `instance_types` (Attributes List) Instance types offered in the region. (see [below for nested schema](#nestedatt--instance_types))
+- `pricing_complete` (Boolean) Whether every instance type carries a price; when false, some `hourly_price_usd` and `monthly_price_usd` are null.
 
 <a id="nestedatt--instance_types"></a>
 ### Nested Schema for `instance_types`

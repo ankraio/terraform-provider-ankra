@@ -30,6 +30,8 @@ output "ankracloud_zones" {
 
 ### Read-Only
 
+- `incomplete_reasons` (List of String) Why `pricing_complete` is false; empty when it is true.
+- `pricing_complete` (Boolean) Whether the platform could read every zone's capabilities; when false, a zone may be missing from `zones`.
 - `zones` (Attributes List) Deployable zones. (see [below for nested schema](#nestedatt--zones))
 
 <a id="nestedatt--zones"></a>

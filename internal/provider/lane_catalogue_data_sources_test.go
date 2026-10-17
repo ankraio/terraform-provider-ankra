@@ -160,6 +160,13 @@ data "ankra_ankracloud_plans" "named" {
 			Check: resource.ComposeAggregateTestCheckFunc(
 				resource.TestCheckResourceAttr("data.ankra_aws_regions.all", "regions.#", "1"),
 				resource.TestCheckResourceAttr("data.ankra_aws_regions.all", "regions.0.name", "Europe (Frankfurt)"),
+				resource.TestCheckResourceAttr("data.ankra_aws_regions.all", "pricing_complete", "true"),
+				resource.TestCheckResourceAttr("data.ankra_aws_regions.all", "incomplete_reasons.#", "0"),
+				resource.TestCheckResourceAttr("data.ankra_aws_instance_types.frankfurt", "pricing_complete", "false"),
+				resource.TestCheckResourceAttr("data.ankra_aws_instance_types.frankfurt", "incomplete_reasons.0", "t2.micro has no price"),
+				resource.TestCheckResourceAttr("data.ankra_ankracloud_zones.builtin", "pricing_complete", "true"),
+				resource.TestCheckResourceAttr("data.ankra_ankracloud_plans.named", "incomplete_reasons.#", "0"),
+				resource.TestCheckNoResourceAttr("data.ankra_aws_vpcs.frankfurt", "pricing_complete"),
 				resource.TestCheckResourceAttr("data.ankra_aws_instance_types.frankfurt", "instance_types.#", "2"),
 				resource.TestCheckResourceAttr("data.ankra_aws_instance_types.frankfurt", "instance_types.0.vcpus", "2"),
 				resource.TestCheckResourceAttr("data.ankra_aws_instance_types.frankfurt", "instance_types.0.memory_gib", "8"),

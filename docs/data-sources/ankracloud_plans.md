@@ -30,7 +30,9 @@ locals {
 
 ### Read-Only
 
+- `incomplete_reasons` (List of String) Why `pricing_complete` is false; empty when it is true.
 - `plans` (Attributes List) Server plans. (see [below for nested schema](#nestedatt--plans))
+- `pricing_complete` (Boolean) Whether every plan carries a monthly price; when false, some `price_monthly_cents` are 0.
 
 <a id="nestedatt--plans"></a>
 ### Nested Schema for `plans`
