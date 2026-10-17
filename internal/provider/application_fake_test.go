@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -52,6 +53,9 @@ type applicationFake struct {
 	schedules         map[string]map[string]map[string]any
 	trains            map[string]map[string]any
 	bodies            map[string][]map[string]json.RawMessage
+	// routeMutex serialises every route of the fake: Terraform applies
+	// independent resources in parallel, and the routes share the maps above.
+	routeMutex sync.Mutex
 }
 
 func newApplicationFake(t *testing.T) *applicationFake {
@@ -76,6 +80,15 @@ func newApplicationFake(t *testing.T) *applicationFake {
 	fake.registerApplicationDeploymentRoutes()
 	fake.registerPipelineRoutes()
 	return fake
+}
+
+// route registers a handler that holds the fake-wide lock while it runs.
+func (fake *applicationFake) route(pattern string, handler http.HandlerFunc) {
+	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
+		fake.routeMutex.Lock()
+		defer fake.routeMutex.Unlock()
+		handler(writer, request)
+	})
 }
 
 func (fake *applicationFake) nextID(prefix string) string {
@@ -146,7 +159,7 @@ func (fake *applicationFake) applicationView(applicationID string) map[string]an
 
 func (fake *applicationFake) registerApplicationRoutes() {
 	t := fake.t
-	fake.handle("POST /api/v1/org/applications", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("POST /api/v1/org/applications", func(writer http.ResponseWriter, request *http.Request) {
 		body := fake.record("create application", request)
 		name := rawString(body["name"])
 		for _, existing := range fake.applications {
@@ -178,7 +191,7 @@ func (fake *applicationFake) registerApplicationRoutes() {
 		fake.autoDeploy[applicationID] = true
 		writeJSON(t, writer, http.StatusOK, map[string]any{"id": applicationID, "errors": []any{}})
 	})
-	fake.handle("GET /api/v1/org/applications", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications", func(writer http.ResponseWriter, request *http.Request) {
 		identifiers := make([]string, 0, len(fake.applications))
 		search := request.URL.Query().Get("search")
 		for applicationID, application := range fake.applications {
@@ -202,7 +215,7 @@ func (fake *applicationFake) registerApplicationRoutes() {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"result": result, "pagination": map[string]any{
 			"page": page, "page_size": pageSize, "total_pages": totalPages, "total_count": len(identifiers)}})
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -210,7 +223,7 @@ func (fake *applicationFake) registerApplicationRoutes() {
 		application["state"] = "up"
 		writeJSON(t, writer, http.StatusOK, fake.applicationView(applicationID))
 	})
-	fake.handle("DELETE /api/v1/org/applications/{application_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("DELETE /api/v1/org/applications/{application_id}", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID := request.PathValue("application_id")
 		if _, exists := fake.applications[applicationID]; !exists {
 			writeJSON(t, writer, http.StatusOK, map[string]any{"success": false, "message": "Application not found."})
@@ -220,14 +233,14 @@ func (fake *applicationFake) registerApplicationRoutes() {
 		delete(fake.installations, applicationID)
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "message": "Application deleted successfully."})
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/repository-credential", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/repository-credential", func(writer http.ResponseWriter, request *http.Request) {
 		_, application := fake.application(writer, request)
 		if application == nil {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"credential_name": application["app_repo_credential_name"], "resolved": true, "message": ""})
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/repository-credential", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/repository-credential", func(writer http.ResponseWriter, request *http.Request) {
 		_, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -241,14 +254,14 @@ func (fake *applicationFake) registerApplicationRoutes() {
 		application["app_repo_credential_name"] = name
 		writeJSON(t, writer, http.StatusOK, map[string]any{"credential_name": name, "resolved": true, "message": ""})
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/image-registry", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/image-registry", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, fake.registryView(applicationID))
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/image-registry", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/image-registry", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -295,10 +308,10 @@ func (fake *applicationFake) registryView(applicationID string) map[string]any {
 
 func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 	t := fake.t
-	fake.handle("GET /api/v1/org/applications/settings", func(writer http.ResponseWriter, _ *http.Request) {
+	fake.route("GET /api/v1/org/applications/settings", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, writer, http.StatusOK, fake.settingsView())
 	})
-	fake.handle("PUT /api/v1/org/applications/settings", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/settings", func(writer http.ResponseWriter, request *http.Request) {
 		body := fake.record("update settings", request)
 		if raw, present := body["ci_runner_label"]; present {
 			if string(raw) == "null" {
@@ -313,14 +326,14 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, fake.settingsView())
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/auto-deploy", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/auto-deploy", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"enabled": fake.autoDeploy[applicationID], "branch": application["app_repo_branch"], "environments": []any{}})
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/auto-deploy", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/auto-deploy", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -336,7 +349,7 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		fake.autoDeploy[applicationID] = enabled
 		writeJSON(t, writer, http.StatusOK, map[string]any{"enabled": enabled, "branch": application["app_repo_branch"], "environments": []any{}})
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/env-secrets", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/env-secrets", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -357,7 +370,7 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"secret_name": "app-env", "secret_names": []any{}, "secrets": secrets,
 			"missing_keys": []any{}, "requirements_state": "known"})
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/env-secrets/{secret_key}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/env-secrets/{secret_key}", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -374,7 +387,7 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		fake.envSecrets[applicationID][key] = rawString(body["value"])
 		writeJSON(t, writer, http.StatusOK, map[string]any{"key": key, "required": false, "status": "set", "updated_at": "2026-10-17T00:00:00Z", "updated_by": "user"})
 	})
-	fake.handle("DELETE /api/v1/org/applications/{application_id}/env-secrets/{secret_key}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("DELETE /api/v1/org/applications/{application_id}/env-secrets/{secret_key}", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -387,14 +400,14 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		delete(fake.envSecrets[applicationID], key)
 		writeJSON(t, writer, http.StatusOK, map[string]any{"deleted": true})
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/ai-config", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/ai-config", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, fake.aiConfigView(applicationID))
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/ai-config", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/ai-config", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -445,14 +458,14 @@ func (fake *applicationFake) registerApplicationConfigurationRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, fake.aiConfigView(applicationID))
 	})
-	fake.handle("GET /api/v1/org/applications/{application_id}/demo-config", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/demo-config", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, fake.demoView(applicationID))
 	})
-	fake.handle("PUT /api/v1/org/applications/{application_id}/demo-config", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT /api/v1/org/applications/{application_id}/demo-config", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -574,7 +587,7 @@ func (fake *applicationFake) demoView(applicationID string) map[string]any {
 
 func (fake *applicationFake) registerApplicationDeploymentRoutes() {
 	t := fake.t
-	fake.handle("GET /api/v1/org/applications/{application_id}/installations", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/applications/{application_id}/installations", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID := request.PathValue("application_id")
 		installations := fake.installations[applicationID]
 		if installations == nil {
@@ -582,7 +595,7 @@ func (fake *applicationFake) registerApplicationDeploymentRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"installations": installations})
 	})
-	fake.handle("POST /api/v1/org/applications/{application_id}/deploy", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("POST /api/v1/org/applications/{application_id}/deploy", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -638,7 +651,7 @@ func (fake *applicationFake) registerApplicationDeploymentRoutes() {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"installation_id": installation["id"], "operation_id": fake.nextID("operation"),
 			"status": "queued", "message": "Deployment queued"})
 	})
-	fake.handle("POST /api/v1/org/applications/{application_id}/deployments/remove", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("POST /api/v1/org/applications/{application_id}/deployments/remove", func(writer http.ResponseWriter, request *http.Request) {
 		applicationID, application := fake.application(writer, request)
 		if application == nil {
 			return
@@ -702,7 +715,7 @@ func (fake *applicationFake) pipelineRepository(writer http.ResponseWriter, requ
 
 func (fake *applicationFake) registerPipelineRoutes() {
 	t := fake.t
-	fake.handle("POST /api/v1/org/pipelines/repositories", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("POST /api/v1/org/pipelines/repositories", func(writer http.ResponseWriter, request *http.Request) {
 		body := fake.record("connect repository", request)
 		for repositoryID, existing := range fake.repositories {
 			if existing["provider"] == rawString(body["provider"]) && strings.EqualFold(fmt.Sprint(existing["owner"]), rawString(body["owner"])) &&
@@ -737,7 +750,7 @@ func (fake *applicationFake) registerPipelineRoutes() {
 		}
 		writeJSON(t, writer, http.StatusCreated, response)
 	})
-	fake.handle("GET /api/v1/org/pipelines/repositories", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/pipelines/repositories", func(writer http.ResponseWriter, request *http.Request) {
 		identifiers := []string{}
 		for repositoryID, repository := range fake.repositories {
 			if provider := request.URL.Query().Get("provider"); provider != "" && repository["provider"] != provider {
@@ -760,7 +773,7 @@ func (fake *applicationFake) registerPipelineRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"repositories": page, "next_cursor": nextCursor})
 	})
-	fake.handle("GET /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
 		repository, exists := fake.repositories[request.PathValue("repository_id")]
 		if !exists {
 			fake.notFound(writer, "Pipeline repository not found")
@@ -768,7 +781,7 @@ func (fake *applicationFake) registerPipelineRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, repository)
 	})
-	fake.handle("PATCH /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PATCH /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
 		repository, exists := fake.repositories[request.PathValue("repository_id")]
 		if !exists {
 			fake.notFound(writer, "Pipeline repository not found")
@@ -789,7 +802,7 @@ func (fake *applicationFake) registerPipelineRoutes() {
 		}
 		writeJSON(t, writer, http.StatusOK, repository)
 	})
-	fake.handle("DELETE /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("DELETE /api/v1/org/pipelines/repositories/{repository_id}", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := request.PathValue("repository_id")
 		if _, exists := fake.repositories[repositoryID]; !exists {
 			fake.notFound(writer, "Pipeline repository not found")
@@ -805,7 +818,7 @@ func (fake *applicationFake) registerPipelineRoutes() {
 
 func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 	t := fake.t
-	fake.handle("GET "+prefix+"/pipeline", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET "+prefix+"/pipeline", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -817,7 +830,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		}
 		writeJSON(t, writer, http.StatusOK, definition)
 	})
-	fake.handle("PUT "+prefix+"/pipeline", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT "+prefix+"/pipeline", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -835,7 +848,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		}
 		writeJSON(t, writer, http.StatusOK, fake.definitions[repositoryID])
 	})
-	fake.handle("GET "+prefix+"/pipeline/schedules", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET "+prefix+"/pipeline/schedules", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -851,7 +864,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": schedules})
 	})
-	fake.handle("POST "+prefix+"/pipeline/schedules", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("POST "+prefix+"/pipeline/schedules", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -883,7 +896,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		fake.schedules[repositoryID][scheduleID] = schedule
 		writeJSON(t, writer, http.StatusCreated, schedule)
 	})
-	fake.handle("PUT "+prefix+"/pipeline/schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT "+prefix+"/pipeline/schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -904,7 +917,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		}
 		writeJSON(t, writer, http.StatusOK, schedule)
 	})
-	fake.handle("DELETE "+prefix+"/pipeline/schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("DELETE "+prefix+"/pipeline/schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
@@ -917,14 +930,14 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		delete(fake.schedules[repositoryID], scheduleID)
 		writer.WriteHeader(http.StatusNoContent)
 	})
-	fake.handle("GET "+prefix+"/merge-train", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("GET "+prefix+"/merge-train", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"repository_id": repositoryID, "settings": fake.trainSettings(repositoryID), "entries": []any{}, "recent": []any{}})
 	})
-	fake.handle("PUT "+prefix+"/merge-train/settings", func(writer http.ResponseWriter, request *http.Request) {
+	fake.route("PUT "+prefix+"/merge-train/settings", func(writer http.ResponseWriter, request *http.Request) {
 		repositoryID := fake.pipelineRepository(writer, request)
 		if repositoryID == "" {
 			return
