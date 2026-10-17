@@ -12,10 +12,11 @@
 # that failed half-way is repeated with 'ankra pipeline run --ref main', which
 # publishes only a version that is still missing.
 #
-# The release stage reads three files: the run's git credential (a GitHub App
-# token that can create the release) and the signing key and its passphrase,
-# from the secret organisation variables terraform_provider_gpg_private_key
-# and terraform_provider_gpg_passphrase. `credentials`, `secrets` and
+# The release stage reads two files: the run's git credential (a GitHub App
+# token that can create the release) and the signing key, from the secret
+# organisation variable terraform_provider_gpg_private_key. The key has no
+# passphrase; a key that gains one needs a gpg_passphrase secret binding here
+# (an empty variable cannot be bound). `credentials`, `secrets` and
 # `permissions` are protected sections: the release publishes only once an
 # administrator has approved this definition.
 apiVersion: ankra.io/v1
@@ -64,9 +65,6 @@ secrets:
   - name: "gpg_private_key"
     from: "org_variable"
     key: "terraform_provider_gpg_private_key"
-  - name: "gpg_passphrase"
-    from: "org_variable"
-    key: "terraform_provider_gpg_passphrase"
 stages:
   - name: "checkout"
     kind: "checkout"
@@ -180,7 +178,6 @@ stages:
         - "manual"
     secrets:
       - "gpg_private_key"
-      - "gpg_passphrase"
     run: |-
       set -eu
       mkdir -p "${GOTMPDIR}"
