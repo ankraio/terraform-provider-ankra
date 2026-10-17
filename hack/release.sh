@@ -1,4 +1,7 @@
 #!/bin/sh
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
 # Publishes the provider release the CHANGELOG's top section names, once.
 #
 # Runs on every push to main (and a manual run of main). When the top section
