@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -25,6 +26,9 @@ import (
 // without an organisation policy with 422.
 type registryFake struct {
 	*routeFake
+	// serial runs every handler of this fake one at a time: they share
+	// maps, and routeFake only serialises handlers of the same pattern.
+	serial    sync.Mutex
 	projects  map[string]map[string]any
 	robots    map[string]map[string]any
 	secrets   int
@@ -49,7 +53,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": what + " not found"})
 	}
 
-	fake.handle("GET /api/v1/org/registry-projects", func(writer http.ResponseWriter, _ *http.Request) {
+	fake.serialHandle("GET /api/v1/org/registry-projects", func(writer http.ResponseWriter, _ *http.Request) {
 		projects := []map[string]any{{"name": "default", "project": "org-acme", "host": "registry.ankra.cloud", "is_default": true, "created_at": "2026-01-01T00:00:00Z"}}
 		names := make([]string, 0, len(fake.projects))
 		for name := range fake.projects {
@@ -61,7 +65,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"projects": projects, "total_count": len(projects), "extra_project_limit": 5})
 	})
-	fake.handle("POST /api/v1/org/registry-projects", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/registry-projects", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]string
 		decodeJSON(t, request, &body)
 		name := body["name"]
@@ -74,7 +78,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 			"repository_count": 0, "robot_count": 0, "created_at": fmt.Sprintf("2026-10-17T00:00:%02dZ", fake.created)}
 		writeJSON(t, writer, http.StatusCreated, fake.projects[name])
 	})
-	fake.handle("DELETE /api/v1/org/registry-projects/{name}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/registry-projects/{name}", func(writer http.ResponseWriter, request *http.Request) {
 		name := request.PathValue("name")
 		if _, exists := fake.projects[name]; !exists {
 			notFound(writer, "Registry project")
@@ -90,14 +94,14 @@ func newRegistryFake(t *testing.T) *registryFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true})
 	})
 
-	fake.handle("GET /api/v1/org/registry-robots", func(writer http.ResponseWriter, _ *http.Request) {
+	fake.serialHandle("GET /api/v1/org/registry-robots", func(writer http.ResponseWriter, _ *http.Request) {
 		robots := []map[string]any{}
 		for _, robot := range fake.robots {
 			robots = append(robots, robot)
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"robots": robots, "total_count": len(robots)})
 	})
-	fake.handle("POST /api/v1/org/registry-robots", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/registry-robots", func(writer http.ResponseWriter, request *http.Request) {
 		var raw map[string]json.RawMessage
 		decodeJSON(t, request, &raw)
 		fake.robotBodies = append(fake.robotBodies, raw)
@@ -145,7 +149,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		fake.robots[body.Name] = robot
 		writeJSON(t, writer, http.StatusCreated, fake.withSecret(robot))
 	})
-	fake.handle("GET /api/v1/org/registry-robots/{name}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/registry-robots/{name}", func(writer http.ResponseWriter, request *http.Request) {
 		robot, exists := fake.robots[request.PathValue("name")]
 		if !exists {
 			notFound(writer, "Registry robot")
@@ -153,7 +157,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		}
 		writeJSON(t, writer, http.StatusOK, robot)
 	})
-	fake.handle("POST /api/v1/org/registry-robots/{name}/rotate", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/registry-robots/{name}/rotate", func(writer http.ResponseWriter, request *http.Request) {
 		robot, exists := fake.robots[request.PathValue("name")]
 		if !exists {
 			notFound(writer, "Registry robot")
@@ -163,7 +167,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		robot["rotated_at"] = fmt.Sprintf("2026-10-17T01:00:%02dZ", fake.rotations)
 		writeJSON(t, writer, http.StatusOK, fake.withSecret(robot))
 	})
-	fake.handle("DELETE /api/v1/org/registry-robots/{name}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/registry-robots/{name}", func(writer http.ResponseWriter, request *http.Request) {
 		name := request.PathValue("name")
 		if _, exists := fake.robots[name]; !exists {
 			notFound(writer, "Registry robot")
@@ -173,10 +177,10 @@ func newRegistryFake(t *testing.T) *registryFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true})
 	})
 
-	fake.handle("GET /api/v1/org/registry-storage/retention", func(writer http.ResponseWriter, _ *http.Request) {
+	fake.serialHandle("GET /api/v1/org/registry-storage/retention", func(writer http.ResponseWriter, _ *http.Request) {
 		writeJSON(t, writer, http.StatusOK, fake.retentionDocument())
 	})
-	fake.handle("PUT /api/v1/org/registry-storage/retention", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("PUT /api/v1/org/registry-storage/retention", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]json.RawMessage
 		decodeJSON(t, request, &body)
 		fake.retentionBodies = append(fake.retentionBodies, body)
@@ -486,5 +490,13 @@ resource "ankra_registry_retention" "this" {
 `,
 			ExpectError: regexp.MustCompile(`project-wide policy`),
 		}},
+	})
+}
+
+func (fake *registryFake) serialHandle(pattern string, handler http.HandlerFunc) {
+	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
+		fake.serial.Lock()
+		defer fake.serial.Unlock()
+		handler(writer, request)
 	})
 }

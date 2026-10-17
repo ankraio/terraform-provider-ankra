@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -28,6 +29,9 @@ import (
 // answers the raw bytes.
 type stackProfileFake struct {
 	*routeFake
+	// serial runs every handler of this fake one at a time: they share
+	// maps, and routeFake only serialises handlers of the same pattern.
+	serial   sync.Mutex
 	profiles map[string]map[string]any
 	versions map[string][]map[string]any
 	shares   map[string][]map[string]any
@@ -85,7 +89,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		return version
 	}
 
-	fake.handle("GET /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Query().Get("page_size") == "" {
 			t.Errorf("listing sent no page_size")
 		}
@@ -95,7 +99,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"result": result, "total_count": len(result), "page": 1, "page_size": 100})
 	})
-	fake.handle("POST /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
 		_, body := decode(request)
 		for _, required := range []string{"name", "source_cluster_id", "stack_name"} {
 			if _, present := body[required]; !present {
@@ -122,7 +126,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		version := newVersion(identifier, body)
 		writeJSON(t, writer, http.StatusCreated, map[string]any{"profile": fake.profiles[identifier], "version": version, "warnings": []string{}})
 	})
-	fake.handle("GET /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		profile, exists := fake.profiles[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile not found")
@@ -131,7 +135,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"profile": profile, "versions": fake.versions[request.PathValue("id")],
 			"update_status": map[string]any{"outdated_instantiation_count": 0, "has_update_available": false}})
 	})
-	fake.handle("PATCH /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("PATCH /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		profile, exists := fake.profiles[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile not found")
@@ -157,7 +161,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.handle("DELETE /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -165,7 +169,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		delete(fake.profiles, request.PathValue("id"))
 		writeJSON(t, writer, http.StatusOK, map[string]any{"deleted": true})
 	})
-	fake.handle("POST /api/v1/org/stack-profiles/{id}/current-version", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/current-version", func(writer http.ResponseWriter, request *http.Request) {
 		profile, exists := fake.profiles[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile not found")
@@ -186,7 +190,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		profile["current_version"] = number
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.handle("POST /api/v1/org/stack-profiles/{id}/versions", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/versions", func(writer http.ResponseWriter, request *http.Request) {
 		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -210,12 +214,12 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		_ = profile
 		return versions[number-1]
 	}
-	fake.handle("GET /api/v1/org/stack-profiles/{id}/versions/{version}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/versions/{version}", func(writer http.ResponseWriter, request *http.Request) {
 		if found := version(writer, request); found != nil {
 			writeJSON(t, writer, http.StatusOK, found)
 		}
 	})
-	fake.handle("POST /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
 		found := version(writer, request)
 		if found == nil {
 			return
@@ -232,13 +236,13 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		found["deprecation"] = map[string]any{"reason": body["reason"], "note": body["note"], "references": references, "deprecated_at": "2026-10-17T02:00:00Z"}
 		writeJSON(t, writer, http.StatusOK, found)
 	})
-	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
 		if found := version(writer, request); found != nil {
 			found["deprecation"] = nil
 			writeJSON(t, writer, http.StatusOK, found)
 		}
 	})
-	fake.handle("GET /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
 		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -249,7 +253,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"result": shares})
 	})
-	fake.handle("POST /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
 		profileID := request.PathValue("id")
 		if _, exists := fake.profiles[profileID]; !exists {
 			notFound(writer, "Stack profile not found")
@@ -273,7 +277,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		fake.shares[profileID] = append(fake.shares[profileID], share)
 		writeJSON(t, writer, http.StatusCreated, share)
 	})
-	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/shares/{share}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/shares/{share}", func(writer http.ResponseWriter, request *http.Request) {
 		profileID := request.PathValue("id")
 		for index, share := range fake.shares[profileID] {
 			if share["id"] == request.PathValue("share") {
@@ -284,7 +288,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		notFound(writer, "Share not found")
 	})
-	fake.handle("PUT /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("PUT /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
 		profile, exists := fake.profiles[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile not found")
@@ -307,7 +311,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		profile["has_uploaded_logo"] = true
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.handle("GET /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
 		logo, exists := fake.logos[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile logo not found")
@@ -317,7 +321,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(logo.content)
 	})
-	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
 		profile, exists := fake.profiles[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile not found")
@@ -578,4 +582,12 @@ func TestAccStackProfileRejectsInvalidConfigAtPlan(t *testing.T) {
 	if served := fake.served(); len(served) != 0 {
 		t.Errorf("a refused configuration still reached the platform: %v", served)
 	}
+}
+
+func (fake *stackProfileFake) serialHandle(pattern string, handler http.HandlerFunc) {
+	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
+		fake.serial.Lock()
+		defer fake.serial.Unlock()
+		handler(writer, request)
+	})
 }
