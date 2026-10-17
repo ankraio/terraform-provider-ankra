@@ -6,6 +6,12 @@ FEATURES:
 * Cluster resources (`ankra_cluster`, every cloud lane, `ankra_managed_cluster`) gain a computed `project_id`: the project the cluster was found in, which is the provider's project.
 * data-source/ankra_clusters: New `project_id` argument lists another project's clusters, by ID or slug; each listed cluster carries its `project_id`.
 * resource/ankra_helm_registry, resource/ankra_helm_registry_credential: New `project_id` argument creates the registry or credential in another project, by ID or slug, and makes every request for it there. The platform does not report it back, so it is kept as configured. Import one from another project as `<project>/<name>`. Writing the same project as its slug or its ID is an in-place change; another project replaces it. Organisation-wide registries and credentials cannot be created from Terraform.
+* resource/ankra_alert_route: New `project_id` (by ID or slug) and `organisation_wide` arguments choose the project a route is created in. With `project_id`, every request for the route is made in that project; `organisation_wide = true` creates a route that matches every project's notifications, also from a provider scoped to one project. The platform cannot move a route, so moving it to another project or changing `organisation_wide` replaces it, including on routes created with 0.3.0; writing the same project as its slug or its ID does not. Import one from another project as `<project>/<route id>`; right after any import, the first apply adopts the configured values in place.
+* **New Data Source:** `ankra_slack_channels` - the channels the Ankra bot can post to in the connected Slack workspace, for Slack alert destinations.
+* **New Data Source:** `ankra_teams_channels` - the channels of every Microsoft Teams team the Ankra bot is installed in, with their tenant, for Teams alert destinations.
+* **New Data Source:** `ankra_cluster_dns_zones` - the generated DNS domain and reconciliation state of each cluster in the provider's scope (the project's clusters when the provider sets `project_id`).
+* **New Data Source:** `ankra_cloudflare_dns_records` - the records in a Cloudflare zone, filtered by `name`, `record_type` or `search`. `is_truncated` (and a warning) reports a zone larger than the platform's listing bound.
+* **New Data Source:** `ankra_alert_ingest_credentials` - the organisation's alert ingest credentials and the webhook path each accepts, with the pinned cluster's name and whether that cluster is still available. Tokens are never listed.
 
 ## 0.3.0 (2026-10-17)
 

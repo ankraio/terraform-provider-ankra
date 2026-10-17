@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -205,10 +206,44 @@ func (client *Client) GetAlertRoute(ctx context.Context, routeID string) (*Alert
 	return nil, &APIError{Method: http.MethodGet, Path: alertRoutesPath, StatusCode: http.StatusNotFound, Body: "route " + routeID + " not found"}
 }
 
-// CreateAlertRoute creates a routing rule.
-func (client *Client) CreateAlertRoute(ctx context.Context, request AlertRouteWrite) (*AlertRoute, error) {
+// AlertRouteProject is the project a route create stamps. With IsSet false
+// project_id is left out and the platform stamps the request's project; with
+// IsSet true it is sent, and a nil ProjectID makes the route
+// organisation-wide.
+type AlertRouteProject struct {
+	IsSet     bool
+	ProjectID *string
+}
+
+// alertRouteCreate is the create body: the write body plus project_id when
+// the caller chose one.
+type alertRouteCreate struct {
+	AlertRouteWrite
+	project AlertRouteProject
+}
+
+func (request alertRouteCreate) MarshalJSON() ([]byte, error) {
+	encoded, err := json.Marshal(request.AlertRouteWrite)
+	if err != nil || !request.project.IsSet {
+		return encoded, err
+	}
+	var members map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &members); err != nil {
+		return nil, err
+	}
+	projectMember, err := json.Marshal(request.project.ProjectID)
+	if err != nil {
+		return nil, err
+	}
+	members["project_id"] = projectMember
+	return json.Marshal(members)
+}
+
+// CreateAlertRoute creates a routing rule in the project project names. The
+// platform has no way to move a route to another project afterwards.
+func (client *Client) CreateAlertRoute(ctx context.Context, request AlertRouteWrite, project AlertRouteProject) (*AlertRoute, error) {
 	var route AlertRoute
-	if err := client.doRequest(ctx, http.MethodPost, alertRoutesPath, request, &route); err != nil {
+	if err := client.doRequest(ctx, http.MethodPost, alertRoutesPath, alertRouteCreate{AlertRouteWrite: request, project: project}, &route); err != nil {
 		return nil, err
 	}
 	return &route, nil

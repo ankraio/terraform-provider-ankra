@@ -13,3 +13,12 @@ resource "ankra_alert_route" "all_but_pipelines" {
   kinds          = ["pipeline_run_failed", "pipeline_run_succeeded"]
   kinds_negated  = true
 }
+
+# A provider scoped to one project still owns organisation-wide routes, which
+# match every project's notifications.
+resource "ankra_alert_route" "critical_everywhere" {
+  destination_id    = ankra_alert_destination.pagerduty.id
+  kinds             = ["alert_trigger_fired"]
+  severity          = "critical"
+  organisation_wide = true
+}

@@ -32,5 +32,10 @@ func alertAndDNSDataSources() []func() datasource.DataSource {
 		NewDNSCredentialsDataSource,
 		NewCloudflareCredentialsDataSource,
 		NewCloudflareDomainsDataSource,
+		NewCloudflareDNSRecordsDataSource,
+		NewSlackChannelsDataSource,
+		NewTeamsChannelsDataSource,
+		NewClusterDNSZonesDataSource,
+		NewAlertIngestCredentialsDataSource,
 	}
 }
