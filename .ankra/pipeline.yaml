@@ -94,7 +94,8 @@ stages:
       mkdir -p "${GOTMPDIR}"
       PATH="/workspace/.ci-tools:${PATH}"
       export PATH
-      test -z "$(gofmt -l .)"
+      # Only the repository's own Go: the module cache lives in the workspace too.
+      test -z "$(gofmt -l main.go internal tools)"
       go build ./...
       TF_ACC=1 go test -cover -timeout 30m ./internal/...
     cache:

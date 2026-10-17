@@ -20,5 +20,10 @@ project {
 
     # GoReleaser tooling configuration
     ".goreleaser.yml",
+
+    # Ankra Pipelines caches, tools and scratch space inside the workspace
+    ".ci-cache/**",
+    ".ci-tmp/**",
+    ".ci-tools/**",
   ]
 }
