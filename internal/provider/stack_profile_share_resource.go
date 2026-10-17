@@ -68,8 +68,8 @@ func (shareResource *stackProfileShareResource) Schema(_ context.Context, _ reso
 			"organisation_slug": schema.StringAttribute{
 				MarkdownDescription: "Slug of the organisation to share with. The platform matches it case-insensitively; " +
 					"state keeps the configured spelling.",
-				Required:            true,
-				PlanModifiers:       replaceString,
+				Required:      true,
+				PlanModifiers: replaceString,
 			},
 			"organisation_id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of that organisation.",
