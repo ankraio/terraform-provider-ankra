@@ -10,9 +10,16 @@ import (
 
 // credentialResources are cloud provider and SSH key credentials.
 func credentialResources() []func() resource.Resource {
-	return nil
+	resources := []func() resource.Resource{NewSSHKeyCredentialResource}
+	for _, kind := range providerCredentialKinds {
+		resources = append(resources, newProviderCredentialResource(kind))
+	}
+	return resources
 }
 
 func credentialDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewCredentialsDataSource,
+		NewCredentialDataSource,
+	}
 }
