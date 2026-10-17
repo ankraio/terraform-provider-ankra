@@ -37,11 +37,12 @@ type aiFake struct {
 	created               int
 }
 
-func aiFakeMask(key string) string {
-	if len(key) < 8 {
+// aiFakeMask is the platform's key preview (aisettings.maskKey).
+func aiFakeMask(key string, prefixLength int, minimumLength int) string {
+	if len(key) < minimumLength {
 		return "****"
 	}
-	return key[:3] + "..." + key[len(key)-4:]
+	return key[:prefixLength] + "..." + key[len(key)-4:]
 }
 
 func aiFakeBuiltins() []map[string]any {
@@ -68,11 +69,11 @@ func newAIFake(t *testing.T) *aiFake {
 		fake.created++
 		return fmt.Sprintf("00000000-0000-4000-8000-%012d", fake.created)
 	}
-	keyStatus := func(key string) map[string]any {
+	keyStatus := func(key string, prefixLength int) map[string]any {
 		if key == "" {
 			return map[string]any{"configured": false, "key_preview": nil}
 		}
-		return map[string]any{"configured": true, "key_preview": aiFakeMask(key)}
+		return map[string]any{"configured": true, "key_preview": aiFakeMask(key, prefixLength, 12)}
 	}
 	materialise := func() {
 		if fake.catalogueMaterialised {
@@ -121,11 +122,11 @@ func newAIFake(t *testing.T) *aiFake {
 		compatible := map[string]any{"configured": false, "base_url": nil, "model": nil, "key_preview": nil}
 		if fake.compatible != nil {
 			compatible = map[string]any{"configured": true, "base_url": fake.compatible["base_url"],
-				"model": fake.compatible["model"], "key_preview": aiFakeMask(fake.compatible["api_key"])}
+				"model": fake.compatible["model"], "key_preview": aiFakeMask(fake.compatible["api_key"], 3, 8)}
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{
-			"provider": fake.provider, "anthropic": keyStatus(fake.anthropicKey),
-			"openai_compatible": compatible, "openrouter": keyStatus(fake.openRouterKey),
+			"provider": fake.provider, "anthropic": keyStatus(fake.anthropicKey, 7),
+			"openai_compatible": compatible, "openrouter": keyStatus(fake.openRouterKey, 6),
 		})
 	})
 	fake.handle("PUT /api/v1/org/ai-settings/provider", func(writer http.ResponseWriter, request *http.Request) {
@@ -136,8 +137,8 @@ func newAIFake(t *testing.T) *aiFake {
 			return
 		}
 		fake.provider = body["provider"]
-		writeJSON(t, writer, http.StatusOK, map[string]any{"provider": fake.provider, "anthropic": keyStatus(fake.anthropicKey),
-			"openai_compatible": map[string]any{"configured": false}, "openrouter": keyStatus(fake.openRouterKey)})
+		writeJSON(t, writer, http.StatusOK, map[string]any{"provider": fake.provider, "anthropic": keyStatus(fake.anthropicKey, 7),
+			"openai_compatible": map[string]any{"configured": false}, "openrouter": keyStatus(fake.openRouterKey, 6)})
 	})
 	fake.handle("POST /api/v1/org/ai-settings/anthropic", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]string
@@ -147,27 +148,27 @@ func newAIFake(t *testing.T) *aiFake {
 			return
 		}
 		fake.anthropicKey = body["api_key"]
-		writeJSON(t, writer, http.StatusCreated, keyStatus(fake.anthropicKey))
+		writeJSON(t, writer, http.StatusCreated, keyStatus(fake.anthropicKey, 7))
 	})
 	fake.handle("DELETE /api/v1/org/ai-settings/anthropic", func(writer http.ResponseWriter, _ *http.Request) {
 		fake.anthropicKey = ""
 		if fake.provider == "anthropic" {
 			fake.provider = "ankra"
 		}
-		writeJSON(t, writer, http.StatusOK, keyStatus(""))
+		writeJSON(t, writer, http.StatusOK, keyStatus("", 0))
 	})
 	fake.handle("POST /api/v1/org/ai-settings/openrouter", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]string
 		decodeJSON(t, request, &body)
 		fake.openRouterKey = body["api_key"]
-		writeJSON(t, writer, http.StatusCreated, keyStatus(fake.openRouterKey))
+		writeJSON(t, writer, http.StatusCreated, keyStatus(fake.openRouterKey, 6))
 	})
 	fake.handle("DELETE /api/v1/org/ai-settings/openrouter", func(writer http.ResponseWriter, _ *http.Request) {
 		fake.openRouterKey = ""
 		if fake.provider == "openrouter" {
 			fake.provider = "ankra"
 		}
-		writeJSON(t, writer, http.StatusOK, keyStatus(""))
+		writeJSON(t, writer, http.StatusOK, keyStatus("", 0))
 	})
 	fake.handle("POST /api/v1/org/ai-settings/openai-compatible", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]string
@@ -175,7 +176,7 @@ func newAIFake(t *testing.T) *aiFake {
 		body["base_url"] = strings.TrimRight(body["base_url"], "/")
 		fake.compatible = body
 		writeJSON(t, writer, http.StatusCreated, map[string]any{"configured": true, "base_url": body["base_url"],
-			"model": body["model"], "key_preview": aiFakeMask(body["api_key"])})
+			"model": body["model"], "key_preview": aiFakeMask(body["api_key"], 3, 8)})
 	})
 	fake.handle("DELETE /api/v1/org/ai-settings/openai-compatible", func(writer http.ResponseWriter, _ *http.Request) {
 		fake.compatible = nil
@@ -243,7 +244,7 @@ func newAIFake(t *testing.T) *aiFake {
 		identifier := nextID()
 		fake.endpointKeys[identifier] = apiKey
 		endpoint := map[string]any{"id": identifier, "name": name, "provider": "openai_compatible",
-			"base_url": strings.TrimRight(baseURL, "/"), "key_preview": aiFakeMask(apiKey),
+			"base_url": strings.TrimRight(baseURL, "/"), "key_preview": aiFakeMask(apiKey, 3, 8),
 			"created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z"}
 		fake.endpoints = append(fake.endpoints, endpoint)
 		writeJSON(t, writer, http.StatusCreated, endpoint)
@@ -265,7 +266,7 @@ func newAIFake(t *testing.T) *aiFake {
 			}
 			endpoint["name"] = name
 			endpoint["base_url"] = strings.TrimRight(baseURL, "/")
-			endpoint["key_preview"] = aiFakeMask(fake.endpointKeys[request.PathValue("id")])
+			endpoint["key_preview"] = aiFakeMask(fake.endpointKeys[request.PathValue("id")], 3, 8)
 			writeJSON(t, writer, http.StatusOK, endpoint)
 			return
 		}
@@ -385,7 +386,7 @@ resource "ankra_ai_provider" "active" {
 			{
 				Config: configuration("sk-ant-first-key-0001"),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("ankra_ai_anthropic_key.own", "key_preview", "sk-...0001"),
+					resource.TestCheckResourceAttr("ankra_ai_anthropic_key.own", "key_preview", "sk-ant-...0001"),
 					resource.TestCheckResourceAttr("ankra_ai_provider.active", "name", "anthropic"),
 					// The configured spelling with a trailing slash is kept: the platform trims it.
 					resource.TestCheckResourceAttr("ankra_ai_openai_compatible.legacy", "base_url", "https://llm.example.com/v1/"),
@@ -401,7 +402,7 @@ resource "ankra_ai_provider" "active" {
 			{
 				Config: configuration("sk-ant-second-key-0002"),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("ankra_ai_anthropic_key.own", "key_preview", "sk-...0002"),
+					resource.TestCheckResourceAttr("ankra_ai_anthropic_key.own", "key_preview", "sk-ant-...0002"),
 					func(_ *terraform.State) error {
 						if fake.anthropicKey != "sk-ant-second-key-0002" {
 							return fmt.Errorf("key was not rotated: %q", fake.anthropicKey)

@@ -4,14 +4,14 @@ page_title: "ankra_host_join_token Resource - ankra"
 subcategory: ""
 description: |-
   A single-use token that lets a host register into a deploy environment, for example from a machine's cloud-init (ankra targets register --environment <environment> --name <name> --token-stdin). The counterpart of ankra targets join-token create. The environment is created in the provider's project when it does not exist yet.
-  The platform shows the token once and keeps only its hash: there is no read-back and no revoke. Terraform keeps the token in state until it is destroyed, which removes it from state only; the token itself stays valid until it is used or expires_at passes. An expired token is not re-minted automatically: replace it (terraform apply -replace) when a new host needs one. Registering the host and revoking a host target are host-side operations and are not managed here.
+  The platform shows the token once and keeps only its hash: there is no read-back and no revoke. Terraform keeps the token in state until it is destroyed, which removes it from state only; the token itself stays valid until it is used or expires_at passes. Once expires_at has passed, the token is dropped from state on the next refresh and a new one is minted, so join_token changes: anything that embeds it (such as a machine's user data) is planned for a change too. Registering the host and revoking a host target are host-side operations and are not managed here.
 ---
 
 # ankra_host_join_token (Resource)
 
 A single-use token that lets a host register into a deploy environment, for example from a machine's cloud-init (`ankra targets register --environment <environment> --name <name> --token-stdin`). The counterpart of `ankra targets join-token create`. The environment is created in the provider's project when it does not exist yet.
 
-The platform shows the token once and keeps only its hash: there is no read-back and no revoke. Terraform keeps the token in state until it is destroyed, which removes it from state only; the token itself stays valid until it is used or `expires_at` passes. An expired token is not re-minted automatically: replace it (`terraform apply -replace`) when a new host needs one. Registering the host and revoking a host target are host-side operations and are not managed here.
+The platform shows the token once and keeps only its hash: there is no read-back and no revoke. Terraform keeps the token in state until it is destroyed, which removes it from state only; the token itself stays valid until it is used or `expires_at` passes. Once `expires_at` has passed, the token is dropped from state on the next refresh and a new one is minted, so `join_token` changes: anything that embeds it (such as a machine's user data) is planned for a change too. Registering the host and revoking a host target are host-side operations and are not managed here.
 
 ## Example Usage
 

@@ -49,7 +49,8 @@ func (providerResource *aiProviderResource) Metadata(_ context.Context, request 
 func (providerResource *aiProviderResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The organisation's active AI provider, a singleton: declare it once per organisation. " +
-			"The counterpart of `ankra ai provider`. Destroying it returns the organisation to the Ankra-managed provider.\n\n" +
+			"The counterpart of `ankra ai provider`. Destroying it returns the organisation to the Ankra-managed provider. " +
+			"Creating it while the organisation is already on a different, non-default provider chosen outside Terraform is refused: import it instead.\n\n" +
 			"The platform refuses a provider whose credential is not stored, so reference the matching credential resource " +
 			"(`ankra_ai_anthropic_key`, `ankra_ai_openrouter_key` or `ankra_ai_openai_compatible`) or add `depends_on`. " +
 			"Removing that credential while its provider is active falls back to `ankra`, which the next plan shows as drift.",
@@ -68,10 +69,29 @@ func (providerResource *aiProviderResource) Schema(_ context.Context, _ resource
 	}
 }
 
+// Create refuses to take over a provider someone chose outside Terraform:
+// destroying the resource returns the organisation to `ankra`, which would
+// undo that choice. The organisation is adopted only while it is on the
+// default or already on the configured provider.
 func (providerResource *aiProviderResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var plan aiProviderModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	apiClient := providerResource.requireClient(&response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+	status, err := apiClient.GetAIProviderStatus(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read AI provider", err.Error())
+		return
+	}
+	if status.Provider != aiDefaultProvider && status.Provider != plan.Provider.ValueString() {
+		response.Diagnostics.AddError("AI provider already chosen",
+			"The organisation's AI provider was set to "+status.Provider+" outside Terraform. Creating this resource would overwrite it, and "+
+				"destroying it would reset it to ankra, so import it instead: terraform import <address> ai_provider")
 		return
 	}
 	providerResource.write(ctx, &plan, &response.State, &response.Diagnostics)

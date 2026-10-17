@@ -4,14 +4,14 @@ page_title: "ankra_ai_anthropic_key Resource - ankra"
 subcategory: ""
 description: |-
   The organisation's own Anthropic API key (bring your own key), a singleton: declare it once per organisation. The counterpart of ankra ai anthropic set and ankra ai anthropic delete. Storing the key does not activate it; set ankra_ai_provider for that. Destroying it removes the key, and when Anthropic was the active provider the platform falls back to ankra.
-  The platform never returns the key, so a key replaced outside Terraform is visible only as a changed key_preview.
+  The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked key_preview with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 ---
 
 # ankra_ai_anthropic_key (Resource)
 
 The organisation's own Anthropic API key (bring your own key), a singleton: declare it once per organisation. The counterpart of `ankra ai anthropic set` and `ankra ai anthropic delete`. Storing the key does not activate it; set `ankra_ai_provider` for that. Destroying it removes the key, and when Anthropic was the active provider the platform falls back to `ankra`.
 
-The platform never returns the key, so a key replaced outside Terraform is visible only as a changed `key_preview`.
+The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 
 ## Example Usage
 

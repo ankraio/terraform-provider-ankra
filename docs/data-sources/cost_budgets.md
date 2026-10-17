@@ -27,6 +27,7 @@ output "budgets_over" {
 
 - `budgets` (Attributes List) Budgets in the organisation. (see [below for nested schema](#nestedatt--budgets))
 - `id` (String) Placeholder identifier for the data source.
+- `is_partial` (Boolean) Whether the token could not list the whole organisation, so only its own project's budgets are listed and organisation, environment and other-project budgets are missing.
 
 <a id="nestedatt--budgets"></a>
 ### Nested Schema for `budgets`

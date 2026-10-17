@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 
@@ -61,7 +62,11 @@ func (budgetResource *costBudgetResource) Schema(_ context.Context, _ resource.S
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A monthly cost budget for one scope: the organisation, a project, a cluster, an environment label or an application. " +
 			"Each scope has at most one budget. The counterpart of `ankra cost budgets set` and `ankra cost budgets delete`; " +
-			"changing a budget needs the `billing.manage` permission.",
+			"changing a budget needs the `billing.manage` permission.\n\n" +
+			"The platform has no read by id, so the budget is read from the listing. A token that may not list the whole organisation " +
+			"sees only its own project's budgets; a budget missing from that partial listing is reported as an error rather than re-created. " +
+			"A cluster or application budget whose scope is deleted drops out of the listing, so the next plan re-creates it and the platform " +
+			"refuses that: remove such a budget from configuration together with its scope.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the budget.",
@@ -85,6 +90,7 @@ func (budgetResource *costBudgetResource) Schema(_ context.Context, _ resource.S
 					"Leave unset for an `organisation` budget. Changing it replaces the budget.",
 				Optional:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:    []validator.String{platformServicesTrimmed{}},
 			},
 			"scope_name": schema.StringAttribute{
 				MarkdownDescription: "Display name of the scope; empty for a cluster or application the organisation no longer has.",
@@ -176,6 +182,13 @@ func (budgetResource *costBudgetResource) Read(ctx context.Context, request reso
 
 	budget, err := apiClient.GetCostBudget(ctx, state.ID.ValueString())
 	if removeWhenNotFound(ctx, err, response) {
+		return
+	}
+	if errors.Is(err, client.ErrCostBudgetNotVisible) {
+		response.Diagnostics.AddError("Cost budget not visible to this token",
+			"The token may not list the whole organisation's budgets (project_id=all answered 403), and budget "+state.ID.ValueString()+
+				" is not in the listing of its own project. It is most likely an organisation, environment or other-project budget that still exists, "+
+				"so it is kept in state rather than re-created. Use a token that can read the whole organisation, or remove the resource with `terraform state rm` if the budget is really gone.")
 		return
 	}
 	if err != nil {

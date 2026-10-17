@@ -52,8 +52,8 @@ func (overrideResource *costAutopilotOverrideResource) Schema(_ context.Context,
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Puts one cluster in a cost autopilot tier whatever its environment kind. " +
 			"Destroying it returns the cluster to its environment's default tier. " +
-			"An override that reaches `expires_at` stops applying and reads as gone, so the next plan recreates it and the platform refuses the past expiry: " +
-			"move `expires_at` forward or remove the resource. " +
+			"An override that reaches `expires_at` stops applying; Terraform then keeps it in state unchanged, with no planned change, " +
+			"until `expires_at` is moved forward (which sets it again) or the resource is removed. " +
 			"The counterpart of `ankra cost autopilot override` and `ankra cost autopilot clear`; it needs `billing.manage` and `clusters.write` on the cluster.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -74,7 +74,7 @@ func (overrideResource *costAutopilotOverrideResource) Schema(_ context.Context,
 			"reason": schema.StringAttribute{
 				MarkdownDescription: "Why the cluster is overridden, 3 to 500 characters; shown on the cluster's card.",
 				Required:            true,
-				Validators:          []validator.String{costStringLengthValidator{minimum: 3, maximum: 500}},
+				Validators:          []validator.String{costStringLengthValidator{minimum: 3, maximum: 500}, platformServicesTrimmed{}},
 			},
 			"expires_at": schema.StringAttribute{
 				MarkdownDescription: "RFC 3339 instant the override stops applying, in the future. Unset means it never expires.",
@@ -153,6 +153,13 @@ func (overrideResource *costAutopilotOverrideResource) Read(ctx context.Context,
 		return
 	}
 	if cluster.Override == nil {
+		if !state.ExpiresAt.IsNull() && clusterSettingsIsPast(state.ExpiresAt.ValueString()) {
+			// The override ran out as configured: re-creating it would be
+			// refused for its past expiry and block every apply, so the
+			// expired override is kept as it is, with no planned change.
+			response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+			return
+		}
 		response.State.RemoveResource(ctx)
 		return
 	}

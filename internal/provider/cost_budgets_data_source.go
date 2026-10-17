@@ -36,8 +36,9 @@ type costBudgetItemModel struct {
 }
 
 type costBudgetsDataSourceModel struct {
-	ID      types.String          `tfsdk:"id"`
-	Budgets []costBudgetItemModel `tfsdk:"budgets"`
+	ID        types.String          `tfsdk:"id"`
+	IsPartial types.Bool            `tfsdk:"is_partial"`
+	Budgets   []costBudgetItemModel `tfsdk:"budgets"`
 }
 
 // NewCostBudgetsDataSource returns the ankra_cost_budgets data source, the
@@ -62,6 +63,11 @@ func (budgetsDataSource *costBudgetsDataSource) Schema(_ context.Context, _ data
 			"The counterpart of `ankra cost budgets list`.",
 		Attributes: map[string]schema.Attribute{
 			"id": computedString("Placeholder identifier for the data source."),
+			"is_partial": schema.BoolAttribute{
+				MarkdownDescription: "Whether the token could not list the whole organisation, so only its own project's budgets are listed " +
+					"and organisation, environment and other-project budgets are missing.",
+				Computed: true,
+			},
 			"budgets": schema.ListNestedAttribute{
 				MarkdownDescription: "Budgets in the organisation.",
 				Computed:            true,
@@ -92,15 +98,20 @@ func (budgetsDataSource *costBudgetsDataSource) Read(ctx context.Context, _ data
 		return
 	}
 
-	budgets, err := apiClient.ListCostBudgets(ctx)
+	budgets, isPartial, err := apiClient.ListCostBudgets(ctx)
 	if err != nil {
 		response.Diagnostics.AddError("Unable to list cost budgets", err.Error())
 		return
 	}
+	if isPartial {
+		response.Diagnostics.AddWarning("Partial budget listing",
+			"The token may not list the whole organisation's budgets, so only its own project's budgets are listed.")
+	}
 
 	state := costBudgetsDataSourceModel{
-		ID:      types.StringValue("ankra_cost_budgets"),
-		Budgets: make([]costBudgetItemModel, 0, len(budgets)),
+		ID:        types.StringValue("ankra_cost_budgets"),
+		IsPartial: types.BoolValue(isPartial),
+		Budgets:   make([]costBudgetItemModel, 0, len(budgets)),
 	}
 	for _, budget := range budgets {
 		state.Budgets = append(state.Budgets, costBudgetItemModel{

@@ -65,27 +65,37 @@ type costBudgetListEnvelope struct {
 	Budgets []CostBudget `json:"budgets"`
 }
 
+// ErrCostBudgetNotVisible is GetCostBudget's answer when a budget is missing
+// from a partial listing: the token could not list the whole organisation,
+// and the partial listing hides organisation, environment and other-project
+// budgets, so a missing budget may well still exist.
+var ErrCostBudgetNotVisible = errors.New("the budget is not in the listing this token may read")
+
 // ListCostBudgets returns every budget of the organisation across all of its
 // projects. A token pinned to one project may not read the whole
-// organisation, so a 403 falls back to the token's own project.
-func (client *Client) ListCostBudgets(ctx context.Context) ([]CostBudget, error) {
+// organisation, so a 403 falls back to the token's own project; isPartial
+// then reports that budgets of other scopes are missing from the answer.
+func (client *Client) ListCostBudgets(ctx context.Context) (budgets []CostBudget, isPartial bool, err error) {
 	var envelope costBudgetListEnvelope
-	err := client.doRequest(ctx, http.MethodGet, costBudgetsPath+"?project_id=all", nil, &envelope)
+	err = client.doRequest(ctx, http.MethodGet, costBudgetsPath+"?project_id=all", nil, &envelope)
 	var apiError *APIError
 	if errors.As(err, &apiError) && apiError.StatusCode == http.StatusForbidden {
 		envelope = costBudgetListEnvelope{}
+		isPartial = true
 		err = client.doRequest(ctx, http.MethodGet, costBudgetsPath, nil, &envelope)
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return envelope.Budgets, nil
+	return envelope.Budgets, isPartial, nil
 }
 
 // GetCostBudget finds one budget by id in the listing, which is the only read
-// the platform offers. A missing id is a NotFound APIError.
+// the platform offers. A missing id is a NotFound APIError when the whole
+// organisation was listed, and ErrCostBudgetNotVisible when only a partial
+// listing was available.
 func (client *Client) GetCostBudget(ctx context.Context, budgetID string) (*CostBudget, error) {
-	budgets, err := client.ListCostBudgets(ctx)
+	budgets, isPartial, err := client.ListCostBudgets(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +103,9 @@ func (client *Client) GetCostBudget(ctx context.Context, budgetID string) (*Cost
 		if budgets[index].ID == budgetID {
 			return &budgets[index], nil
 		}
+	}
+	if isPartial {
+		return nil, ErrCostBudgetNotVisible
 	}
 	return nil, &APIError{Method: http.MethodGet, Path: costBudgetsPath, StatusCode: http.StatusNotFound, Body: "budget " + budgetID + " not found"}
 }

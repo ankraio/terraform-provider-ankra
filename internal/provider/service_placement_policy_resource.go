@@ -7,6 +7,7 @@ import (
 	"context"
 	"regexp"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -44,6 +45,24 @@ func (locationValidator serviceLocationValidator) ValidateString(ctx context.Con
 	if len(value) > 63 || value == "unspecified" || !serviceLocationPattern.MatchString(value) {
 		response.Diagnostics.AddAttributeError(request.Path, "Invalid location", "The platform refuses it: use "+locationValidator.Description(ctx)+".")
 	}
+}
+
+// serviceAdmissionUnavailable reports, as an error, a 404 that says nothing
+// about the object: the service admission routes answer a bare "Not Found"
+// while the organisation's `applications` feature is off, whereas an object
+// that is really gone is answered with the platform's own sentence. Reading
+// the bare one as "gone" would drop the resource and let a destroy succeed
+// while the object lives on. It reports whether it added the error.
+func serviceAdmissionUnavailable(err error, diagnostics *diag.Diagnostics) bool {
+	detail, isNotFound := clusterSettingsNotFoundDetail(err)
+	if !isNotFound || detail != "Not Found" {
+		return false
+	}
+	diagnostics.AddError("Managed services not available",
+		"The platform answered a bare 404 for the service admission routes, which it does while managed services (the `applications` feature) "+
+			"are not enabled for the provider's organisation. That does not mean the object is gone, so it is kept. "+
+			"Check the provider's organisation, or remove the resource with `terraform state rm` if it is really gone. ("+err.Error()+")")
+	return true
 }
 
 var (
@@ -154,7 +173,7 @@ func (policyResource *servicePlacementPolicyResource) Read(ctx context.Context, 
 		return
 	}
 	policy, err := apiClient.GetServicePlacementPolicy(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, response) {
 		return
 	}
 	if err != nil {

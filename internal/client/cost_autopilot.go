@@ -89,6 +89,30 @@ func (client *Client) UpdateCostAutopilot(ctx context.Context, request CostAutop
 	return &policy, nil
 }
 
+// ResetCostAutopilot returns the named environment kinds to hands-off, and
+// clears the quiet hours and the notification route only when asked: a part
+// left out of the body keeps its value.
+func (client *Client) ResetCostAutopilot(ctx context.Context, kinds []string, isQuietHoursCleared bool, isRouteCleared bool) error {
+	body := map[string]any{}
+	if len(kinds) > 0 {
+		defaults := make(map[string]string, len(kinds))
+		for _, kind := range kinds {
+			defaults[kind] = CostAutopilotTierHandsOff
+		}
+		body["defaults"] = defaults
+	}
+	if isQuietHoursCleared {
+		body["quiet_hours"] = nil
+	}
+	if isRouteCleared {
+		body["notification_route_id"] = nil
+	}
+	if len(body) == 0 {
+		return nil
+	}
+	return client.doRequest(ctx, http.MethodPut, costAutopilotPath, body, nil)
+}
+
 // GetCostAutopilotCluster finds one cluster in the policy read, which is the
 // only read the platform offers. A cluster that is not a live one of the
 // organisation is a NotFound APIError.

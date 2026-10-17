@@ -61,7 +61,9 @@ func (settingsResource *costSettingsResource) Metadata(_ context.Context, reques
 func (settingsResource *costSettingsResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The organisation's cloud cost pricing settings. There is one set per organisation, so declare this resource at most once. " +
-			"Destroying it restores the platform defaults: no discount, `eur`, no egress estimate and the default analysed-cluster limit. " +
+			"Creating it while the settings were already customised outside Terraform (and differ from the configuration) is refused: import it instead. " +
+			"Destroying it restores the platform default (no discount, `eur`, no egress estimate, the default analysed-cluster limit) of each setting " +
+			"the configuration set, and leaves the others as they are. After an import, before the first apply, every setting counts as set. " +
 			"The counterpart of `ankra cost settings set`; it needs organisation admin.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -110,12 +112,52 @@ func (settingsResource *costSettingsResource) Create(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
+	current, err := apiClient.GetCostSettings(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read cost settings", err.Error())
+		return
+	}
+	if costSettingsCustomised(current) && !costSettingsMatch(current, plan) {
+		response.Diagnostics.AddError("Cost settings already customised",
+			"The organisation's cost settings were changed outside Terraform. Creating this resource would overwrite them, so import it instead: "+
+				"terraform import <address> "+costSettingsID)
+		return
+	}
 	if _, err := apiClient.UpdateCostSettings(ctx, costSettingsUpdateFromModel(plan)); err != nil {
 		response.Diagnostics.AddError("Unable to write cost settings", err.Error())
 		return
 	}
 	plan.ID = types.StringValue(costSettingsID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	costRecordConfiguredAttributes(ctx, request.Config, costSettingsAttributes, response.Private, &response.Diagnostics)
+}
+
+// costSettingsAttributes are the settings the configuration may set.
+var costSettingsAttributes = []string{"effective_discount_pct", "currency", "include_network_egress_estimate", "analysed_cluster_limit"}
+
+// costSettingsCustomised reports whether the organisation's settings differ
+// from the platform defaults.
+func costSettingsCustomised(settings *client.CostSettings) bool {
+	return settings.EffectiveDiscountPct != 0 || !strings.EqualFold(settings.Currency, client.CostSettingsDefaultCurrency) ||
+		settings.IncludeNetworkEgressEstimate ||
+		(settings.AnalysedClusterLimit != nil && *settings.AnalysedClusterLimit != costSettingsDefaultAnalysedClusterLimit)
+}
+
+// costSettingsMatch reports whether the stored settings already are what the
+// plan declares, in which case adopting them overwrites nothing.
+func costSettingsMatch(settings *client.CostSettings, plan costSettingsModel) bool {
+	limit := int64(costSettingsDefaultAnalysedClusterLimit)
+	if !plan.AnalysedClusterLimit.IsNull() {
+		limit = plan.AnalysedClusterLimit.ValueInt64()
+	}
+	storedLimit := int64(costSettingsDefaultAnalysedClusterLimit)
+	if settings.AnalysedClusterLimit != nil {
+		storedLimit = *settings.AnalysedClusterLimit
+	}
+	return settings.EffectiveDiscountPct == plan.EffectiveDiscountPct.ValueFloat64() &&
+		strings.EqualFold(settings.Currency, plan.Currency.ValueString()) &&
+		settings.IncludeNetworkEgressEstimate == plan.IncludeNetworkEgressEstimate.ValueBool() &&
+		storedLimit == limit
 }
 
 func (settingsResource *costSettingsResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -161,17 +203,43 @@ func (settingsResource *costSettingsResource) Update(ctx context.Context, reques
 	}
 	plan.ID = types.StringValue(costSettingsID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	costRecordConfiguredAttributes(ctx, request.Config, costSettingsAttributes, response.Private, &response.Diagnostics)
 }
 
-// Delete restores the platform defaults.
-func (settingsResource *costSettingsResource) Delete(ctx context.Context, _ resource.DeleteRequest, response *resource.DeleteResponse) {
+// Delete restores the platform default of every setting the configuration
+// set, and leaves the others as they are now.
+func (settingsResource *costSettingsResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	apiClient := settingsResource.requireClient(&response.Diagnostics)
 	if apiClient == nil {
 		return
 	}
-	if _, err := apiClient.UpdateCostSettings(ctx, client.CostSettingsUpdate{
-		Currency: client.CostSettingsDefaultCurrency,
-	}); err != nil {
+	configured := costConfiguredAttributes(ctx, costSettingsAttributes, request.Private, &response.Diagnostics)
+	current, err := apiClient.GetCostSettings(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read cost settings", err.Error())
+		return
+	}
+	reset := client.CostSettingsUpdate{
+		EffectiveDiscountPct:         current.EffectiveDiscountPct,
+		Currency:                     current.Currency,
+		IncludeNetworkEgressEstimate: current.IncludeNetworkEgressEstimate,
+	}
+	if current.AnalysedClusterLimit != nil && *current.AnalysedClusterLimit != costSettingsDefaultAnalysedClusterLimit {
+		reset.AnalysedClusterLimit = current.AnalysedClusterLimit
+	}
+	if configured["effective_discount_pct"] {
+		reset.EffectiveDiscountPct = 0
+	}
+	if configured["currency"] {
+		reset.Currency = client.CostSettingsDefaultCurrency
+	}
+	if configured["include_network_egress_estimate"] {
+		reset.IncludeNetworkEgressEstimate = false
+	}
+	if configured["analysed_cluster_limit"] {
+		reset.AnalysedClusterLimit = nil
+	}
+	if _, err := apiClient.UpdateCostSettings(ctx, reset); err != nil {
 		response.Diagnostics.AddError("Unable to reset cost settings", err.Error())
 	}
 }

@@ -32,9 +32,12 @@ type aiKeyKind struct {
 	displayName string
 	keyPrefix   string
 	command     string
-	save        func(*client.Client, context.Context, string) (*client.AIKeyStatus, error)
-	remove      func(*client.Client, context.Context) error
-	status      func(*client.AIProviderStatus) client.AIKeyStatus
+	// maskPrefix is how many leading characters the platform keeps in the
+	// key preview.
+	maskPrefix int
+	save       func(*client.Client, context.Context, string) (*client.AIKeyStatus, error)
+	remove     func(*client.Client, context.Context) error
+	status     func(*client.AIProviderStatus) client.AIKeyStatus
 }
 
 var (
@@ -42,6 +45,7 @@ var (
 		typeSuffix:  "_ai_anthropic_key",
 		displayName: "Anthropic",
 		keyPrefix:   "sk-ant-",
+		maskPrefix:  7,
 		command:     "`ankra ai anthropic set` and `ankra ai anthropic delete`",
 		save:        (*client.Client).SaveAIAnthropicKey,
 		remove:      (*client.Client).DeleteAIAnthropicKey,
@@ -51,6 +55,7 @@ var (
 		typeSuffix:  "_ai_openrouter_key",
 		displayName: "OpenRouter",
 		keyPrefix:   "sk-or-",
+		maskPrefix:  6,
 		command:     "`ankra ai openrouter set` and `ankra ai openrouter remove`",
 		save:        (*client.Client).SaveAIOpenRouterKey,
 		remove:      (*client.Client).DeleteAIOpenRouterKey,
@@ -89,7 +94,7 @@ func (keyResource *aiKeyResource) Schema(_ context.Context, _ resource.SchemaReq
 		MarkdownDescription: "The organisation's own " + kind.displayName + " API key (bring your own key), a singleton: declare it once per organisation. " +
 			"The counterpart of " + kind.command + ". Storing the key does not activate it; set `ankra_ai_provider` for that. " +
 			"Destroying it removes the key, and when " + kind.displayName + " was the active provider the platform falls back to `ankra`.\n\n" +
-			"The platform never returns the key, so a key replaced outside Terraform is visible only as a changed `key_preview`.",
+			"The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Always `" + kind.typeSuffix[1:] + "`.",
@@ -164,6 +169,9 @@ func (keyResource *aiKeyResource) Read(ctx context.Context, request resource.Rea
 		return
 	}
 	state.ID = types.StringValue(keyResource.kind.typeSuffix[1:])
+	if aiKeyReplacedOutside(state.APIKey, keyStatus.KeyPreview, keyResource.kind.maskPrefix, 12) {
+		state.APIKey = types.StringNull()
+	}
 	state.KeyPreview = types.StringPointerValue(keyStatus.KeyPreview)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }

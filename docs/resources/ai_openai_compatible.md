@@ -4,14 +4,14 @@ page_title: "ankra_ai_openai_compatible Resource - ankra"
 subcategory: ""
 description: |-
   The organisation's legacy single OpenAI-compatible endpoint, which the openai_compatible provider uses; a singleton. The counterpart of ankra ai openai set and ankra ai openai delete. For several endpoints and per-model routing use ankra_ai_endpoint with ankra_ai_model instead.
-  The platform never returns the key, so a key replaced outside Terraform is visible only as a changed key_preview.
+  The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked key_preview with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 ---
 
 # ankra_ai_openai_compatible (Resource)
 
 The organisation's legacy single OpenAI-compatible endpoint, which the `openai_compatible` provider uses; a singleton. The counterpart of `ankra ai openai set` and `ankra ai openai delete`. For several endpoints and per-model routing use `ankra_ai_endpoint` with `ankra_ai_model` instead.
 
-The platform never returns the key, so a key replaced outside Terraform is visible only as a changed `key_preview`.
+The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 
 ## Example Usage
 

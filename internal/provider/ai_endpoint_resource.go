@@ -51,7 +51,7 @@ func (endpointResource *aiEndpointResource) Schema(_ context.Context, _ resource
 		MarkdownDescription: "A named OpenAI-compatible endpoint (OpenRouter, vLLM, LiteLLM, Ollama, ...) that catalogue models can be served from. " +
 			"The counterpart of `ankra ai endpoints create`, `update` and `delete`. The platform probes the endpoint before saving it.\n\n" +
 			"Destroying an endpoint also deletes every catalogue model on it. The platform never returns the key, " +
-			"so a key replaced outside Terraform is visible only as a changed `key_preview`.",
+			"so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the endpoint.",
@@ -61,6 +61,7 @@ func (endpointResource *aiEndpointResource) Schema(_ context.Context, _ resource
 			"name": schema.StringAttribute{
 				MarkdownDescription: "Endpoint name, unique in the organisation.",
 				Required:            true,
+				Validators:          []validator.String{platformServicesTrimmed{}},
 			},
 			"base_url": schema.StringAttribute{
 				MarkdownDescription: "OpenAI-compatible base URL. A trailing slash is ignored.",
@@ -127,6 +128,9 @@ func (endpointResource *aiEndpointResource) Read(ctx context.Context, request re
 		return
 	}
 	state.Name = types.StringValue(endpoint.Name)
+	if aiKeyReplacedOutside(state.APIKey, &endpoint.KeyPreview, 3, 8) {
+		state.APIKey = types.StringNull()
+	}
 	state.applyAPI(endpoint)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }

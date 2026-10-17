@@ -55,7 +55,7 @@ func (compatibleResource *aiOpenAICompatibleResource) Schema(_ context.Context, 
 		MarkdownDescription: "The organisation's legacy single OpenAI-compatible endpoint, which the `openai_compatible` provider uses; a singleton. " +
 			"The counterpart of `ankra ai openai set` and `ankra ai openai delete`. For several endpoints and per-model routing use " +
 			"`ankra_ai_endpoint` with `ankra_ai_model` instead.\n\n" +
-			"The platform never returns the key, so a key replaced outside Terraform is visible only as a changed `key_preview`.",
+			"The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Always `" + aiOpenAICompatibleID + "`.",
@@ -70,6 +70,7 @@ func (compatibleResource *aiOpenAICompatibleResource) Schema(_ context.Context, 
 			"model": schema.StringAttribute{
 				MarkdownDescription: "Model id the endpoint serves.",
 				Required:            true,
+				Validators:          []validator.String{platformServicesTrimmed{}},
 			},
 			"api_key": schema.StringAttribute{
 				MarkdownDescription: "API key for the endpoint.",
@@ -142,6 +143,9 @@ func (compatibleResource *aiOpenAICompatibleResource) Read(ctx context.Context, 
 		return
 	}
 	state.ID = types.StringValue(aiOpenAICompatibleID)
+	if aiKeyReplacedOutside(state.APIKey, compatible.KeyPreview, 3, 8) {
+		state.APIKey = types.StringNull()
+	}
 	state.BaseURL = aiKeepEquivalentURL(state.BaseURL, compatible.BaseURL)
 	state.Model = types.StringPointerValue(compatible.Model)
 	state.KeyPreview = types.StringPointerValue(compatible.KeyPreview)

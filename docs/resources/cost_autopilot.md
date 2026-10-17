@@ -3,12 +3,12 @@
 page_title: "ankra_cost_autopilot Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's cost autopilot policy: how much Ankra may do about cost unasked, per environment kind. There is one policy per organisation, so declare this resource at most once. Every environment kind not named in defaults is held at hands-off. Destroying the resource returns every kind to hands-off and clears the quiet hours and the notification route, which is how the platform treats an organisation that never set a policy. The counterpart of ankra cost autopilot set; it needs billing.manage and clusters.write.
+  The organisation's cost autopilot policy: how much Ankra may do about cost unasked, per environment kind. There is one policy per organisation, so declare this resource at most once. Every environment kind not named in defaults is held at hands-off. Creating it while a policy was already set outside Terraform is refused: import it instead. Destroying the resource resets only what the configuration set: the kinds named in defaults return to hands-off, and the quiet hours and notification route are cleared only if the configuration set them. After an import, before the first apply, every part counts as set. The counterpart of ankra cost autopilot set; it needs billing.manage and clusters.write.
 ---
 
 # ankra_cost_autopilot (Resource)
 
-The organisation's cost autopilot policy: how much Ankra may do about cost unasked, per environment kind. There is one policy per organisation, so declare this resource at most once. Every environment kind not named in `defaults` is held at `hands-off`. Destroying the resource returns every kind to `hands-off` and clears the quiet hours and the notification route, which is how the platform treats an organisation that never set a policy. The counterpart of `ankra cost autopilot set`; it needs `billing.manage` and `clusters.write`.
+The organisation's cost autopilot policy: how much Ankra may do about cost unasked, per environment kind. There is one policy per organisation, so declare this resource at most once. Every environment kind not named in `defaults` is held at `hands-off`. Creating it while a policy was already set outside Terraform is refused: import it instead. Destroying the resource resets only what the configuration set: the kinds named in `defaults` return to `hands-off`, and the quiet hours and notification route are cleared only if the configuration set them. After an import, before the first apply, every part counts as set. The counterpart of `ankra cost autopilot set`; it needs `billing.manage` and `clusters.write`.
 
 ## Example Usage
 

@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -62,8 +63,10 @@ func (autopilotResource *costAutopilotResource) Schema(_ context.Context, _ reso
 		MarkdownDescription: "The organisation's cost autopilot policy: how much Ankra may do about cost unasked, per environment kind. " +
 			"There is one policy per organisation, so declare this resource at most once. " +
 			"Every environment kind not named in `defaults` is held at `hands-off`. " +
-			"Destroying the resource returns every kind to `hands-off` and clears the quiet hours and the notification route, " +
-			"which is how the platform treats an organisation that never set a policy. " +
+			"Creating it while a policy was already set outside Terraform is refused: import it instead. " +
+			"Destroying the resource resets only what the configuration set: the kinds named in `defaults` return to `hands-off`, " +
+			"and the quiet hours and notification route are cleared only if the configuration set them. " +
+			"After an import, before the first apply, every part counts as set. " +
 			"The counterpart of `ankra cost autopilot set`; it needs `billing.manage` and `clusters.write`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -121,11 +124,40 @@ func (autopilotResource *costAutopilotResource) Create(ctx context.Context, requ
 	if response.Diagnostics.HasError() {
 		return
 	}
+	current, err := apiClient.GetCostAutopilot(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read cost autopilot policy", err.Error())
+		return
+	}
+	if costAutopilotCustomised(current) {
+		response.Diagnostics.AddError("Cost autopilot policy already set",
+			"The organisation's cost autopilot policy was set outside Terraform. Creating this resource would overwrite it, so import it instead: "+
+				"terraform import <address> "+costAutopilotID)
+		return
+	}
 	costWriteAutopilot(ctx, apiClient, &plan, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	costRecordConfiguredAttributes(ctx, request.Config, costAutopilotAttributes, response.Private, &response.Diagnostics)
+}
+
+// costAutopilotAttributes are the parts of the policy the configuration may set.
+var costAutopilotAttributes = []string{"defaults", "quiet_hours", "notification_route_id"}
+
+// costAutopilotCustomised reports whether the policy holds anything but the
+// never-set behaviour: some kind above hands-off, quiet hours or a route.
+func costAutopilotCustomised(policy *client.CostAutopilotPolicy) bool {
+	if policy.QuietHours != nil || policy.NotificationRouteID != nil {
+		return true
+	}
+	for _, tier := range policy.Defaults {
+		if tier != client.CostAutopilotTierHandsOff {
+			return true
+		}
+	}
+	return false
 }
 
 func (autopilotResource *costAutopilotResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -143,6 +175,7 @@ func (autopilotResource *costAutopilotResource) Update(ctx context.Context, requ
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	costRecordConfiguredAttributes(ctx, request.Config, costAutopilotAttributes, response.Private, &response.Diagnostics)
 }
 
 // costWriteAutopilot sends the whole policy: every kind the platform knows, the ones the
@@ -236,22 +269,30 @@ func (autopilotResource *costAutopilotResource) Read(ctx context.Context, reques
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 
-// Delete returns every environment kind to hands-off and clears the quiet
-// hours and route: the behaviour of an organisation that never set a policy.
-// The platform has no way to unset the policy row itself.
-func (autopilotResource *costAutopilotResource) Delete(ctx context.Context, _ resource.DeleteRequest, response *resource.DeleteResponse) {
+// Delete resets only what the configuration set: the kinds it named go back
+// to hands-off, and the quiet hours and route are cleared only when it set
+// them. The platform has no way to unset the policy row itself.
+func (autopilotResource *costAutopilotResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	apiClient := autopilotResource.requireClient(&response.Diagnostics)
 	if apiClient == nil {
 		return
 	}
-	current, err := apiClient.GetCostAutopilot(ctx)
-	if err != nil {
-		response.Diagnostics.AddError("Unable to read cost autopilot policy", err.Error())
+	var state costAutopilotModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	configured := costConfiguredAttributes(ctx, costAutopilotAttributes, request.Private, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
 		return
 	}
-	if _, err := apiClient.UpdateCostAutopilot(ctx, client.CostAutopilotPolicyUpdate{
-		Defaults: costCompleteDefaults(current.EnvironmentKinds, nil),
-	}); err != nil {
+	named := map[string]string{}
+	if configured["defaults"] && !state.Defaults.IsNull() && !state.Defaults.IsUnknown() {
+		response.Diagnostics.Append(state.Defaults.ElementsAs(ctx, &named, false)...)
+	}
+	kinds := make([]string, 0, len(named))
+	for kind := range named {
+		kinds = append(kinds, kind)
+	}
+	sort.Strings(kinds)
+	if err := apiClient.ResetCostAutopilot(ctx, kinds, configured["quiet_hours"], configured["notification_route_id"]); err != nil {
 		response.Diagnostics.AddError("Unable to reset cost autopilot policy", err.Error())
 	}
 }

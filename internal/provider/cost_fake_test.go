@@ -22,6 +22,10 @@ import (
 type costFake struct {
 	*routeFake
 	budgets map[string]map[string]any
+	// isTokenPinned makes the fake answer like a token pinned to one
+	// project: project_id=all is a 403 and the plain listing holds only that
+	// project's budgets.
+	isTokenPinned bool
 	// budgetUpdates records every budget update body as sent.
 	budgetUpdates []map[string]json.RawMessage
 
@@ -67,11 +71,19 @@ func newCostFake(t *testing.T) *costFake {
 	created := 0
 
 	fake.handle("GET /api/v1/org/cloud-cost/budgets", func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Query().Get("project_id") != "all" {
+		isAll := request.URL.Query().Get("project_id") == "all"
+		if fake.isTokenPinned && isAll {
+			writeJSON(t, writer, http.StatusForbidden, map[string]any{"detail": "This token is limited to one project"})
+			return
+		}
+		if !fake.isTokenPinned && !isAll {
 			t.Errorf("budget listing without project_id=all would hide other projects' budgets: %s", request.URL.RawQuery)
 		}
 		identifiers := make([]string, 0, len(fake.budgets))
-		for identifier := range fake.budgets {
+		for identifier, budget := range fake.budgets {
+			if !isAll && budget["scope_kind"] != "project" {
+				continue
+			}
 			identifiers = append(identifiers, identifier)
 		}
 		sort.Strings(identifiers)

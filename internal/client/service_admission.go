@@ -106,10 +106,12 @@ func (client *Client) BindServiceConsumer(ctx context.Context, write ServiceCons
 	return &consumer, nil
 }
 
-// UnbindServiceConsumer removes a binding at the revision last read. A
-// binding already gone is not an error; one a service still uses is a 409.
+// UnbindServiceConsumer removes a binding at the revision last read. One a
+// service still uses is a 409. A 404 is returned as an error: it may mean
+// the binding is gone, or that service admission is not enabled for the
+// organisation, which the caller tells apart.
 func (client *Client) UnbindServiceConsumer(ctx context.Context, consumerID string, expectedRevision int64) error {
 	path := serviceAdmissionPath + "/consumers/" + url.PathEscape(consumerID) +
 		"?" + url.Values{"expected_revision": []string{strconv.FormatInt(expectedRevision, 10)}}.Encode()
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }

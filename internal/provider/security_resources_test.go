@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"testing"
@@ -33,6 +34,17 @@ type securityFake struct {
 	schedules     map[string]map[string]any
 	clusters      map[string]bool
 	scheduleWrite []map[string]any
+	previews      []map[string]any
+}
+
+// securityFakeSelectorHash derives a selector hash the way the platform
+// does in effect: from the anchoring occurrence and the scope, so a preview
+// and a create of the same pair agree and any other pair differs.
+func securityFakeSelectorHash(occurrenceID any, scope string) string {
+	if scope == "" {
+		scope = "organisation_addon"
+	}
+	return fmt.Sprintf("hash-%v-%s", occurrenceID, scope)
 }
 
 func newSecurityFake(t *testing.T) *securityFake {
@@ -64,6 +76,16 @@ func newSecurityFake(t *testing.T) *securityFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{
 			"result":     result,
 			"pagination": map[string]any{"page": page, "page_size": pageSize, "total_pages": totalPages, "total_count": len(fake.policyOrder)},
+		})
+	})
+	fake.handle("POST /api/v1/org/security/vulnerability-dispositions/preview", func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		decodeJSON(t, request, &body)
+		fake.previews = append(fake.previews, body)
+		scope, _ := body["scope"].(string)
+		writeJSON(t, writer, http.StatusOK, map[string]any{
+			"policy_id": nil, "selector": map[string]any{"cve_id": "CVE-2026-0001"},
+			"selector_hash": securityFakeSelectorHash(body["occurrence_id"], scope), "affected_occurrences": 3,
 		})
 	})
 	fake.handle("POST /api/v1/org/security/vulnerability-dispositions", func(writer http.ResponseWriter, request *http.Request) {
@@ -101,7 +123,7 @@ func newSecurityFake(t *testing.T) *securityFake {
 		policy := map[string]any{
 			"id":                        id,
 			"selector":                  selector,
-			"selector_hash":             fmt.Sprintf("hash-%d", created),
+			"selector_hash":             securityFakeSelectorHash(body["occurrence_id"], scope),
 			"disposition":               body["disposition"],
 			"reason":                    body["reason"],
 			"expires_at":                securityFakeTimestamp(t, body["expires_at"]),
@@ -551,6 +573,53 @@ resource "ankra_security_report_schedule" "production" {
 				return fmt.Errorf("destroy left the schedule sending: %v", schedule)
 			}
 			return nil
+		},
+	})
+}
+
+// A cluster that leaves the provider's scope answers 404 "Cluster not
+// found". That must neither drop the schedule from state nor let destroy
+// report success while the platform keeps emailing reports.
+func TestAccSecurityReportScheduleClusterOutOfScope(t *testing.T) {
+	fake := newSecurityFake(t)
+	const clusterID = "5e3c2a10-7d4b-4f6e-9a21-3b4c5d6e7f80"
+	configuration := fake.providerBlock() + `
+resource "ankra_security_report_schedule" "production" {
+  cluster_id = "` + clusterID + `"
+  frequency  = "weekly"
+  recipients = ["security@example.com"]
+}
+`
+	stillSending := func(_ *terraform.State) error {
+		if fake.schedules[clusterID]["enabled"] != true {
+			return fmt.Errorf("schedule changed: %v", fake.schedules[clusterID])
+		}
+		return nil
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: configuration},
+			{
+				PreConfig:   func() { fake.clusters[clusterID] = false },
+				Config:      configuration,
+				ExpectError: regexp.MustCompile("Cluster not in scope"),
+			},
+			{
+				Config:      configuration,
+				Destroy:     true,
+				ExpectError: regexp.MustCompile("Cluster not in scope"),
+				Check:       stillSending,
+			},
+			{
+				PreConfig: func() { fake.clusters[clusterID] = true },
+				Config:    configuration,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_security_report_schedule.production", "recipients.#", "1"),
+					stillSending,
+				),
+			},
 		},
 	})
 }

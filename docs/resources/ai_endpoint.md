@@ -4,14 +4,14 @@ page_title: "ankra_ai_endpoint Resource - ankra"
 subcategory: ""
 description: |-
   A named OpenAI-compatible endpoint (OpenRouter, vLLM, LiteLLM, Ollama, ...) that catalogue models can be served from. The counterpart of ankra ai endpoints create, update and delete. The platform probes the endpoint before saving it.
-  Destroying an endpoint also deletes every catalogue model on it. The platform never returns the key, so a key replaced outside Terraform is visible only as a changed key_preview.
+  Destroying an endpoint also deletes every catalogue model on it. The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked key_preview with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 ---
 
 # ankra_ai_endpoint (Resource)
 
 A named OpenAI-compatible endpoint (OpenRouter, vLLM, LiteLLM, Ollama, ...) that catalogue models can be served from. The counterpart of `ankra ai endpoints create`, `update` and `delete`. The platform probes the endpoint before saving it.
 
-Destroying an endpoint also deletes every catalogue model on it. The platform never returns the key, so a key replaced outside Terraform is visible only as a changed `key_preview`.
+Destroying an endpoint also deletes every catalogue model on it. The platform never returns the key, so a key replaced outside Terraform is detected by comparing the platform's masked `key_preview` with the preview of the configured key, and planned as an update that stores the configured key again; a replacement key with the same leading characters and last four characters is not detected.
 
 ## Example Usage
 

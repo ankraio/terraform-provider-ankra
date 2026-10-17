@@ -3,12 +3,12 @@
 page_title: "ankra_cost_settings Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's cloud cost pricing settings. There is one set per organisation, so declare this resource at most once. Destroying it restores the platform defaults: no discount, eur, no egress estimate and the default analysed-cluster limit. The counterpart of ankra cost settings set; it needs organisation admin.
+  The organisation's cloud cost pricing settings. There is one set per organisation, so declare this resource at most once. Creating it while the settings were already customised outside Terraform (and differ from the configuration) is refused: import it instead. Destroying it restores the platform default (no discount, eur, no egress estimate, the default analysed-cluster limit) of each setting the configuration set, and leaves the others as they are. After an import, before the first apply, every setting counts as set. The counterpart of ankra cost settings set; it needs organisation admin.
 ---
 
 # ankra_cost_settings (Resource)
 
-The organisation's cloud cost pricing settings. There is one set per organisation, so declare this resource at most once. Destroying it restores the platform defaults: no discount, `eur`, no egress estimate and the default analysed-cluster limit. The counterpart of `ankra cost settings set`; it needs organisation admin.
+The organisation's cloud cost pricing settings. There is one set per organisation, so declare this resource at most once. Creating it while the settings were already customised outside Terraform (and differ from the configuration) is refused: import it instead. Destroying it restores the platform default (no discount, `eur`, no egress estimate, the default analysed-cluster limit) of each setting the configuration set, and leaves the others as they are. After an import, before the first apply, every setting counts as set. The counterpart of `ankra cost settings set`; it needs organisation admin.
 
 ## Example Usage
 

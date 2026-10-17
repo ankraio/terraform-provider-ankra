@@ -59,6 +59,7 @@ func (frameworkResource *securityComplianceFrameworkResource) Schema(_ context.C
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Tracks one compliance framework for the organisation: while the resource exists the framework is enabled and scored in the Security Center. " +
 			"Destroying it disables the framework. A framework disabled outside Terraform is planned for re-enabling. " +
+			"Creating it for a framework that is already enabled is refused, so a destroy never disables a framework someone else turned on: import it instead. " +
 			"The counterpart of `ankra security compliance frameworks enable` and `disable`.",
 		Attributes: map[string]schema.Attribute{
 			"id": stateString("The framework key."),
@@ -90,6 +91,17 @@ func (frameworkResource *securityComplianceFrameworkResource) Create(ctx context
 		return
 	}
 
+	current, err := apiClient.GetSecurityComplianceFramework(ctx, plan.Key.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read compliance framework", err.Error())
+		return
+	}
+	if current.Enabled {
+		response.Diagnostics.AddError("Compliance framework already enabled",
+			"Framework "+plan.Key.ValueString()+" was enabled outside Terraform. Creating this resource would take it over and destroying it would "+
+				"disable a framework someone else turned on, so import it instead: terraform import <address> "+plan.Key.ValueString())
+		return
+	}
 	framework, err := apiClient.SetSecurityComplianceFrameworkEnabled(ctx, plan.Key.ValueString(), true)
 	if err != nil {
 		response.Diagnostics.AddError("Unable to enable compliance framework", err.Error())

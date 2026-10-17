@@ -3,12 +3,12 @@
 page_title: "ankra_cost_autopilot_override Resource - ankra"
 subcategory: ""
 description: |-
-  Puts one cluster in a cost autopilot tier whatever its environment kind. Destroying it returns the cluster to its environment's default tier. An override that reaches expires_at stops applying and reads as gone, so the next plan recreates it and the platform refuses the past expiry: move expires_at forward or remove the resource. The counterpart of ankra cost autopilot override and ankra cost autopilot clear; it needs billing.manage and clusters.write on the cluster.
+  Puts one cluster in a cost autopilot tier whatever its environment kind. Destroying it returns the cluster to its environment's default tier. An override that reaches expires_at stops applying; Terraform then keeps it in state unchanged, with no planned change, until expires_at is moved forward (which sets it again) or the resource is removed. The counterpart of ankra cost autopilot override and ankra cost autopilot clear; it needs billing.manage and clusters.write on the cluster.
 ---
 
 # ankra_cost_autopilot_override (Resource)
 
-Puts one cluster in a cost autopilot tier whatever its environment kind. Destroying it returns the cluster to its environment's default tier. An override that reaches `expires_at` stops applying and reads as gone, so the next plan recreates it and the platform refuses the past expiry: move `expires_at` forward or remove the resource. The counterpart of `ankra cost autopilot override` and `ankra cost autopilot clear`; it needs `billing.manage` and `clusters.write` on the cluster.
+Puts one cluster in a cost autopilot tier whatever its environment kind. Destroying it returns the cluster to its environment's default tier. An override that reaches `expires_at` stops applying; Terraform then keeps it in state unchanged, with no planned change, until `expires_at` is moved forward (which sets it again) or the resource is removed. The counterpart of `ankra cost autopilot override` and `ankra cost autopilot clear`; it needs `billing.manage` and `clusters.write` on the cluster.
 
 ## Example Usage
 

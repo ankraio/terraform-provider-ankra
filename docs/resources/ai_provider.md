@@ -3,13 +3,13 @@
 page_title: "ankra_ai_provider Resource - ankra"
 subcategory: ""
 description: |-
-  The organisation's active AI provider, a singleton: declare it once per organisation. The counterpart of ankra ai provider. Destroying it returns the organisation to the Ankra-managed provider.
+  The organisation's active AI provider, a singleton: declare it once per organisation. The counterpart of ankra ai provider. Destroying it returns the organisation to the Ankra-managed provider. Creating it while the organisation is already on a different, non-default provider chosen outside Terraform is refused: import it instead.
   The platform refuses a provider whose credential is not stored, so reference the matching credential resource (ankra_ai_anthropic_key, ankra_ai_openrouter_key or ankra_ai_openai_compatible) or add depends_on. Removing that credential while its provider is active falls back to ankra, which the next plan shows as drift.
 ---
 
 # ankra_ai_provider (Resource)
 
-The organisation's active AI provider, a singleton: declare it once per organisation. The counterpart of `ankra ai provider`. Destroying it returns the organisation to the Ankra-managed provider.
+The organisation's active AI provider, a singleton: declare it once per organisation. The counterpart of `ankra ai provider`. Destroying it returns the organisation to the Ankra-managed provider. Creating it while the organisation is already on a different, non-default provider chosen outside Terraform is refused: import it instead.
 
 The platform refuses a provider whose credential is not stored, so reference the matching credential resource (`ankra_ai_anthropic_key`, `ankra_ai_openrouter_key` or `ankra_ai_openai_compatible`) or add `depends_on`. Removing that credential while its provider is active falls back to `ankra`, which the next plan shows as drift.
 

@@ -4,11 +4,14 @@ page_title: "ankra_cost_budget Resource - ankra"
 subcategory: ""
 description: |-
   A monthly cost budget for one scope: the organisation, a project, a cluster, an environment label or an application. Each scope has at most one budget. The counterpart of ankra cost budgets set and ankra cost budgets delete; changing a budget needs the billing.manage permission.
+  The platform has no read by id, so the budget is read from the listing. A token that may not list the whole organisation sees only its own project's budgets; a budget missing from that partial listing is reported as an error rather than re-created. A cluster or application budget whose scope is deleted drops out of the listing, so the next plan re-creates it and the platform refuses that: remove such a budget from configuration together with its scope.
 ---
 
 # ankra_cost_budget (Resource)
 
 A monthly cost budget for one scope: the organisation, a project, a cluster, an environment label or an application. Each scope has at most one budget. The counterpart of `ankra cost budgets set` and `ankra cost budgets delete`; changing a budget needs the `billing.manage` permission.
+
+The platform has no read by id, so the budget is read from the listing. A token that may not list the whole organisation sees only its own project's budgets; a budget missing from that partial listing is reported as an error rather than re-created. A cluster or application budget whose scope is deleted drops out of the listing, so the next plan re-creates it and the platform refuses that: remove such a budget from configuration together with its scope.
 
 ## Example Usage
 

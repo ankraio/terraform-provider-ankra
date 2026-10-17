@@ -5,7 +5,8 @@ package provider
 
 import (
 	"context"
-	"net/http"
+	"fmt"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -150,7 +151,8 @@ func (scheduleResource *securityReportScheduleResource) Read(ctx context.Context
 	}
 
 	status, err := apiClient.GetSecurityReportSchedule(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if scopeError := securityClusterScopeError(err, state.ClusterID.ValueString()); scopeError != nil {
+		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
 		return
 	}
 	if err != nil {
@@ -209,10 +211,32 @@ func (scheduleResource *securityReportScheduleResource) Delete(ctx context.Conte
 		Frequency:  state.Frequency.ValueString(),
 		Recipients: []string{},
 		Enabled:    false,
-	}, http.StatusNotFound)
+	})
+	if scopeError := securityClusterScopeError(err, state.ClusterID.ValueString()); scopeError != nil {
+		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+		return
+	}
 	if err != nil {
 		response.Diagnostics.AddError("Unable to pause security report schedule", err.Error())
 	}
+}
+
+// securityClusterScopeError reports a 404 from the report schedule routes.
+// They answer "Cluster not found" whenever the cluster is outside the
+// provider's organisation and project scope, which says nothing about the
+// schedule: it keeps sending reports. So a 404 is never read as "gone": it
+// is an error, and a cluster that was really deleted is removed with
+// `terraform state rm`. It returns nil for any other error.
+func securityClusterScopeError(err error, clusterID string) error {
+	detail, isNotFound := clusterSettingsNotFoundDetail(err)
+	if !isNotFound {
+		return nil
+	}
+	if strings.EqualFold(detail, "cluster not found") {
+		return clusterSettingsScopeError(err, clusterID)
+	}
+	return fmt.Errorf("the platform answered 404 for cluster %s's report schedule, which does not mean the schedule is gone; "+
+		"if the cluster was deleted, remove this resource with `terraform state rm`. (%w)", clusterID, err)
 }
 
 // ImportState imports by cluster id.

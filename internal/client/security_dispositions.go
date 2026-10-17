@@ -150,3 +150,28 @@ func (client *Client) RevokeSecurityDisposition(ctx context.Context, policyID st
 	body := map[string]string{"reason": reason}
 	return client.doRequest(ctx, http.MethodPost, securityDispositionsPath+"/"+url.PathEscape(policyID)+"/revoke", body, nil, http.StatusNotFound, http.StatusConflict)
 }
+
+// SecurityDispositionPreviewRequest asks what a policy anchored on one
+// occurrence with a scope would match, without writing anything.
+type SecurityDispositionPreviewRequest struct {
+	OccurrenceID string `json:"occurrence_id"`
+	Scope        string `json:"scope,omitempty"`
+	Disposition  string `json:"disposition"`
+}
+
+// SecurityDispositionPreview is the part of a preview the provider reads:
+// the selector the occurrence and scope derive, and its hash.
+type SecurityDispositionPreview struct {
+	Selector     SecurityDispositionSelector `json:"selector"`
+	SelectorHash string                      `json:"selector_hash"`
+}
+
+// PreviewSecurityDisposition derives the selector an occurrence and a scope
+// would give a policy.
+func (client *Client) PreviewSecurityDisposition(ctx context.Context, request SecurityDispositionPreviewRequest) (*SecurityDispositionPreview, error) {
+	var preview SecurityDispositionPreview
+	if err := client.doRequest(ctx, http.MethodPost, securityDispositionsPath+"/preview", request, &preview); err != nil {
+		return nil, err
+	}
+	return &preview, nil
+}

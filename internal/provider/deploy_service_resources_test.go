@@ -33,6 +33,21 @@ type deployServiceFake struct {
 	policy          map[string]any
 	consumers       map[string]map[string]any
 	consumerBodies  []map[string]any
+	// isApplicationsOff makes every service admission route answer the
+	// platform's bare 404 for an organisation without the feature.
+	isApplicationsOff bool
+}
+
+// handleAdmission registers a service admission route, which answers a bare
+// 404 "Not Found" while the organisation's applications feature is off.
+func (fake *deployServiceFake) handleAdmission(pattern string, handler http.HandlerFunc) {
+	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
+		if fake.isApplicationsOff {
+			writeJSON(fake.t, writer, http.StatusNotFound, map[string]any{"detail": "Not Found"})
+			return
+		}
+		handler(writer, request)
+	})
 }
 
 // platformServicesText reads a decoded JSON value as a string; anything else
@@ -52,7 +67,7 @@ func newDeployServiceFake(t *testing.T) *deployServiceFake {
 		fake.minted++
 		writeJSON(t, writer, http.StatusCreated, map[string]any{
 			"join_token":  fmt.Sprintf("ahjt_secret_%d", fake.minted),
-			"expires_at":  fmt.Sprintf("2026-10-17T1%d:00:00Z", fake.minted),
+			"expires_at":  fmt.Sprintf("2030-01-01T1%d:00:00Z", fake.minted),
 			"environment": request.PathValue("environment"),
 		})
 	})
@@ -78,14 +93,14 @@ func newDeployServiceFake(t *testing.T) *deployServiceFake {
 	})
 
 	policyPath := "/api/v1/org/service-admission/cluster-policies/{cluster}"
-	fake.handle("GET "+policyPath, func(writer http.ResponseWriter, _ *http.Request) {
+	fake.handleAdmission("GET "+policyPath, func(writer http.ResponseWriter, _ *http.Request) {
 		if fake.policy == nil {
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Configure the cluster data policy before connecting services"})
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, fake.policy)
 	})
-	fake.handle("PUT "+policyPath, func(writer http.ResponseWriter, request *http.Request) {
+	fake.handleAdmission("PUT "+policyPath, func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
 		revision := float64(0)
@@ -102,7 +117,7 @@ func newDeployServiceFake(t *testing.T) *deployServiceFake {
 		writeJSON(t, writer, http.StatusOK, fake.policy)
 	})
 
-	fake.handle("POST /api/v1/org/service-admission/consumers", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handleAdmission("POST /api/v1/org/service-admission/consumers", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
 		fake.consumerBodies = append(fake.consumerBodies, body)
@@ -132,18 +147,18 @@ func newDeployServiceFake(t *testing.T) *deployServiceFake {
 		existing["binding_revision"] = revision + 1
 		writeJSON(t, writer, http.StatusOK, existing)
 	})
-	fake.handle("GET /api/v1/org/service-admission/consumers/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handleAdmission("GET /api/v1/org/service-admission/consumers/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		consumer, exists := fake.consumers[request.PathValue("id")]
 		if !exists {
-			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Not found"})
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Service admission resource not found"})
 			return
 		}
 		writeJSON(t, writer, http.StatusOK, consumer)
 	})
-	fake.handle("DELETE /api/v1/org/service-admission/consumers/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handleAdmission("DELETE /api/v1/org/service-admission/consumers/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		consumer, exists := fake.consumers[request.PathValue("id")]
 		if !exists {
-			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Not found"})
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Service admission resource not found"})
 			return
 		}
 		expected, err := strconv.ParseFloat(request.URL.Query().Get("expected_revision"), 64)
@@ -182,7 +197,7 @@ data "ankra_deploy_environments" "all" {}
 				Config: configuration(""),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("ankra_host_join_token.edge", "join_token", "ahjt_secret_1"),
-					resource.TestCheckResourceAttr("ankra_host_join_token.edge", "expires_at", "2026-10-17T11:00:00Z"),
+					resource.TestCheckResourceAttr("ankra_host_join_token.edge", "expires_at", "2030-01-01T11:00:00Z"),
 					resource.TestCheckResourceAttr("data.ankra_host_targets.edge", "host_targets.#", "1"),
 					resource.TestCheckResourceAttr("data.ankra_host_targets.edge", "host_targets.0.labels.site", "oslo"),
 					resource.TestCheckNoResourceAttr("data.ankra_host_targets.edge", "host_targets.0.hostname"),

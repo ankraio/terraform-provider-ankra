@@ -152,7 +152,7 @@ func (consumerResource *serviceConsumerResource) Read(ctx context.Context, reque
 		return
 	}
 	consumer, err := apiClient.GetServiceConsumer(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if serviceAdmissionUnavailable(err, &response.Diagnostics) || removeWhenNotFound(ctx, err, response) {
 		return
 	}
 	if err != nil {
@@ -196,10 +196,12 @@ func (consumerResource *serviceConsumerResource) Delete(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.UnbindServiceConsumer(ctx, state.ID.ValueString(), state.BindingRevision.ValueInt64()); err != nil {
-		response.Diagnostics.AddError("Unable to unbind service consumer",
-			err.Error()+"\n\nA 409 means a service still uses the binding (retire it first) or the binding changed since Terraform read it.")
+	err := apiClient.UnbindServiceConsumer(ctx, state.ID.ValueString(), state.BindingRevision.ValueInt64())
+	if err == nil || serviceAdmissionUnavailable(err, &response.Diagnostics) || client.IsNotFound(err) {
+		return
 	}
+	response.Diagnostics.AddError("Unable to unbind service consumer",
+		err.Error()+"\n\nA 409 means a service still uses the binding (retire it first) or the binding changed since Terraform read it.")
 }
 
 // ImportState imports by consumer id. allow_planned is not readable and

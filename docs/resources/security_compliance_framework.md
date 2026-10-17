@@ -3,12 +3,12 @@
 page_title: "ankra_security_compliance_framework Resource - ankra"
 subcategory: ""
 description: |-
-  Tracks one compliance framework for the organisation: while the resource exists the framework is enabled and scored in the Security Center. Destroying it disables the framework. A framework disabled outside Terraform is planned for re-enabling. The counterpart of ankra security compliance frameworks enable and disable.
+  Tracks one compliance framework for the organisation: while the resource exists the framework is enabled and scored in the Security Center. Destroying it disables the framework. A framework disabled outside Terraform is planned for re-enabling. Creating it for a framework that is already enabled is refused, so a destroy never disables a framework someone else turned on: import it instead. The counterpart of ankra security compliance frameworks enable and disable.
 ---
 
 # ankra_security_compliance_framework (Resource)
 
-Tracks one compliance framework for the organisation: while the resource exists the framework is enabled and scored in the Security Center. Destroying it disables the framework. A framework disabled outside Terraform is planned for re-enabling. The counterpart of `ankra security compliance frameworks enable` and `disable`.
+Tracks one compliance framework for the organisation: while the resource exists the framework is enabled and scored in the Security Center. Destroying it disables the framework. A framework disabled outside Terraform is planned for re-enabling. Creating it for a framework that is already enabled is refused, so a destroy never disables a framework someone else turned on: import it instead. The counterpart of `ankra security compliance frameworks enable` and `disable`.
 
 ## Example Usage
 

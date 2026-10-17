@@ -62,7 +62,8 @@ func (tokenResource *deployHostJoinTokenResource) Schema(_ context.Context, _ re
 			"The environment is created in the provider's project when it does not exist yet.\n\n" +
 			"The platform shows the token once and keeps only its hash: there is no read-back and no revoke. Terraform keeps the token " +
 			"in state until it is destroyed, which removes it from state only; the token itself stays valid until it is used or `expires_at` passes. " +
-			"An expired token is not re-minted automatically: replace it (`terraform apply -replace`) when a new host needs one. " +
+			"Once `expires_at` has passed, the token is dropped from state on the next refresh and a new one is minted, so `join_token` changes: " +
+			"anything that embeds it (such as a machine's user data) is planned for a change too. " +
 			"Registering the host and revoking a host target are host-side operations and are not managed here.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
@@ -120,7 +121,9 @@ func (tokenResource *deployHostJoinTokenResource) Create(ctx context.Context, re
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
-// Read keeps state as it is: no route reads a join token back.
+// Read keeps state as it is, since no route reads a join token back, until
+// the token expires: an expired token is dropped so the next apply mints a
+// new one.
 func (tokenResource *deployHostJoinTokenResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
 	if tokenResource.requireClient(&response.Diagnostics) == nil {
 		return
@@ -128,6 +131,10 @@ func (tokenResource *deployHostJoinTokenResource) Read(ctx context.Context, requ
 	var state deployHostJoinTokenModel
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	if clusterSettingsIsPast(state.ExpiresAt.ValueString()) {
+		response.State.RemoveResource(ctx)
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)

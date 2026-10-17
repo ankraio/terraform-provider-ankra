@@ -316,6 +316,10 @@ func (dispositionResource *securityDispositionResource) Update(ctx context.Conte
 	}
 
 	plan.ID = state.ID
+	if state.OccurrenceID.IsNull() && !plan.OccurrenceID.IsNull() &&
+		!securityAnchorMatches(ctx, apiClient, plan, state, &response.Diagnostics) {
+		return
+	}
 	isPolicyChanged := !plan.Reason.Equal(state.Reason) ||
 		!plan.ExpiresAt.Equal(state.ExpiresAt) ||
 		!plan.ExpireWhenFixAvailable.Equal(state.ExpireWhenFixAvailable)
@@ -366,9 +370,34 @@ func (dispositionResource *securityDispositionResource) Delete(ctx context.Conte
 	}
 }
 
+// securityAnchorMatches checks, when the occurrence is first recorded after
+// an import, that the configured occurrence and scope derive the selector
+// the stored policy already has. The platform never returns the anchoring
+// occurrence, so without this any occurrence in configuration would be
+// recorded while the policy goes on matching something else.
+func securityAnchorMatches(ctx context.Context, apiClient *client.Client, plan, state securityDispositionModel, diagnostics *diag.Diagnostics) bool {
+	preview, err := apiClient.PreviewSecurityDisposition(ctx, client.SecurityDispositionPreviewRequest{
+		OccurrenceID: plan.OccurrenceID.ValueString(),
+		Scope:        plan.Scope.ValueString(),
+		Disposition:  plan.Disposition.ValueString(),
+	})
+	if err != nil {
+		diagnostics.AddError("Unable to check the disposition's anchoring occurrence", err.Error())
+		return false
+	}
+	if preview.SelectorHash != state.SelectorHash.ValueString() {
+		diagnostics.AddAttributeError(path.Root("occurrence_id"), "Occurrence does not match the imported disposition",
+			"occurrence_id "+plan.OccurrenceID.ValueString()+" with scope "+plan.Scope.ValueString()+" derives selector "+
+				preview.SelectorHash+", but the imported policy's selector is "+state.SelectorHash.ValueString()+
+				". Configure the occurrence and scope the policy was created from, or replace the disposition.")
+		return false
+	}
+	return true
+}
+
 // ImportState imports by policy id. The anchoring occurrence is never
 // returned, so `occurrence_id` stays empty until the next apply records the
-// configured value, without a change to the policy.
+// configured value, after checking that it derives the stored selector.
 func (dispositionResource *securityDispositionResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("allow_unmatched"), false)...)
