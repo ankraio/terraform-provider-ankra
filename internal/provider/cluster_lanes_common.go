@@ -282,6 +282,13 @@ func deprovisionLaneClusterAndWait(ctx context.Context, apiClient *client.Client
 	if deprovision.clusterID == "" {
 		return
 	}
+	// The scope check compares against the resolved project ID, so a slug
+	// must be resolved first even when nothing else has sent a request in
+	// this run (a destroy without refresh).
+	if err := apiClient.ResolveProject(ctx); err != nil {
+		diagnostics.AddError("Unable to resolve the provider's project_id", err.Error())
+		return
+	}
 	if !requireUnmovedScope(ctx, apiClient, private, diagnostics) {
 		return
 	}
