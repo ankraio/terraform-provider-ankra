@@ -20,7 +20,7 @@ import (
 
 const aiTestInstallation = "4242"
 
-// aiFake holds the AI review bindings, related repositories, spend cap and
+// organisationAIFake holds the AI review bindings, related repositories, spend cap and
 // AI environment the way the platform does
 // (go/internal/aigatewayapi, go/internal/usecase/gatewayprofiles,
 // go/internal/billingapi, go/internal/usecase/aienvironment): rules are
@@ -30,7 +30,7 @@ const aiTestInstallation = "4242"
 // existing row, delete answers 204 or 404; the spend cap and the
 // environment keep absent keys and clear on null, and the environment
 // lowercases its preview names.
-type aiFake struct {
+type organisationAIFake struct {
 	*routeFake
 	rules             map[string]map[string]any
 	related           map[string]map[string]any
@@ -49,8 +49,8 @@ func aiFakeEnvironmentDefaults() map[string]any {
 	}
 }
 
-func newAIFake(t *testing.T) *aiFake {
-	fake := &aiFake{
+func newOrganisationAIFake(t *testing.T) *organisationAIFake {
+	fake := &organisationAIFake{
 		routeFake: newRouteFake(t), rules: map[string]map[string]any{}, related: map[string]map[string]any{},
 		spendCap:    map[string]any{"daily_chat_usd_cap": nil, "daily_token_soft_cap": nil, "daily_token_hard_cap": nil},
 		environment: aiFakeEnvironmentDefaults(),
@@ -228,7 +228,7 @@ func newAIFake(t *testing.T) *aiFake {
 }
 
 func TestAccAIReviewLifecycle(t *testing.T) {
-	fake := newAIFake(t)
+	fake := newOrganisationAIFake(t)
 	first := fake.providerBlock() + fmt.Sprintf(`
 resource "ankra_ai_review_repository" "portal" {
   scm_provider        = "github"
@@ -358,7 +358,7 @@ func TestAIReviewPairMatchesEitherOrder(t *testing.T) {
 // only what configuration sets: values set in the portal survive create,
 // update and destroy, and destroy resets only the managed fields.
 func TestAccAISpendCapAndEnvironmentLifecycle(t *testing.T) {
-	fake := newAIFake(t)
+	fake := newOrganisationAIFake(t)
 	fake.spendCap["daily_token_soft_cap"] = float64(1000000)
 	fake.environment["staging_cluster_id"] = "12121212-0000-0000-0000-000000000001"
 	fake.environment["demo_ttl_hours"] = float64(36)
