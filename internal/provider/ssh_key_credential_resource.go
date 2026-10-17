@@ -175,12 +175,14 @@ func (sshKeyResource *sshKeyCredentialResource) Create(ctx context.Context, requ
 			plan.SSHPublicKey = types.StringNull()
 		}
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		response.Diagnostics.AddError("Unable to read back SSH key credential",
 			"The credential "+created.ID+" was created but could not be read back: "+err.Error())
 		return
 	}
 	sshKeyResource.applyListed(&plan, credential)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (sshKeyResource *sshKeyCredentialResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -195,7 +197,7 @@ func (sshKeyResource *sshKeyCredentialResource) Read(ctx context.Context, reques
 	}
 
 	credential, err := apiClient.GetCredential(ctx, client.CredentialSSHKeyProvider, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -204,6 +206,7 @@ func (sshKeyResource *sshKeyCredentialResource) Read(ctx context.Context, reques
 	}
 	sshKeyResource.applyListed(&state, credential)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update sends nothing: it only records the configured generate flag of a
@@ -278,9 +281,11 @@ func (sshKeyResource *sshKeyCredentialResource) Delete(ctx context.Context, requ
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteCredential(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete SSH key credential", err.Error())
+	err := apiClient.DeleteCredential(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete SSH key credential", err.Error())
 }
 
 // ImportState imports by credential id. The public key is read back; a

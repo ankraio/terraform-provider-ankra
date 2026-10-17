@@ -81,6 +81,71 @@ resource "ankra_aws_keys_credential" "main" {
 	})
 }
 
+// TestAccCredentialProjectSwitchKeepsTheCredential pins that moving the
+// provider to another project, where the platform answers the credential as
+// not found, neither plans a recreation (which would fail on the
+// organisation-wide name anyway) nor lets destroy report success.
+func TestAccCredentialProjectSwitchKeepsTheCredential(t *testing.T) {
+	const firstProject = "aaaaaaaa-1111-4111-8111-111111111111"
+	const secondProject = "bbbbbbbb-2222-4222-8222-222222222222"
+	fake := newCredentialFake(t)
+	inProject := func(project string) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token      = "test-token"
+  base_url   = %q
+  project_id = %q
+}
+
+resource "ankra_hetzner_credential" "main" {
+  name      = "hetzner-main"
+  api_token = "token"
+}
+
+resource "ankra_ssh_key_credential" "laptop" {
+  name           = "laptop"
+  ssh_public_key = "ssh-ed25519 AAAAC3laptop me@laptop"
+}
+`, fake.server.URL, project)
+	}
+	stillInFirstProject := func() error {
+		if len(fake.records) != 2 {
+			return fmt.Errorf("the platform holds %d credentials, want the original 2", len(fake.records))
+		}
+		for _, record := range fake.records {
+			if record.project != firstProject {
+				return fmt.Errorf("credential %s is in project %q", record.name, record.project)
+			}
+		}
+		return nil
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: inProject(firstProject)},
+			{
+				Config:      inProject(secondProject),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config:      inProject(secondProject),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: inProject(firstProject),
+				Check: func(_ *terraform.State) error {
+					if len(fake.deletes) != 0 {
+						return fmt.Errorf("deleted %v under the wrong project", fake.deletes)
+					}
+					return stillInFirstProject()
+				},
+			},
+		},
+	})
+}
+
 // TestAccSSHKeyCredentialImportWithFileKey imports a key whose configuration
 // reads it with file(), so it ends in a newline the platform stripped. The
 // first apply records the configured form without a replacement or any

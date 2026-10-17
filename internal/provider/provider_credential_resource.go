@@ -291,6 +291,7 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 			}
 			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("available"), types.BoolNull())...)
 			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), types.StringValue(awsCredential.ID))...)
+			response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 			response.Diagnostics.AddError("Unable to read back "+kind.label+" credential",
 				fmt.Sprintf("The credential %s was created and is recorded in state, but could not be read back: %s. "+
 					"The token needs credentials.read as well as credentials.write. Terraform marks the resource tainted and replaces it on the next apply; "+
@@ -317,6 +318,7 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 
 	response.State.Raw = request.Plan.Raw
 	response.Diagnostics.Append(credentialResource.setListed(ctx, &response.State, created)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (credentialResource *providerCredentialResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -331,7 +333,7 @@ func (credentialResource *providerCredentialResource) Read(ctx context.Context, 
 	}
 
 	credential, err := apiClient.GetCredential(ctx, credentialResource.kind.provider, credentialID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -344,6 +346,7 @@ func (credentialResource *providerCredentialResource) Read(ctx context.Context, 
 		return
 	}
 	response.Diagnostics.Append(credentialResource.setListed(ctx, &response.State, credential)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update runs only for the Tailscale join, which the platform changes in
@@ -402,9 +405,11 @@ func (credentialResource *providerCredentialResource) Delete(ctx context.Context
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteCredential(ctx, credentialID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete "+credentialResource.kind.label+" credential", err.Error())
+	err := apiClient.DeleteCredential(ctx, credentialID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete "+credentialResource.kind.label+" credential", err.Error())
 }
 
 // ImportState imports by credential id. The platform never returns the

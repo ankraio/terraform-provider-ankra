@@ -29,6 +29,15 @@ type credentialFakeRecord struct {
 	authMethod string
 	// listedState is the lifecycle state the listing reports; empty reads as "up".
 	listedState string
+	// project is the project the create was scoped to; empty is
+	// organisation-wide.
+	project string
+}
+
+// credentialFakeVisible mirrors the platform's ResourceScope: a request sees
+// its own project's credentials and the organisation-wide ones.
+func credentialFakeVisible(record *credentialFakeRecord, request *http.Request) bool {
+	return record.project == "" || record.project == request.Header.Get("X-Ankra-Project-Id")
 }
 
 // credentialFake holds credentials the way the platform does: provider
@@ -51,7 +60,7 @@ type credentialFake struct {
 func newCredentialFake(t *testing.T) *credentialFake {
 	fake := &credentialFake{routeFake: newRouteFake(t), records: map[string]*credentialFakeRecord{}}
 
-	store := func(provider string, body map[string]any) *credentialFakeRecord {
+	store := func(request *http.Request, provider string, body map[string]any) *credentialFakeRecord {
 		fake.created++
 		name, _ := body["name"].(string)
 		record := &credentialFakeRecord{
@@ -59,6 +68,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			name:     name,
 			provider: provider,
 			settings: body,
+			project:  request.Header.Get("X-Ankra-Project-Id"),
 		}
 		fake.records[record.id] = record
 		return record
@@ -86,7 +96,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 		listing := []map[string]any{}
 		for _, id := range ids {
 			record := fake.records[id]
-			if provider != "" && record.provider != provider {
+			if (provider != "" && record.provider != provider) || !credentialFakeVisible(record, request) {
 				continue
 			}
 			listedState := record.listedState
@@ -126,7 +136,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			}}}})
 			return
 		}
-		store(provider, body)
+		store(request, provider, body)
 		writeJSON(t, writer, http.StatusCreated, map[string]any{"success": true, "errors": []any{}})
 	})
 	fake.handle("POST /api/v1/credentials/hetzner/ssh-key", func(writer http.ResponseWriter, request *http.Request) {
@@ -144,7 +154,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			publicKey = "ssh-rsa AAAAgenerated"
 			privateKey = "-----BEGIN RSA PRIVATE KEY-----\nfake\n-----END RSA PRIVATE KEY-----\n"
 		}
-		record := store("ssh-key", body)
+		record := store(request, "ssh-key", body)
 		record.publicKey = strings.TrimSpace(publicKey)
 		writeJSON(t, writer, http.StatusCreated, map[string]any{
 			"success": true, "id": record.id, "name": record.name, "private_key": privateKey, "errors": []any{},
@@ -154,7 +164,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 		var body map[string]any
 		decodeJSON(t, request, &body)
 		fake.creates = append(fake.creates, body)
-		record := store("aws", body)
+		record := store(request, "aws", body)
 		record.authMethod = request.PathValue("method")
 		if scope, ok := body["scope"].(string); ok {
 			record.scope = scope
@@ -167,7 +177,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 	})
 	fake.handle("PUT /api/v1/credentials/proxmox/{id}/tailscale", func(writer http.ResponseWriter, request *http.Request) {
 		record, exists := fake.records[request.PathValue("id")]
-		if !exists || record.provider != "proxmox" {
+		if !exists || record.provider != "proxmox" || !credentialFakeVisible(record, request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Proxmox VE credential not found"})
 			return
 		}
@@ -190,7 +200,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 	})
 	fake.handle("DELETE /api/v1/org/credentials/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		id := request.PathValue("id")
-		if _, exists := fake.records[id]; !exists {
+		if record, exists := fake.records[id]; !exists || !credentialFakeVisible(record, request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Credential not found"})
 			return
 		}

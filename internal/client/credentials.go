@@ -210,8 +210,10 @@ func (client *Client) UpdateProxmoxCredentialTailscale(ctx context.Context, cred
 	return client.doRequest(ctx, http.MethodPut, updatePath, credentialProxmoxTailscaleUpdate{Tailscale: tailscale}, nil)
 }
 
-// DeleteCredential deletes a credential. A credential already gone is not an
-// error; one still used by a cluster is refused with 409.
+// DeleteCredential deletes a credential. A 404 is returned as an error: the
+// credential may be gone, or only outside the provider's project scope, and
+// only the caller can tell which. One still used by a cluster is refused with
+// 409.
 func (client *Client) DeleteCredential(ctx context.Context, credentialID string) error {
-	return client.doRequest(ctx, http.MethodDelete, credentialsPath+"/"+url.PathEscape(credentialID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, credentialsPath+"/"+url.PathEscape(credentialID), nil, nil)
 }
