@@ -32,11 +32,18 @@ var ManagedProviders = []string{
 	ManagedProviderAKS, ManagedProviderEKS, ManagedProviderKapsule, ManagedProviderAnkraCloudK8s,
 }
 
-// ManagedClusterReadyStates are the cluster states in which a managed
-// cluster exists at its provider and its node pools accept writes. The
-// platform parks a new cluster in provider_without_access until the agent
-// connects, and reports online after.
-var ManagedClusterReadyStates = []string{"provider_without_access", "provider_access", "kubernetes_access", "online", "running"}
+// ManagedClusterProviderReadyStates are the cluster states in which a
+// managed cluster exists at its provider and its node pools accept writes.
+// The platform parks a new cluster in provider_without_access until the
+// agent connects, and reports online after.
+var ManagedClusterProviderReadyStates = []string{"provider_without_access", "provider_access", "kubernetes_access", "online", "running"}
+
+// ManagedClusterOnlineStates are the states of a managed cluster whose Ankra
+// agent has connected.
+var ManagedClusterOnlineStates = []string{"online", "running"}
+
+// ManagedClusterFailureStates end a managed cluster wait with an error.
+var ManagedClusterFailureStates = []string{"deprovisioning", "stopped"}
 
 // managedProviderDeleteIsExplicit reports whether a provider's bare DELETE is
 // only a disconnect. For Kapsule and Ankra Cloud Kubernetes the provider
@@ -177,27 +184,61 @@ func (client *Client) CreateManagedCluster(ctx context.Context, request ManagedC
 	return created.ClusterID, nil
 }
 
-// DeleteManagedCluster deletes the provider cluster and its Ankra record.
-// retentionPolicy is "delete" or "retain". A cluster already gone is not an
-// error.
-func (client *Client) DeleteManagedCluster(ctx context.Context, provider, clusterID string, force bool, retentionPolicy string) error {
+// Managed cluster destroy modes.
+const (
+	// ManagedDestroyModeDisconnect removes the cluster from Ankra and leaves
+	// the provider cluster running.
+	ManagedDestroyModeDisconnect = "disconnect"
+	// ManagedDestroyModeDeleteProviderCluster deletes the provider cluster
+	// too.
+	ManagedDestroyModeDeleteProviderCluster = "delete_provider_cluster"
+)
+
+// ManagedClusterDeleteResult is the deprovision answer. The platform answers
+// 200 with success=true and nothing marked when it did not recognise the
+// cluster as one of this provider's (its VerifyCloudCluster check failed), so
+// a caller must not read success alone as "deleted".
+type ManagedClusterDeleteResult struct {
+	Success         bool     `json:"success"`
+	ClusterID       string   `json:"cluster_id"`
+	OperationID     *string  `json:"operation_id"`
+	ResourcesMarked int64    `json:"resources_marked"`
+	Errors          []string `json:"errors"`
+}
+
+// DeleteManagedCluster disconnects or deletes a managed cluster. For
+// disconnect it calls POST .../disconnect; for a provider delete it calls
+// DELETE, except for Kapsule and Ankra Cloud Kubernetes, whose bare DELETE is
+// only a disconnect and whose provider delete is POST
+// .../delete-provider-cluster. force overrides the platform's ownership
+// check: it deletes an imported cluster's provider cluster too.
+// retentionPolicy is "delete" or "retain". A 404 is returned to the caller.
+func (client *Client) DeleteManagedCluster(ctx context.Context, provider, clusterID, mode string, force bool, retentionPolicy string) (*ManagedClusterDeleteResult, error) {
 	query := url.Values{}
 	if force {
 		query.Set("force", strconv.FormatBool(force))
 	}
-	if retentionPolicy != "" {
+	if retentionPolicy != "" && mode == ManagedDestroyModeDeleteProviderCluster {
 		query.Set("retention_policy", retentionPolicy)
 	}
 	path := managedClusterPath(provider, clusterID)
 	method := http.MethodDelete
-	if managedProviderDeleteIsExplicit(provider) {
+	switch {
+	case mode == ManagedDestroyModeDisconnect:
+		path += "/disconnect"
+		method = http.MethodPost
+	case managedProviderDeleteIsExplicit(provider):
 		path += "/delete-provider-cluster"
 		method = http.MethodPost
 	}
 	if encoded := query.Encode(); encoded != "" {
 		path += "?" + encoded
 	}
-	return client.doRequest(ctx, method, path, nil, nil, http.StatusNotFound)
+	var result ManagedClusterDeleteResult
+	if err := client.doRequest(ctx, method, path, nil, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
 }
 
 // ListManagedNodePools returns the node pools of a managed cluster. A cluster
@@ -239,9 +280,8 @@ func (client *Client) UpdateManagedNodePool(ctx context.Context, provider, clust
 	return client.doRequest(ctx, http.MethodPatch, path, request, nil)
 }
 
-// DeleteManagedNodePool removes a pool. A pool or cluster already gone is not
-// an error.
+// DeleteManagedNodePool removes a pool. A 404 is returned to the caller.
 func (client *Client) DeleteManagedNodePool(ctx context.Context, provider, clusterID, poolName string) error {
 	path := managedClusterPath(provider, clusterID) + "/node-pools/" + url.PathEscape(poolName)
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }

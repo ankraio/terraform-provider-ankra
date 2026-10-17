@@ -4,11 +4,14 @@ page_title: "ankra_managed_cluster Resource - ankra"
 subcategory: ""
 description: |-
   A managed Kubernetes cluster that the provider (DigitalOcean DOKS, UpCloud UKS, GKE, AKS, EKS, OVHcloud MKS, Scaleway Kapsule or Ankra Cloud Kubernetes) builds and Ankra connects. The counterpart of ankra cluster managed create and ankra cluster managed delete.
+  Import by <provider_name>/<cluster_id>. The platform does not return the creation arguments, so the first apply after an import adopts the configured values without replacing the cluster; node pools are read back, and pools the configuration does not list are released from management, never deleted, by that first apply.
 ---
 
 # ankra_managed_cluster (Resource)
 
 A managed Kubernetes cluster that the provider (DigitalOcean DOKS, UpCloud UKS, GKE, AKS, EKS, OVHcloud MKS, Scaleway Kapsule or Ankra Cloud Kubernetes) builds and Ankra connects. The counterpart of `ankra cluster managed create` and `ankra cluster managed delete`.
+
+Import by `<provider_name>/<cluster_id>`. The platform does not return the creation arguments, so the first apply after an import adopts the configured values without replacing the cluster; node pools are read back, and pools the configuration does not list are released from management, never deleted, by that first apply.
 
 ## Example Usage
 
@@ -25,18 +28,27 @@ resource "ankra_managed_cluster" "example" {
     private_cluster = false
   })
 
-  # node_count and autoscaling change in place; any other pool change
-  # replaces the cluster. Further pools are ankra_managed_node_pool resources.
-  node_pools = [{
-    name       = "system"
-    size       = "Standard_D4s_v5"
-    node_count = 3
-    autoscaling = {
-      enabled   = true
-      min_count = 3
-      max_count = 6
+  # Pools are keyed by name. node_count and autoscaling change in place;
+  # adding or removing a key adds or deletes a pool. To change a pool's size,
+  # give it a new key: the new pool is added before the old one is deleted.
+  node_pools = {
+    system = {
+      size       = "Standard_D4s_v5"
+      node_count = 3
+      autoscaling = {
+        enabled   = true
+        min_count = 3
+        max_count = 6
+      }
     }
-  }]
+  }
+
+  # A cluster this resource creates is deleted at the provider on destroy;
+  # an imported one is only disconnected unless this says otherwise.
+  destroy_mode = "delete_provider_cluster"
+
+  # Also wait for the Ankra agent, not just for the provider's build.
+  wait_for_agent = true
 }
 ```
 
@@ -47,7 +59,7 @@ resource "ankra_managed_cluster" "example" {
 
 - `location` (String) Region or location of the cluster, in the provider's vocabulary.
 - `name` (String) Name of the cluster.
-- `node_pools` (Attributes List) The cluster's initial node pools; at least one. `node_count` and `autoscaling` change in place. Adding, removing or reordering pools, or changing any other pool argument, replaces the cluster: manage further pools with `ankra_managed_node_pool` instead. (see [below for nested schema](#nestedatt--node_pools))
+- `node_pools` (Attributes Map) The cluster's node pools, keyed by pool name; at least one. Adding a key adds a pool and removing one deletes it, in place. `node_count` and `autoscaling` change in place. Any other change to an existing pool is refused at plan time, because the provider cannot apply it: rename the key instead, which adds the new pool before removing the old one. Pools managed by `ankra_managed_node_pool` must not be listed here. (see [below for nested schema](#nestedatt--node_pools))
 - `provider_name` (String) Managed Kubernetes provider. One of `doks`, `uks`, `gke`, `ovh_mks`, `aks`, `eks`, `kapsule`, `ankracloud_k8s`. Changing it forces replacement.
 
 ### Optional
@@ -56,15 +68,17 @@ resource "ankra_managed_cluster" "example" {
 - `cni` (String) Container network interface, where the provider offers a choice.
 - `credential_id` (String) Cloud credential id used to create the cluster. Required for every provider except `ankracloud_k8s`, which uses the organisation's built-in Ankra Cloud credential when unset.
 - `description` (String) Description of the cluster.
-- `force_destroy` (Boolean) Send `force=true` when deleting, skipping the platform's teardown guards. Defaults to `false`. Only affects a future destroy.
+- `destroy_mode` (String) What a destroy does. `delete_provider_cluster` deletes the cluster at the provider. `disconnect` removes it from Ankra and leaves it running. A cluster this resource creates defaults to `delete_provider_cluster`, the usual meaning of destroy. An imported cluster defaults to `disconnect`, because Terraform did not build it and it may be a customer's existing cluster. Even with `delete_provider_cluster`, the platform refuses to delete a cluster it did not create unless `force_destroy` is set. Only affects a future destroy.
+- `force_destroy` (Boolean) Send `force=true` when destroying. **This overrides the platform's ownership check**: with `destroy_mode = "delete_provider_cluster"` it deletes the provider cluster even when Ankra did not create it (an imported, customer-owned cluster). Defaults to `false`. Only affects a future destroy.
 - `gitops_branch` (String) GitOps branch to commit the generated stack to.
 - `gitops_credential_name` (String) GitOps credential name; commits the generated stack to Git when set with `gitops_repository`.
 - `gitops_repository` (String) GitOps repository (`owner/name`) to commit the generated stack to.
 - `ha` (Boolean) Ask for a highly available control plane, where the provider offers one.
 - `kubernetes_version` (String) Kubernetes version. Unset takes the provider's default. Upgrading is `ankra cluster managed upgrade`, which this resource does not do.
-- `provider_options` (String) The provider's own options as a JSON object, for example `jsonencode({ resource_group = "rg", private_cluster = false })` for `aks` or `jsonencode({ private_network_id = "..." })` for `kapsule`. Sent under the key named after `provider_name` (`aks`, `eks`, `gke`, `ovh_mks`, `kapsule`, `ankracloud_k8s`, `uks`). Changing it forces replacement.
-- `retention_policy` (String) What a destroy does with the cluster's retained provider resources: `delete` (default, the platform's default) or `retain`. Only affects a future destroy, so it never replaces the cluster.
+- `provider_options` (String) The provider's own options as a JSON object, for example `jsonencode({ resource_group = "rg", private_cluster = false })` for `aks` or `jsonencode({ private_network_id = "..." })` for `kapsule`. Sent under the key named after `provider_name` (`aks`, `eks`, `gke`, `ovh_mks`, `kapsule`, `ankracloud_k8s`, `uks`). Compared as JSON, so formatting does not matter. Changing it forces replacement.
+- `retention_policy` (String) What a provider delete does with the cluster's retained provider resources: `delete` (default, the platform's default) or `retain`. Only affects a future destroy, so it never replaces the cluster.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+- `wait_for_agent` (Boolean) With `wait_for_ready`, also wait for the Ankra agent to connect (state `online`), which anything deploying through Ankra needs. Defaults to `false`: the wait ends once the provider has built the cluster (`provider_without_access`).
 - `wait_for_ready` (Boolean) Wait until the provider has built the cluster (the platform reports it past `creating`) before the resource is considered created. Defaults to `true`.
 
 ### Read-Only
@@ -79,7 +93,6 @@ resource "ankra_managed_cluster" "example" {
 
 Required:
 
-- `name` (String) Pool name, unique within the cluster.
 - `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan).
 
 Optional:
@@ -87,11 +100,11 @@ Optional:
 - `autoscaling` (Attributes) Autoscaling bounds of the pool. Changed in place; removing the block disables autoscaling. (see [below for nested schema](#nestedatt--node_pools--autoscaling))
 - `labels` (Map of String) Kubernetes labels of the pool's nodes.
 - `node_count` (Number) Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While `autoscaling` is enabled the provider's autoscaler owns the live count, so drift in it is not reported.
-- `root_volume_size_gb` (Number) Root volume size of the pool's nodes, in GB.
-- `root_volume_type` (String) Root volume type of the pool's nodes, where the provider offers a choice.
+- `root_volume_size_gb` (Number) Root volume size of the pool's nodes, in GB. When unset the provider's default is recorded.
+- `root_volume_type` (String) Root volume type of the pool's nodes, where the provider offers a choice. When unset the provider's default is recorded.
 - `spot` (Attributes) Run the pool on spot or preemptible capacity, where the provider offers it. (see [below for nested schema](#nestedatt--node_pools--spot))
 - `taints` (Attributes List) Kubernetes taints of the pool's nodes. (see [below for nested schema](#nestedatt--node_pools--taints))
-- `zone` (String) Zone the pool's nodes run in, where the provider places pools per zone.
+- `zone` (String) Zone the pool's nodes run in, where the provider places pools per zone. When unset the provider's choice is recorded.
 
 <a id="nestedatt--node_pools--autoscaling"></a>
 ### Nested Schema for `node_pools.autoscaling`

@@ -30,6 +30,7 @@ output "playground_phase" {
 
 ### Optional
 
+- `allow_trial_downgrade` (Boolean) Allow a change from a paid plan to `trial`. The platform cannot resize to the trial, so the change destroys the paid playground and everything on it and orders a new trial. Without this, such a change is refused at plan time. Defaults to `false`.
 - `plan` (String) Plan id of the size to order. Defaults to `trial`, the free plan, which the platform allows one of per organisation. Paid plans need a billing plan and a payment card.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `wait_for_ready` (Boolean) Wait for the playground to reach `ready` after a create or resize. Defaults to `true`.
@@ -49,6 +50,7 @@ output "playground_phase" {
 Optional:
 
 - `create` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
+- `delete` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours). Setting a timeout for a Delete operation is only applicable if changes are saved into state before the destroy operation occurs.
 - `update` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
 
 ## Import

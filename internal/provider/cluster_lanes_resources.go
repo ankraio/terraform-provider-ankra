@@ -9,8 +9,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -34,7 +32,7 @@ func requiredReplaceInt64(description string) schema.Int64Attribute {
 	return schema.Int64Attribute{
 		MarkdownDescription: description,
 		Required:            true,
-		PlanModifiers:       []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+		PlanModifiers:       []planmodifier.Int64{clusterReplaceInt64()},
 		Validators:          []validator.Int64{laneAtLeastOne()},
 	}
 }
@@ -43,7 +41,7 @@ func optionalReplaceInt64(description string) schema.Int64Attribute {
 	return schema.Int64Attribute{
 		MarkdownDescription: description,
 		Optional:            true,
-		PlanModifiers:       []planmodifier.Int64{int64planmodifier.RequiresReplace()},
+		PlanModifiers:       []planmodifier.Int64{clusterReplaceInt64()},
 		Validators:          []validator.Int64{laneAtLeastOne()},
 	}
 }
@@ -53,7 +51,7 @@ func requiredReplaceStringList(description string) schema.ListAttribute {
 		MarkdownDescription: description,
 		Required:            true,
 		ElementType:         types.StringType,
-		PlanModifiers:       []planmodifier.List{listplanmodifier.RequiresReplace()},
+		PlanModifiers:       []planmodifier.List{clusterReplaceList()},
 	}
 }
 
@@ -64,14 +62,6 @@ func laneGitopsAttributes(attributes map[string]schema.Attribute) {
 	attributes["gitops_credential_name"] = optionalReplaceString(
 		"GitOps credential name; commits the generated stack to Git when set with `gitops_repository`.")
 	attributes["gitops_repository"] = optionalReplaceString("GitOps repository (`owner/name`) to commit the generated stack to.")
-}
-
-// laneRetentionAttribute is the retention policy of the lanes that keep or
-// delete cloud resources on deprovision.
-func laneRetentionAttribute() schema.Attribute {
-	return withStringValidators(defaultedReplaceString(
-		"What deprovisioning does with retained cloud resources such as volumes: `retain` (default) or `delete`.", "retain"),
-		laneOneOf(laneRetentionPolicy...))
 }
 
 // ---------------------------------------------------------------------------

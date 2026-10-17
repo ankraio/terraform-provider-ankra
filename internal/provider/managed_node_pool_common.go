@@ -8,7 +8,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
@@ -28,9 +27,9 @@ type managedNodePoolSpotModel struct {
 }
 
 // managedNodePoolFields are the pool attributes shared by the node_pools of
-// ankra_managed_cluster and the ankra_managed_node_pool resource.
+// ankra_managed_cluster (keyed by pool name) and the ankra_managed_node_pool
+// resource.
 type managedNodePoolFields struct {
-	Name             types.String               `tfsdk:"name"`
 	Size             types.String               `tfsdk:"size"`
 	Count            types.Int64                `tfsdk:"node_count"`
 	Labels           types.Map                  `tfsdk:"labels"`
@@ -56,7 +55,7 @@ func managedNodePoolSpotAttribute(planModifiers ...planmodifier.Object) schema.S
 }
 
 // managedNodePoolCreateFromFields builds the add body of a pool.
-func managedNodePoolCreateFromFields(ctx context.Context, fields managedNodePoolFields, diagnostics *diag.Diagnostics) client.ManagedNodePoolCreate {
+func managedNodePoolCreateFromFields(ctx context.Context, name string, fields managedNodePoolFields, diagnostics *diag.Diagnostics) client.ManagedNodePoolCreate {
 	count := int64(1)
 	if !fields.Count.IsNull() && !fields.Count.IsUnknown() {
 		count = fields.Count.ValueInt64()
@@ -70,7 +69,7 @@ func managedNodePoolCreateFromFields(ctx context.Context, fields managedNodePool
 		taints = nil
 	}
 	request := client.ManagedNodePoolCreate{
-		Name:             fields.Name.ValueString(),
+		Name:             name,
 		Size:             fields.Size.ValueString(),
 		Count:            count,
 		Labels:           labels,
@@ -121,9 +120,11 @@ func managedNodePoolSizingUpdate(planned, prior managedNodePoolFields) (client.M
 
 // refreshManagedNodePoolFields copies what the listing reports onto a pool's
 // state. While autoscaling is enabled the provider owns the live count, so
-// the configured count is kept rather than reported as drift.
+// the configured count is kept rather than reported as drift. The placement
+// fields (zone, root volume) are computed: the provider fills them in when
+// the configuration leaves them unset (AKS reports its OS disk, Ankra Cloud
+// its zone), so they are recorded rather than diffed against null.
 func refreshManagedNodePoolFields(fields *managedNodePoolFields, pool client.ManagedNodePool) {
-	fields.Name = types.StringValue(pool.Name)
 	fields.Size = types.StringValue(pool.Size)
 	isAutoscaled := pool.Autoscaling != nil && pool.Autoscaling.Enabled
 	if !isAutoscaled || fields.Count.IsNull() || fields.Count.IsUnknown() {
@@ -153,19 +154,36 @@ func refreshManagedNodePoolFields(fields *managedNodePoolFields, pool client.Man
 		}
 		fields.Autoscaling = autoscaling
 	}
+	fields.Zone = types.StringNull()
 	if pool.Zone != nil && *pool.Zone != "" {
 		fields.Zone = types.StringValue(*pool.Zone)
-	} else if !fields.Zone.IsNull() {
-		fields.Zone = types.StringNull()
 	}
+	fields.RootVolumeType = types.StringNull()
 	if pool.RootVolumeType != nil && *pool.RootVolumeType != "" {
 		fields.RootVolumeType = types.StringValue(*pool.RootVolumeType)
-	} else if !fields.RootVolumeType.IsNull() {
+	}
+	fields.RootVolumeSizeGB = types.Int64PointerValue(pool.RootVolumeSizeGB)
+	if pool.Spot != nil && (fields.Spot != nil || pool.Spot.Enabled) {
+		fields.Spot = &managedNodePoolSpotModel{
+			Enabled:  types.BoolValue(pool.Spot.Enabled),
+			MaxPrice: types.Float64PointerValue(pool.Spot.MaxPrice),
+		}
+	}
+}
+
+// settleUnknownPoolFields gives a pool that was just added, and that the
+// listing does not show yet, known values for its computed fields.
+func settleUnknownPoolFields(fields *managedNodePoolFields, count int64) {
+	if fields.Count.IsUnknown() {
+		fields.Count = types.Int64Value(count)
+	}
+	if fields.Zone.IsUnknown() {
+		fields.Zone = types.StringNull()
+	}
+	if fields.RootVolumeType.IsUnknown() {
 		fields.RootVolumeType = types.StringNull()
 	}
-	if pool.RootVolumeSizeGB != nil {
-		fields.RootVolumeSizeGB = types.Int64Value(*pool.RootVolumeSizeGB)
-	} else if !fields.RootVolumeSizeGB.IsNull() {
+	if fields.RootVolumeSizeGB.IsUnknown() {
 		fields.RootVolumeSizeGB = types.Int64Null()
 	}
 }
@@ -180,10 +198,11 @@ func managedPoolTaints(taints []map[string]string) []client.NodeGroupTaint {
 	return result
 }
 
-// managedNodePoolAttributes are the pool attributes. A standalone pool
-// (ankra_managed_node_pool) carries RequiresReplace on everything the
-// platform cannot change in place; inside ankra_managed_cluster the
-// node_pools list's own plan modifier makes that decision.
+// managedNodePoolAttributes are the pool attributes, without the name. A
+// standalone pool (ankra_managed_node_pool) replaces itself when an argument
+// the platform cannot change in place changes; inside ankra_managed_cluster
+// the node_pools map refuses such a change at plan time instead, because
+// replacing the cluster for it would destroy every workload.
 func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 	var replaceString []planmodifier.String
 	var replaceInt64 []planmodifier.Int64
@@ -197,31 +216,28 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 		replaceList = []planmodifier.List{listplanmodifier.RequiresReplace()}
 		replaceObject = []planmodifier.Object{objectplanmodifier.RequiresReplace()}
 	}
-	count := schema.Int64Attribute{
-		MarkdownDescription: "Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While `autoscaling` is " +
-			"enabled the provider's autoscaler owns the live count, so drift in it is not reported.",
-		Optional:   true,
-		Computed:   true,
-		Validators: []validator.Int64{laneAtLeastOne()},
-	}
-	if isStandalone {
-		count.PlanModifiers = []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}
-	} else {
-		count.Default = int64default.StaticInt64(1)
+	computedString := func(description string) schema.StringAttribute {
+		return schema.StringAttribute{
+			MarkdownDescription: description,
+			Optional:            true,
+			Computed:            true,
+			PlanModifiers:       append([]planmodifier.String{stringplanmodifier.UseStateForUnknown()}, replaceString...),
+		}
 	}
 	return map[string]schema.Attribute{
-		"name": schema.StringAttribute{
-			MarkdownDescription: "Pool name, unique within the cluster.",
-			Required:            true,
-			PlanModifiers:       replaceString,
-			Validators:          []validator.String{laneNameValidator{}},
-		},
 		"size": schema.StringAttribute{
 			MarkdownDescription: "Node size in the provider's vocabulary (droplet size, machine type, VM size, plan).",
 			Required:            true,
 			PlanModifiers:       replaceString,
 		},
-		"node_count": count,
+		"node_count": schema.Int64Attribute{
+			MarkdownDescription: "Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While " +
+				"`autoscaling` is enabled the provider's autoscaler owns the live count, so drift in it is not reported.",
+			Optional:      true,
+			Computed:      true,
+			PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+			Validators:    []validator.Int64{laneAtLeastOne()},
+		},
 		"labels": schema.MapAttribute{
 			MarkdownDescription: "Kubernetes labels of the pool's nodes.",
 			Optional:            true,
@@ -230,22 +246,51 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 		},
 		"taints":      nodeGroupTaintsAttribute("Kubernetes taints of the pool's nodes.", replaceList...),
 		"autoscaling": nodeGroupAutoscalingAttribute("Autoscaling bounds of the pool. Changed in place; removing the block disables autoscaling."),
-		"zone": schema.StringAttribute{
-			MarkdownDescription: "Zone the pool's nodes run in, where the provider places pools per zone.",
-			Optional:            true,
-			PlanModifiers:       replaceString,
-		},
-		"root_volume_type": schema.StringAttribute{
-			MarkdownDescription: "Root volume type of the pool's nodes, where the provider offers a choice.",
-			Optional:            true,
-			PlanModifiers:       replaceString,
-		},
+		"zone": computedString("Zone the pool's nodes run in, where the provider places pools per zone. " +
+			"When unset the provider's choice is recorded."),
+		"root_volume_type": computedString("Root volume type of the pool's nodes, where the provider offers a choice. " +
+			"When unset the provider's default is recorded."),
 		"root_volume_size_gb": schema.Int64Attribute{
-			MarkdownDescription: "Root volume size of the pool's nodes, in GB.",
+			MarkdownDescription: "Root volume size of the pool's nodes, in GB. When unset the provider's default is recorded.",
 			Optional:            true,
-			PlanModifiers:       replaceInt64,
+			Computed:            true,
+			PlanModifiers:       append([]planmodifier.Int64{int64planmodifier.UseStateForUnknown()}, replaceInt64...),
 			Validators:          []validator.Int64{laneAtLeastOne()},
 		},
 		"spot": managedNodePoolSpotAttribute(replaceObject...),
 	}
+}
+
+// managedPoolShapeChanges lists the pool arguments that differ between plan
+// and state other than node_count and autoscaling. Unknown or null planned
+// placement fields are not changes: they take the provider's value.
+func managedPoolShapeChanges(planned, prior managedNodePoolFields) []string {
+	var changes []string
+	if !planned.Size.IsUnknown() && !planned.Size.Equal(prior.Size) {
+		changes = append(changes, "size")
+	}
+	if !planned.Labels.IsUnknown() && len(planned.Labels.Elements())+len(prior.Labels.Elements()) > 0 &&
+		!planned.Labels.Equal(prior.Labels) {
+		changes = append(changes, "labels")
+	}
+	if !nodeGroupTaintsEqual(planned.Taints, prior.Taints) {
+		changes = append(changes, "taints")
+	}
+	if !planned.Zone.IsUnknown() && !planned.Zone.IsNull() && !planned.Zone.Equal(prior.Zone) {
+		changes = append(changes, "zone")
+	}
+	if !planned.RootVolumeType.IsUnknown() && !planned.RootVolumeType.IsNull() && !planned.RootVolumeType.Equal(prior.RootVolumeType) {
+		changes = append(changes, "root_volume_type")
+	}
+	if !planned.RootVolumeSizeGB.IsUnknown() && !planned.RootVolumeSizeGB.IsNull() && !planned.RootVolumeSizeGB.Equal(prior.RootVolumeSizeGB) {
+		changes = append(changes, "root_volume_size_gb")
+	}
+	spotEqual := (planned.Spot == nil) == (prior.Spot == nil)
+	if spotEqual && planned.Spot != nil {
+		spotEqual = planned.Spot.Enabled.Equal(prior.Spot.Enabled) && planned.Spot.MaxPrice.Equal(prior.Spot.MaxPrice)
+	}
+	if !spotEqual {
+		changes = append(changes, "spot")
+	}
+	return changes
 }

@@ -4,11 +4,14 @@ page_title: "ankra_morpheus_cluster Resource - ankra"
 subcategory: ""
 description: |-
   Provisions a Kubernetes cluster on HPE Morpheus through the Ankra platform. The counterpart of ankra cluster morpheus create. Morpheus sizes nodes by numeric plan id; ankra cluster morpheus plans, groups, clouds, layouts and networks list the ids. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with ankra_node_group.
+  Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 ---
 
 # ankra_morpheus_cluster (Resource)
 
 Provisions a Kubernetes cluster on HPE Morpheus through the Ankra platform. The counterpart of `ankra cluster morpheus create`. Morpheus sizes nodes by numeric plan id; `ankra cluster morpheus plans`, `groups`, `clouds`, `layouts` and `networks` list the ids. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with `ankra_node_group`.
+
+Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 
 ## Example Usage
 
@@ -55,7 +58,7 @@ resource "ankra_morpheus_cluster" "example" {
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_plan_id` (Number) Morpheus plan id of dedicated etcd instances.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
-- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's HPE Morpheus resources without its usual guards. Defaults to `true` for backwards compatibility; set it to `false` to take the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
+- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's HPE Morpheus resources without its usual guards. Defaults to `false`, the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
 - `include_dns` (Boolean) Delegate a DNS subzone to the cluster and wire external-dns into the networking stack.
 - `include_networking` (Boolean) Install the Ankra networking stack (Traefik and cert-manager) for ingress.
 - `kubernetes_version` (String) Kubernetes version. Defaults to the platform's stable version when unset; `data.ankra_kubernetes_versions` lists the supported ones.

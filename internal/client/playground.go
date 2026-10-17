@@ -137,10 +137,40 @@ func (client *Client) ResizePlayground(ctx context.Context, clusterID, planID st
 	return client.doRequest(ctx, http.MethodPost, playgroundClusterPath(clusterID, "resize"), playgroundPlanBody{Plan: planID}, nil)
 }
 
-// DestroyPlayground tears a playground down. One already gone is not an
-// error.
+// WaitForPlaygroundRemoved polls the status after a destroy until the
+// playground answers 404 or reports phase "removed". The destroy itself only
+// moves it to "deprovisioning", and a new trial cannot be ordered while the
+// old one is still tearing down.
+func (client *Client) WaitForPlaygroundRemoved(ctx context.Context, clusterID string, pollInterval time.Duration) error {
+	if pollInterval <= 0 {
+		pollInterval = defaultPollInterval
+	}
+	lastPhase := ""
+	for {
+		status, err := client.GetPlaygroundStatus(ctx, clusterID)
+		switch {
+		case IsNotFound(err):
+			return nil
+		case err != nil && ctx.Err() == nil:
+			return err
+		case err == nil:
+			lastPhase = status.Phase
+			if status.Phase == "removed" {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("timed out waiting for playground %s to be removed (last phase %q): %w", clusterID, lastPhase, ctx.Err())
+		case <-time.After(pollInterval):
+		}
+	}
+}
+
+// DestroyPlayground tears a playground down. A 404 is returned to the
+// caller.
 func (client *Client) DestroyPlayground(ctx context.Context, clusterID string) error {
-	return client.doRequest(ctx, http.MethodDelete, playgroundClusterPath(clusterID, ""), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, playgroundClusterPath(clusterID, ""), nil, nil)
 }
 
 // WaitForPlaygroundReady polls the status until the playground is ready, has

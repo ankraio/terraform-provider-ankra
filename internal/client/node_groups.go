@@ -40,6 +40,11 @@ type NodeGroup struct {
 	Taints             []NodeGroupTaint `json:"taints"`
 	AvailabilityZones  []string         `json:"availability_zones,omitempty"`
 	Zones              []string         `json:"zones,omitempty"`
+	// JoinedCount is how many of the counted workers are Kubernetes nodes;
+	// nil when the platform cannot tell.
+	JoinedCount *int64 `json:"joined_count,omitempty"`
+	// UnregisteredWorkers names counted workers with no node behind them.
+	UnregisteredWorkers []string `json:"unregistered_workers,omitempty"`
 }
 
 // NodeGroupAutoscaling is the Cluster Autoscaler setting of a group, the body
@@ -162,14 +167,14 @@ func (client *Client) UpdateNodeGroupAutoscaling(ctx context.Context, lane, clus
 	return client.doRequest(ctx, http.MethodPut, nodeGroupPath(lane, clusterID, groupName, "autoscaling"), autoscaling, nil)
 }
 
-// DeleteNodeGroup submits the removal of a group and its nodes. A group or
-// cluster already gone is not an error.
+// DeleteNodeGroup submits the removal of a group and its nodes. A 404 is
+// returned to the caller.
 func (client *Client) DeleteNodeGroup(ctx context.Context, lane, clusterID, groupName string, forceDrain bool) error {
 	path := nodeGroupPath(lane, clusterID, groupName, "")
 	if forceDrain {
 		path += "&force_drain=true"
 	}
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
 
 // NodeGroupCondition decides whether a polled group has reached the state a

@@ -256,17 +256,45 @@ func (groupResource *nodeGroupResource) Create(ctx context.Context, request reso
 	isAutoscaled := plan.Autoscaling != nil && plan.Autoscaling.Enabled.ValueBool()
 	group, err := apiClient.WaitForNodeGroup(waitContext, lane, clusterID, plan.Name.ValueString(), nodeGroupPollInterval,
 		func(group *client.NodeGroup) bool {
-			return group != nil && group.InstanceType == createRequest.InstanceType && (isAutoscaled || group.Count == wantCount)
+			return group != nil && group.InstanceType == createRequest.InstanceType &&
+				(isAutoscaled || group.Count == wantCount) && nodeGroupNodesJoined(group)
 		})
 	if err != nil {
 		// The group was accepted; keep it in state so it is not orphaned.
 		plan.Count = types.Int64Value(wantCount)
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		response.Diagnostics.AddError("Node group did not become ready", err.Error())
 		return
 	}
 	plan.Count = types.Int64Value(group.Count)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+}
+
+// nodeGroupNodesJoined reports whether every counted worker of a group is a
+// Kubernetes node. The listing records a write's target (count, instance
+// type) as soon as the platform accepts it, so the target alone says nothing
+// about the nodes; joined_count and unregistered_workers are the listing's
+// only view of them. When the platform cannot tell (it omits joined_count,
+// for example on AWS or a stopped cluster), the wait ends at the accepted
+// target.
+func nodeGroupNodesJoined(group *client.NodeGroup) bool {
+	if len(group.UnregisteredWorkers) > 0 {
+		return false
+	}
+	return group.JoinedCount == nil || *group.JoinedCount == group.Count
+}
+
+// nodeGroupReadNotFound handles a 404 from the node-group routes. The
+// cluster routes answer "Cluster not found" when the cluster is outside the
+// provider's scope, which never means the group is gone.
+func nodeGroupReadNotFound(ctx context.Context, err error, apiClient *client.Client, clusterID string, response *resource.ReadResponse) bool {
+	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+		return true
+	}
+	return removeWhenNotFound(ctx, err, apiClient, response)
 }
 
 func (groupResource *nodeGroupResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -289,14 +317,14 @@ func (groupResource *nodeGroupResource) Read(ctx context.Context, request resour
 			return
 		}
 		if cluster == nil {
-			response.State.RemoveResource(ctx)
+			removeMissingCluster(ctx, apiClient, response)
 			return
 		}
 		lane = cluster.Kind
 	}
 
 	group, err := apiClient.GetNodeGroup(ctx, lane, clusterID, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, apiClient, response) {
+	if nodeGroupReadNotFound(ctx, err, apiClient, clusterID, response) {
 		return
 	}
 	if err != nil {
@@ -324,6 +352,7 @@ func (groupResource *nodeGroupResource) Read(ctx context.Context, request resour
 		state.ForceDrain = types.BoolValue(false)
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update applies each in-place change in turn and waits for the listing to
@@ -368,7 +397,9 @@ func (groupResource *nodeGroupResource) Update(ctx context.Context, request reso
 		instanceType := plan.InstanceType.ValueString()
 		if !apply("instance type", func() error {
 			return apiClient.UpdateNodeGroupInstanceType(waitContext, lane, clusterID, name, instanceType, forceDrain)
-		}, func(group *client.NodeGroup) bool { return group != nil && group.InstanceType == instanceType }) {
+		}, func(group *client.NodeGroup) bool {
+			return group != nil && group.InstanceType == instanceType && nodeGroupNodesJoined(group)
+		}) {
 			return
 		}
 	}
@@ -389,7 +420,9 @@ func (groupResource *nodeGroupResource) Update(ctx context.Context, request reso
 		count := plan.Count.ValueInt64()
 		if !apply("count", func() error {
 			return apiClient.ScaleNodeGroup(waitContext, lane, clusterID, name, count, forceDrain)
-		}, func(group *client.NodeGroup) bool { return group != nil && (isAutoscaled || group.Count == count) }) {
+		}, func(group *client.NodeGroup) bool {
+			return group != nil && (isAutoscaled || group.Count == count) && nodeGroupNodesJoined(group)
+		}) {
 			return
 		}
 	}
@@ -450,15 +483,40 @@ func (groupResource *nodeGroupResource) Delete(ctx context.Context, request reso
 	lane := state.ClusterKind.ValueString()
 	clusterID := state.ClusterID.ValueString()
 	name := state.Name.ValueString()
-	if err := apiClient.DeleteNodeGroup(waitContext, lane, clusterID, name, state.ForceDrain.ValueBool()); err != nil {
-		response.Diagnostics.AddError("Unable to delete node group", err.Error())
+	if !requireUnmovedScope(ctx, apiClient, request.Private, &response.Diagnostics) {
 		return
 	}
-	_, err := apiClient.WaitForNodeGroup(waitContext, lane, clusterID, name, nodeGroupPollInterval,
-		func(group *client.NodeGroup) bool { return group == nil })
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Node group was not removed", err.Error())
+	if err := apiClient.DeleteNodeGroup(waitContext, lane, clusterID, name, state.ForceDrain.ValueBool()); err != nil {
+		if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+			response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+			return
+		}
+		if !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) && !response.Diagnostics.HasError() {
+			response.Diagnostics.AddError("Unable to delete node group", err.Error())
+		}
+		return
 	}
+	var lastSeen *client.NodeGroup
+	_, err := apiClient.WaitForNodeGroup(waitContext, lane, clusterID, name, nodeGroupPollInterval,
+		func(group *client.NodeGroup) bool {
+			lastSeen = group
+			return group == nil
+		})
+	if err == nil {
+		return
+	}
+	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+		return
+	}
+	detail := err.Error()
+	if lastSeen != nil {
+		detail = fmt.Sprintf("The platform accepted the delete, but group %q still lists %d node(s). A node whose pods' "+
+			"PodDisruptionBudgets refuse the drain keeps the group alive: the refusal is on the cluster's operations "+
+			"(`ankra cluster operations list`). Set force_drain = true to drain without honouring them. (%s)",
+			name, lastSeen.Count, err.Error())
+	}
+	response.Diagnostics.AddError("Node group was not removed", detail)
 }
 
 // ImportState imports by `<cluster_id>/<name>`.

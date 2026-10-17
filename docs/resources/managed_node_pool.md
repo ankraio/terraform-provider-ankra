@@ -35,8 +35,8 @@ resource "ankra_managed_node_pool" "batch" {
 
 ### Required
 
-- `cluster_id` (String) Managed cluster the pool belongs to.
-- `name` (String) Pool name, unique within the cluster.
+- `cluster_id` (String) Managed cluster the pool belongs to. Changing it forces replacement.
+- `name` (String) Pool name, unique within the cluster. Changing it forces replacement.
 - `provider_name` (String) Managed Kubernetes provider of the cluster. One of `doks`, `uks`, `gke`, `ovh_mks`, `aks`, `eks`, `kapsule`, `ankracloud_k8s`. Changing it forces replacement.
 - `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan).
 
@@ -45,11 +45,11 @@ resource "ankra_managed_node_pool" "batch" {
 - `autoscaling` (Attributes) Autoscaling bounds of the pool. Changed in place; removing the block disables autoscaling. (see [below for nested schema](#nestedatt--autoscaling))
 - `labels` (Map of String) Kubernetes labels of the pool's nodes.
 - `node_count` (Number) Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While `autoscaling` is enabled the provider's autoscaler owns the live count, so drift in it is not reported.
-- `root_volume_size_gb` (Number) Root volume size of the pool's nodes, in GB.
-- `root_volume_type` (String) Root volume type of the pool's nodes, where the provider offers a choice.
+- `root_volume_size_gb` (Number) Root volume size of the pool's nodes, in GB. When unset the provider's default is recorded.
+- `root_volume_type` (String) Root volume type of the pool's nodes, where the provider offers a choice. When unset the provider's default is recorded.
 - `spot` (Attributes) Run the pool on spot or preemptible capacity, where the provider offers it. (see [below for nested schema](#nestedatt--spot))
 - `taints` (Attributes List) Kubernetes taints of the pool's nodes. (see [below for nested schema](#nestedatt--taints))
-- `zone` (String) Zone the pool's nodes run in, where the provider places pools per zone.
+- `zone` (String) Zone the pool's nodes run in, where the provider places pools per zone. When unset the provider's choice is recorded.
 
 ### Read-Only
 

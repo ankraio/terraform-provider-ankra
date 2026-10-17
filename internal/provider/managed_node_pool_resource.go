@@ -33,6 +33,7 @@ type managedNodePoolModel struct {
 	ID        types.String `tfsdk:"id"`
 	Provider  types.String `tfsdk:"provider_name"`
 	ClusterID types.String `tfsdk:"cluster_id"`
+	Name      types.String `tfsdk:"name"`
 	managedNodePoolFields
 }
 
@@ -65,7 +66,17 @@ func (poolResource *managedNodePoolResource) Schema(_ context.Context, _ resourc
 		PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 	}
 	attributes["provider_name"] = managedProviderAttribute("Managed Kubernetes provider of the cluster.")
-	attributes["cluster_id"] = requiredReplaceString("Managed cluster the pool belongs to.")
+	attributes["cluster_id"] = schema.StringAttribute{
+		MarkdownDescription: "Managed cluster the pool belongs to. Changing it forces replacement.",
+		Required:            true,
+		PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+	}
+	attributes["name"] = schema.StringAttribute{
+		MarkdownDescription: "Pool name, unique within the cluster. Changing it forces replacement.",
+		Required:            true,
+		PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+		Validators:          []validator.String{laneNameValidator{}},
+	}
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, " +
 			"Kapsule or Ankra Cloud Kubernetes). The counterpart of `ankra cluster managed node-pool add|update|delete`. " +
@@ -85,7 +96,8 @@ func (poolResource *managedNodePoolResource) Create(ctx context.Context, request
 	if response.Diagnostics.HasError() {
 		return
 	}
-	createRequest := managedNodePoolCreateFromFields(ctx, plan.managedNodePoolFields, &response.Diagnostics)
+	name := plan.Name.ValueString()
+	createRequest := managedNodePoolCreateFromFields(ctx, name, plan.managedNodePoolFields, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -95,11 +107,13 @@ func (poolResource *managedNodePoolResource) Create(ctx context.Context, request
 		response.Diagnostics.AddError("Unable to add managed node pool", err.Error())
 		return
 	}
-	plan.ID = types.StringValue(provider + "/" + clusterID + "/" + plan.Name.ValueString())
-	if plan.Count.IsUnknown() || plan.Count.IsNull() {
-		plan.Count = types.Int64Value(createRequest.Count)
+	plan.ID = types.StringValue(provider + "/" + clusterID + "/" + name)
+	if pool, err := apiClient.GetManagedNodePool(ctx, provider, clusterID, name); err == nil {
+		refreshManagedNodePoolFields(&plan.managedNodePoolFields, *pool)
 	}
+	settleUnknownPoolFields(&plan.managedNodePoolFields, createRequest.Count)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (poolResource *managedNodePoolResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -123,9 +137,10 @@ func (poolResource *managedNodePoolResource) Read(ctx context.Context, request r
 	refreshManagedNodePoolFields(&state.managedNodePoolFields, *pool)
 	state.ID = types.StringValue(state.Provider.ValueString() + "/" + state.ClusterID.ValueString() + "/" + pool.Name)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
-// Update changes count and autoscaling in place; every other argument
+// Update changes node_count and autoscaling in place; every other argument
 // carries RequiresReplace.
 func (poolResource *managedNodePoolResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	apiClient := poolResource.requireClient(&response.Diagnostics)
@@ -145,9 +160,7 @@ func (poolResource *managedNodePoolResource) Update(ctx context.Context, request
 		}
 	}
 	plan.ID = state.ID
-	if plan.Count.IsUnknown() || plan.Count.IsNull() {
-		plan.Count = state.Count
-	}
+	settleUnknownPoolFields(&plan.managedNodePoolFields, state.Count.ValueInt64())
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
@@ -161,9 +174,11 @@ func (poolResource *managedNodePoolResource) Delete(ctx context.Context, request
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteManagedNodePool(ctx, state.Provider.ValueString(), state.ClusterID.ValueString(), state.Name.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete managed node pool", err.Error())
+	err := apiClient.DeleteManagedNodePool(ctx, state.Provider.ValueString(), state.ClusterID.ValueString(), state.Name.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete managed node pool", err.Error())
 }
 
 // ImportState imports by `<provider_name>/<cluster_id>/<name>`.

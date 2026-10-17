@@ -4,11 +4,14 @@ page_title: "ankra_aws_cluster Resource - ankra"
 subcategory: ""
 description: |-
   Provisions a self-managed Kubernetes cluster on AWS EC2 through the Ankra platform (not EKS; see ankra_managed_cluster for that). The counterpart of ankra cluster aws create and ankra cluster aws deprovision. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with ankra_node_group.
+  Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 ---
 
 # ankra_aws_cluster (Resource)
 
 Provisions a self-managed Kubernetes cluster on AWS EC2 through the Ankra platform (not EKS; see `ankra_managed_cluster` for that). The counterpart of `ankra cluster aws create` and `ankra cluster aws deprovision`. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with `ankra_node_group`.
+
+Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 
 ## Example Usage
 
@@ -63,7 +66,7 @@ resource "ankra_aws_cluster" "example" {
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
 - `etcd_type` (String) EC2 instance type of dedicated etcd nodes.
-- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's AWS resources without its usual guards. Defaults to `true` for backwards compatibility; set it to `false` to take the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
+- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's AWS resources without its usual guards. Defaults to `false`, the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
 - `gitops_branch` (String) GitOps branch to commit the generated stack to.
 - `gitops_credential_name` (String) GitOps credential name; commits the generated stack to Git when set with `gitops_repository`.
 - `gitops_repository` (String) GitOps repository (`owner/name`) to commit the generated stack to.
@@ -73,7 +76,7 @@ resource "ankra_aws_cluster" "example" {
 - `nat_gateway_single_zone` (Boolean) Run one NAT gateway for the created VPC instead of one per zone.
 - `network_ip_range` (String) CIDR of the VPC Ankra creates. The platform uses `10.0.0.0/16` when unset.
 - `node_subnet_ids` (List of String) Private subnets of the adopted VPC the nodes run in.
-- `retention_policy` (String) What deprovisioning does with retained cloud resources such as volumes: `retain` (default) or `delete`.
+- `retention_policy` (String) What deprovisioning does with retained cloud resources such as volumes: `retain` (default) or `delete`. Recorded when the cluster is created; the platform cannot change it afterwards, so a change is refused at plan time.
 - `root_volume_gib` (Number) Root volume size of each node, in GiB.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `ubuntu_series` (String) Ubuntu release of the node image.

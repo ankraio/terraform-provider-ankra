@@ -15,16 +15,24 @@ import (
 // sends (cluster go/internal/providerapi, managedk8sapi, clusterapi
 // playground handlers):
 //
-//   - a provider create answers 201 on the token surface; deprovision 200 or
-//     404 when the cluster is gone;
+//   - clusters live in the project the create request named
+//     (X-Ankra-Project-Id); the listing and every cluster-scoped route only
+//     see the request's project, answering 404 "Cluster not found" otherwise;
+//   - a provider create answers 201 on the token surface and refuses a name
+//     that is still taken, including by a cluster being deprovisioned;
+//   - deprovision answers 200 and leaves the cluster listed as
+//     "deprovisioning" for one more read; 404 when the cluster is unknown;
 //   - node-group writes refuse anything but wait=false, answer 202
 //     {"status":"accepted"}, and the listing derives groups from what was
-//     submitted; a write naming a missing group is a 409;
-//   - managed creates and node-pool writes answer 200; Kapsule and Ankra
-//     Cloud Kubernetes are only deleted through POST
-//     .../delete-provider-cluster, their bare DELETE is a disconnect;
+//     submitted, with joined_count; a write naming a missing group is a 409;
+//   - managed creates and node-pool writes answer 200; the pool listing
+//     reports the provider's placement (zone, OS disk) when the request named
+//     none; Kapsule and Ankra Cloud Kubernetes are only deleted through POST
+//     .../delete-provider-cluster, their bare DELETE is a disconnect; a delete
+//     naming the wrong provider answers 200 success with nothing marked;
 //   - the playground status keeps answering 200 for a destroyed environment,
-//     with phase "deprovisioning"; resizing from or to the trial is a 400.
+//     with phase "deprovisioning" and then "removed"; resizing from or to the
+//     trial is a 400.
 type lanesFake struct {
 	*routeFake
 	clusters map[string]*lanesFakeCluster
@@ -35,22 +43,26 @@ type lanesFake struct {
 	nodeGroupWrites  []string
 	nodeGroupBodies  map[string]map[string]any
 	poolPatches      []map[string]any
+	poolDeletes      []string
 	managedDeletes   []string
 	playgroundCalls  []string
 }
 
 type lanesFakeCluster struct {
-	id     string
-	name   string
-	kind   string
-	state  string
-	groups map[string]map[string]any
-	pools  map[string]map[string]any
+	id      string
+	name    string
+	kind    string
+	state   string
+	project string
+	groups  map[string]map[string]any
+	pools   map[string]map[string]any
 	// playground fields
 	phase     string
 	plan      string
 	orderedAt any
 }
+
+const lanesFakeProjectHeader = "X-Ankra-Project-Id"
 
 func newLanesFake(t *testing.T) *lanesFake {
 	fake := &lanesFake{
@@ -65,10 +77,13 @@ func newLanesFake(t *testing.T) *lanesFake {
 		rows := []map[string]any{}
 		for _, id := range fake.sortedIDs() {
 			cluster := fake.clusters[id]
-			if cluster.kind == "playground" || (wanted != "" && wanted != id) {
+			if cluster.kind == "playground" || (wanted != "" && wanted != id) || !fake.visible(cluster, request) {
 				continue
 			}
 			rows = append(rows, map[string]any{"id": id, "name": cluster.name, "kind": cluster.kind, "state": cluster.state})
+			if cluster.state == "deprovisioning" {
+				delete(fake.clusters, id)
+			}
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{
 			"result":     rows,
@@ -79,23 +94,28 @@ func newLanesFake(t *testing.T) *lanesFake {
 	fake.handle("POST /api/v1/clusters/{lane}", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
+		if fake.nameTaken(fmt.Sprint(body["name"])) {
+			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Cluster with name already exists"})
+			return
+		}
 		lane := request.PathValue("lane")
 		fake.createBodies[lane] = append(fake.createBodies[lane], body)
 		cluster := fake.addCluster(lane, fmt.Sprint(body["name"]), "running")
+		cluster.project = request.Header.Get(lanesFakeProjectHeader)
 		cluster.groups["workers"] = map[string]any{
-			"name": "workers", "instance_type": "default", "count": body["worker_count"],
+			"name": "workers", "instance_type": "default", "count": body["worker_count"], "joined_count": body["worker_count"],
 			"min": 1, "max": 100, "autoscaling_enabled": false, "labels": map[string]any{}, "taints": []any{},
 		}
 		writeJSON(t, writer, http.StatusCreated, map[string]any{"cluster_id": cluster.id, "name": cluster.name})
 	})
 	fake.handle("DELETE /api/v1/clusters/{lane}/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		cluster := fake.clusters[request.PathValue("id")]
-		if cluster == nil || cluster.kind != request.PathValue("lane") {
+		if cluster == nil || cluster.kind != request.PathValue("lane") || !fake.visible(cluster, request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster not found"})
 			return
 		}
 		fake.deprovisionQuery = append(fake.deprovisionQuery, request.URL.RawQuery)
-		delete(fake.clusters, cluster.id)
+		cluster.state = "deprovisioning"
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "cluster_id": cluster.id})
 	})
 
@@ -119,6 +139,21 @@ func newLanesFake(t *testing.T) *lanesFake {
 		})
 	}
 	return fake
+}
+
+// visible reports whether a request's project scope includes the cluster.
+func (fake *lanesFake) visible(cluster *lanesFakeCluster, request *http.Request) bool {
+	project := request.Header.Get(lanesFakeProjectHeader)
+	return project == "" || cluster.project == "" || cluster.project == project
+}
+
+func (fake *lanesFake) nameTaken(name string) bool {
+	for _, cluster := range fake.clusters {
+		if cluster.name == name && cluster.kind != "playground" {
+			return true
+		}
+	}
+	return false
 }
 
 func (fake *lanesFake) sortedIDs() []string {
@@ -147,7 +182,7 @@ func (fake *lanesFake) addCluster(kind, name, state string) *lanesFakeCluster {
 func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 	cluster := func(writer http.ResponseWriter, request *http.Request) *lanesFakeCluster {
 		found := fake.clusters[request.PathValue("id")]
-		if found == nil || found.kind != request.PathValue("lane") {
+		if found == nil || found.kind != request.PathValue("lane") || !fake.visible(found, request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster not found"})
 			return nil
 		}
@@ -202,7 +237,7 @@ func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 			count = 1
 		}
 		row := map[string]any{
-			"name": name, "instance_type": body["instance_type"], "count": count,
+			"name": name, "instance_type": body["instance_type"], "count": count, "joined_count": count,
 			"min": 1, "max": 100, "autoscaling_enabled": false, "labels": map[string]any{}, "taints": []any{},
 		}
 		if labels, ok := body["labels"].(map[string]any); ok {
@@ -237,7 +272,10 @@ func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 			writeJSON(t, writer, http.StatusAccepted, map[string]any{"status": "accepted"})
 		})
 	}
-	put("scale", func(row, body map[string]any) { row["count"] = body["count"] })
+	put("scale", func(row, body map[string]any) {
+		row["count"] = body["count"]
+		row["joined_count"] = body["count"]
+	})
 	put("instance-type", func(row, body map[string]any) { row["instance_type"] = body["instance_type"] })
 	put("labels", func(row, body map[string]any) { row["labels"] = body["labels"] })
 	put("taints", func(row, body map[string]any) { row["taints"] = body["taints"] })
@@ -260,10 +298,14 @@ func (fake *lanesFake) registerNodeGroupRoutes(t *testing.T) {
 	})
 }
 
+// lanesFakeProviderPlacement is what a provider reports for a pool whose
+// request named no placement.
+var lanesFakeProviderPlacement = map[string]any{"zone": "fr-par-1", "root_volume_type": "b_ssd", "root_volume_size_gb": 20}
+
 func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 	managedCluster := func(writer http.ResponseWriter, request *http.Request) *lanesFakeCluster {
 		found := fake.clusters[request.PathValue("id")]
-		if found == nil || found.kind != request.PathValue("provider") {
+		if found == nil || !fake.visible(found, request) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Managed cluster not found"})
 			return nil
 		}
@@ -272,9 +314,13 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 	poolRow := func(body map[string]any) map[string]any {
 		row := map[string]any{
 			"name": body["name"], "size": body["size"], "count": body["count"], "status": "running",
-			"labels": map[string]any{}, "taints": []any{}, "autoscaling": nil,
-			"zone": body["zone"], "root_volume_type": body["root_volume_type"], "root_volume_size_gb": body["root_volume_size_gb"],
-			"externally_managed": false,
+			"labels": map[string]any{}, "taints": []any{}, "autoscaling": nil, "externally_managed": false,
+		}
+		for field, providerDefault := range lanesFakeProviderPlacement {
+			row[field] = providerDefault
+			if requested, ok := body[field]; ok && requested != nil {
+				row[field] = requested
+			}
 		}
 		if labels, ok := body["labels"].(map[string]any); ok {
 			row["labels"] = labels
@@ -291,9 +337,14 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 	fake.handle("POST /api/v1/clusters/managed/{provider}", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
+		if fake.nameTaken(fmt.Sprint(body["name"])) {
+			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Cluster with name already exists"})
+			return
+		}
 		provider := request.PathValue("provider")
 		fake.createBodies[provider] = append(fake.createBodies[provider], body)
 		cluster := fake.addCluster(provider, fmt.Sprint(body["name"]), "provider_without_access")
+		cluster.project = request.Header.Get(lanesFakeProjectHeader)
 		pools, _ := body["node_pools"].([]any)
 		for _, rawPool := range pools {
 			pool, _ := rawPool.(map[string]any)
@@ -308,15 +359,23 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 		}
 		fake.managedDeletes = append(fake.managedDeletes, request.Method+" "+request.URL.Path+"?"+request.URL.RawQuery)
 		provider := request.PathValue("provider")
+		if found.kind != provider {
+			writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "cluster_id": found.id, "resources_marked": 0, "errors": []any{}})
+			return
+		}
 		isExplicit := provider == "kapsule" || provider == "ankracloud_k8s"
 		if isExplicit && request.Method == http.MethodDelete {
 			t.Errorf("%s cluster sent to the bare DELETE, which only disconnects it", provider)
 		}
-		delete(fake.clusters, found.id)
-		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "cluster_id": found.id, "resources_marked": 1, "errors": []any{}})
+		found.state = "deprovisioning"
+		writeJSON(t, writer, http.StatusOK, map[string]any{
+			"success": true, "cluster_id": found.id, "operation_id": "11111111-0000-0000-0000-000000000001",
+			"resources_marked": 1, "errors": []any{},
+		})
 	}
 	fake.handle("DELETE /api/v1/clusters/managed/{provider}/{id}", deleteCluster)
 	fake.handle("POST /api/v1/clusters/managed/{provider}/{id}/delete-provider-cluster", deleteCluster)
+	fake.handle("POST /api/v1/clusters/managed/{provider}/{id}/disconnect", deleteCluster)
 
 	fake.handle("GET /api/v1/clusters/managed/{provider}/{id}/node-pools", func(writer http.ResponseWriter, request *http.Request) {
 		found := managedCluster(writer, request)
@@ -385,6 +444,7 @@ func (fake *lanesFake) registerManagedRoutes(t *testing.T) {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster or node pool not found"})
 			return
 		}
+		fake.poolDeletes = append(fake.poolDeletes, request.PathValue("pool"))
 		delete(found.pools, request.PathValue("pool"))
 		writeJSON(t, writer, http.StatusOK, map[string]any{"cluster_id": found.id, "node_pool_name": request.PathValue("pool")})
 	})
@@ -440,6 +500,14 @@ func (fake *lanesFake) registerPlaygroundRoutes(t *testing.T) {
 			writeJSON(t, writer, http.StatusBadRequest, map[string]any{"detail": "Unknown playground plan."})
 			return
 		}
+		if plan == "trial" {
+			for _, cluster := range fake.clusters {
+				if cluster.kind == "playground" && cluster.orderedAt == nil && cluster.phase != "removed" {
+					writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "A playground already exists for this organisation."})
+					return
+				}
+			}
+		}
 		fake.playgroundCalls = append(fake.playgroundCalls, "create "+plan)
 		cluster := fake.addCluster("playground", "playground", "running")
 		cluster.phase = "ready"
@@ -450,8 +518,13 @@ func (fake *lanesFake) registerPlaygroundRoutes(t *testing.T) {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"cluster_id": cluster.id, "success": true})
 	})
 	fake.handle("GET /api/v1/org/clusters/playground/{id}/status", func(writer http.ResponseWriter, request *http.Request) {
-		if found := playground(writer, request); found != nil {
-			writeJSON(t, writer, http.StatusOK, status(found))
+		found := playground(writer, request)
+		if found == nil {
+			return
+		}
+		writeJSON(t, writer, http.StatusOK, status(found))
+		if found.phase == "deprovisioning" {
+			found.phase = "removed"
 		}
 	})
 	fake.handle("POST /api/v1/org/clusters/playground/{id}/resize", func(writer http.ResponseWriter, request *http.Request) {

@@ -4,11 +4,14 @@ page_title: "ankra_ankracloud_cluster Resource - ankra"
 subcategory: ""
 description: |-
   Provisions a self-managed Kubernetes cluster on Ankra Cloud. The counterpart of ankra cluster ankracloud create and ankra cluster ankracloud deprovision. ankra cluster ankracloud zones and plans list the zones and plans. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with ankra_node_group.
+  Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 ---
 
 # ankra_ankracloud_cluster (Resource)
 
 Provisions a self-managed Kubernetes cluster on Ankra Cloud. The counterpart of `ankra cluster ankracloud create` and `ankra cluster ankracloud deprovision`. `ankra cluster ankracloud zones` and `plans` list the zones and plans. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with `ankra_node_group`.
+
+Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 
 ## Example Usage
 
@@ -48,7 +51,7 @@ resource "ankra_ankracloud_cluster" "example" {
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_plan` (String) Plan of dedicated etcd nodes. Required when `etcd_topology` is `external`.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
-- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's Ankra Cloud resources without its usual guards. Defaults to `true` for backwards compatibility; set it to `false` to take the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
+- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's Ankra Cloud resources without its usual guards. Defaults to `false`, the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
 - `gitops_branch` (String) GitOps branch to commit the generated stack to.
 - `gitops_credential_name` (String) GitOps credential name; commits the generated stack to Git when set with `gitops_repository`.
 - `gitops_repository` (String) GitOps repository (`owner/name`) to commit the generated stack to.
@@ -58,7 +61,7 @@ resource "ankra_ankracloud_cluster" "example" {
 - `network_ip_range` (String) CIDR of the private network Ankra creates.
 - `network_mode` (String) Node addressing: `ipv4_nat` (default) or `ipv6_only`.
 - `private_network_id` (String) Existing private network to adopt. Leave `network_ip_range` unset when adopting.
-- `retention_policy` (String) What deprovisioning does with retained cloud resources such as volumes: `retain` (default) or `delete`.
+- `retention_policy` (String) What deprovisioning does with retained cloud resources such as volumes: `retain` (default) or `delete`. Recorded when the cluster is created; the platform cannot change it afterwards, so a change is refused at plan time.
 - `runtime_credential_id` (String) Credential the cluster's cloud controller runs with.
 - `ssh_key_credential_id` (String) SSH key credential id to install on the nodes.
 - `template` (String) OS template of the nodes.

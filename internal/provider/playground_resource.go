@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -41,15 +42,16 @@ type playgroundResource struct {
 }
 
 type playgroundModel struct {
-	ID           types.String   `tfsdk:"id"`
-	ClusterID    types.String   `tfsdk:"cluster_id"`
-	Plan         types.String   `tfsdk:"plan"`
-	Phase        types.String   `tfsdk:"phase"`
-	ExpiresAt    types.String   `tfsdk:"expires_at"`
-	StarterURL   types.String   `tfsdk:"starter_url"`
-	OrderedAt    types.String   `tfsdk:"ordered_at"`
-	WaitForReady types.Bool     `tfsdk:"wait_for_ready"`
-	Timeouts     timeouts.Value `tfsdk:"timeouts"`
+	ID                  types.String   `tfsdk:"id"`
+	ClusterID           types.String   `tfsdk:"cluster_id"`
+	Plan                types.String   `tfsdk:"plan"`
+	Phase               types.String   `tfsdk:"phase"`
+	ExpiresAt           types.String   `tfsdk:"expires_at"`
+	StarterURL          types.String   `tfsdk:"starter_url"`
+	OrderedAt           types.String   `tfsdk:"ordered_at"`
+	WaitForReady        types.Bool     `tfsdk:"wait_for_ready"`
+	AllowTrialDowngrade types.Bool     `tfsdk:"allow_trial_downgrade"`
+	Timeouts            timeouts.Value `tfsdk:"timeouts"`
 }
 
 // NewPlaygroundResource returns the ankra_playground resource, the
@@ -89,9 +91,21 @@ func (playground *playgroundResource) Schema(ctx context.Context, _ resource.Sch
 				Computed: true,
 				Default:  stringdefault.StaticString(client.PlaygroundTrialPlanID),
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(
-					func(_ context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
-						response.RequiresReplace = request.StateValue.ValueString() == client.PlaygroundTrialPlanID ||
-							request.PlanValue.ValueString() == client.PlaygroundTrialPlanID
+					func(ctx context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+						fromTrial := request.StateValue.ValueString() == client.PlaygroundTrialPlanID
+						toTrial := request.PlanValue.ValueString() == client.PlaygroundTrialPlanID
+						response.RequiresReplace = fromTrial || toTrial
+						if !toTrial || fromTrial || request.StateValue.IsNull() {
+							return
+						}
+						var allowed types.Bool
+						response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root("allow_trial_downgrade"), &allowed)...)
+						if !allowed.ValueBool() {
+							response.Diagnostics.AddAttributeError(request.Path, "Moving a paid playground to the trial destroys it",
+								fmt.Sprintf("The platform cannot resize a paid playground (%q) to the free trial, so the change would "+
+									"destroy it, with everything deployed on it, and order a new trial. Set allow_trial_downgrade = true "+
+									"to accept that.", request.StateValue.ValueString()))
+						}
 					},
 					"Moving to or from the free trial replaces the playground.",
 					"Moving to or from the free `trial` replaces the playground.",
@@ -101,6 +115,14 @@ func (playground *playgroundResource) Schema(ctx context.Context, _ resource.Sch
 			"expires_at":  computedString("When the platform tears the playground down unless it is used."),
 			"starter_url": computedString("URL of the seeded starter app of a ready free playground; null otherwise."),
 			"ordered_at":  computedString("When a paid size was ordered; null for the free trial."),
+			"allow_trial_downgrade": schema.BoolAttribute{
+				MarkdownDescription: "Allow a change from a paid plan to `trial`. The platform cannot resize to the trial, so " +
+					"the change destroys the paid playground and everything on it and orders a new trial. Without this, " +
+					"such a change is refused at plan time. Defaults to `false`.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
 			"wait_for_ready": schema.BoolAttribute{
 				MarkdownDescription: "Wait for the playground to reach `ready` after a create or resize. Defaults to `true`.",
 				Optional:            true,
@@ -109,7 +131,7 @@ func (playground *playgroundResource) Schema(ctx context.Context, _ resource.Sch
 			},
 		},
 		Blocks: map[string]schema.Block{
-			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true}),
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true, Delete: true}),
 		},
 	}
 }
@@ -136,6 +158,7 @@ func (playground *playgroundResource) Create(ctx context.Context, request resour
 	plan.StarterURL = types.StringUnknown()
 	plan.OrderedAt = types.StringUnknown()
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -168,7 +191,11 @@ func (playground *playgroundResource) Read(ctx context.Context, request resource
 	if state.WaitForReady.IsNull() {
 		state.WaitForReady = types.BoolValue(true)
 	}
+	if state.AllowTrialDowngrade.IsNull() {
+		state.AllowTrialDowngrade = types.BoolValue(false)
+	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update resizes a paid playground to another paid plan. Plans involving the
@@ -210,8 +237,26 @@ func (playground *playgroundResource) Delete(ctx context.Context, request resour
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DestroyPlayground(ctx, state.ClusterID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to destroy playground", err.Error())
+	if !requireUnmovedScope(ctx, apiClient, request.Private, &response.Diagnostics) {
+		return
+	}
+	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultPlaygroundTimeout, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	deleteContext, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+
+	clusterID := state.ClusterID.ValueString()
+	err := apiClient.DestroyPlayground(deleteContext, clusterID)
+	if err != nil {
+		if !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) && !response.Diagnostics.HasError() {
+			response.Diagnostics.AddError("Unable to destroy playground", err.Error())
+		}
+		return
+	}
+	if err := apiClient.WaitForPlaygroundRemoved(deleteContext, clusterID, playgroundPollInterval); err != nil {
+		response.Diagnostics.AddError("Playground was not removed", err.Error())
 	}
 }
 
@@ -220,6 +265,7 @@ func (playground *playgroundResource) ImportState(ctx context.Context, request r
 	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), request, response)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("wait_for_ready"), true)...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("allow_trial_downgrade"), false)...)
 }
 
 // settle records the playground's status after a create or resize: it waits

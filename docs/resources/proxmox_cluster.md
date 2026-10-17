@@ -4,11 +4,14 @@ page_title: "ankra_proxmox_cluster Resource - ankra"
 subcategory: ""
 description: |-
   Provisions a Kubernetes cluster on Proxmox VE virtual machines through the Ankra platform. The counterpart of ankra cluster proxmox create. Proxmox has no cloud controller, so the cluster carries no external_cloud_provider and no GitOps source at create. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with ankra_node_group.
+  Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 ---
 
 # ankra_proxmox_cluster (Resource)
 
 Provisions a Kubernetes cluster on Proxmox VE virtual machines through the Ankra platform. The counterpart of `ankra cluster proxmox create`. Proxmox has no cloud controller, so the cluster carries no `external_cloud_provider` and no GitOps source at create. Provisioning arguments are immutable, so changing one forces replacement; add capacity in place with `ankra_node_group`.
+
+Import by cluster id. The platform does not return the build arguments, so the first apply after an import adopts the configured values in place, without replacing the cluster: they must describe the cluster as it was built.
 
 ## Example Usage
 
@@ -53,7 +56,7 @@ resource "ankra_proxmox_cluster" "example" {
 - `etcd_instance_type` (String) Size of dedicated etcd VMs.
 - `etcd_node_count` (Number) Number of dedicated etcd nodes when `etcd_topology` is `external`.
 - `etcd_topology` (String) etcd topology for kubeadm clusters: `stacked` or `external`.
-- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's Proxmox VE resources without its usual guards. Defaults to `true` for backwards compatibility; set it to `false` to take the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
+- `force_destroy` (Boolean) Send `force=true` when deprovisioning, which makes the platform tear down the cluster's Proxmox VE resources without its usual guards. Defaults to `false`, the guarded delete path. Changing this only affects a future destroy, so it never replaces the cluster.
 - `include_dns` (Boolean) Delegate a DNS subzone to the cluster and wire external-dns into the networking stack.
 - `include_networking` (Boolean) Install the Ankra networking stack (Traefik and cert-manager) for ingress.
 - `kubernetes_version` (String) Kubernetes version. Defaults to the platform's stable version when unset; `data.ankra_kubernetes_versions` lists the supported ones.

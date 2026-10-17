@@ -177,7 +177,7 @@ func (client *Client) CreateLaneCluster(ctx context.Context, lane string, reques
 
 // DeprovisionLaneCluster deprovisions a cluster with the full set of
 // deprovision flags, including the volume-loss consent the AWS and Ankra Cloud
-// lanes ask for. A 404 is treated as success so deletes are idempotent.
+// lanes ask for. A 404 is returned to the caller, which decides whether it means gone or out of scope.
 func (client *Client) DeprovisionLaneCluster(ctx context.Context, lane, clusterID string, options LaneDeprovisionOptions) error {
 	query := url.Values{}
 	query.Set("force", strconv.FormatBool(options.Force))
@@ -185,5 +185,5 @@ func (client *Client) DeprovisionLaneCluster(ctx context.Context, lane, clusterI
 		query.Set("accept_volume_data_loss", "true")
 	}
 	path := "/api/v1/clusters/" + url.PathEscape(lane) + "/" + url.PathEscape(clusterID) + "?" + query.Encode()
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }
