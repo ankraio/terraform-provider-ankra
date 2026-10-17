@@ -94,7 +94,7 @@ func (organisation *organisationResource) ModifyPlan(ctx context.Context, reques
 			fmt.Sprintf("The API cannot rename organisation %s from %q to %q. Rename it in the portal, then set name to match.",
 				state.ID.ValueString(), state.Name.ValueString(), plan.Name.ValueString()))
 	}
-	if !plan.Country.IsUnknown() && !plan.Country.Equal(state.Country) {
+	if !state.Country.IsNull() && !plan.Country.IsUnknown() && !plan.Country.Equal(state.Country) {
 		response.Diagnostics.AddAttributeError(path.Root("country"), "Organisation country cannot be changed",
 			"The API records the country only when the organisation is created.")
 	}
@@ -123,6 +123,7 @@ func (organisation *organisationResource) Create(ctx context.Context, request re
 	plan.ID = types.StringValue(created.OrganisationID)
 	plan.Slug = types.StringValue(created.Slug)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (organisation *organisationResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -148,6 +149,7 @@ func (organisation *organisationResource) Read(ctx context.Context, request reso
 	state.Name = types.StringPointerValue(detail.Name)
 	state.Slug = types.StringPointerValue(detail.Slug)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update is never reached with a change: ModifyPlan refuses every change to

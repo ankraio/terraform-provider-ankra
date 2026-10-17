@@ -106,6 +106,7 @@ func (related *aiReviewRelatedRepositoryResource) Create(ctx context.Context, re
 	}
 	plan.ID = types.StringValue(created.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (related *aiReviewRelatedRepositoryResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -135,6 +136,7 @@ func (related *aiReviewRelatedRepositoryResource) Read(ctx context.Context, requ
 			state.RelatedRepoFullName = types.StringValue(stored.RelatedRepoFullName)
 		}
 		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		return
 	}
 	response.State.RemoveResource(ctx)
@@ -164,9 +166,11 @@ func (related *aiReviewRelatedRepositoryResource) Delete(ctx context.Context, re
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteAIReviewRelatedRepository(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove related repositories", err.Error())
+	err := apiClient.DeleteAIReviewRelatedRepository(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove related repositories", err.Error())
 }
 
 // ImportState imports by "<scm_provider>/<binding_external_id>/<id>". The

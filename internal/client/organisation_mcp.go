@@ -51,7 +51,7 @@ type MCPServerCreate struct {
 	Description      string            `json:"description"`
 	Transport        string            `json:"transport"`
 	URL              string            `json:"url"`
-	Env              map[string]string `json:"env"`
+	Env              map[string]string `json:"env,omitempty"`
 	AllowedTools     []string          `json:"allowed_tools"`
 	Enabled          bool              `json:"enabled"`
 	PermissionTier   string            `json:"permission_tier"`
@@ -59,15 +59,16 @@ type MCPServerCreate struct {
 	ClusterAllowList []string          `json:"cluster_allow_list"`
 }
 
-// MCPServerUpdate is the update body. Every member is sent: an absent key
-// would keep the stored value, so a field removed from configuration would
-// never clear. A null allowed_tools, adapter_key or cluster_allow_list
-// clears it; an empty description clears the description. Env replaces the
-// whole env map.
+// MCPServerUpdate is the update body. Every member but EnvPatch is sent: an
+// absent key would keep the stored value, so a field removed from
+// configuration would never clear. A null allowed_tools, adapter_key or
+// cluster_allow_list clears it; an empty description clears the description.
+// EnvPatch merges by key into the stored env, so keys set outside Terraform
+// (an auth header added in the portal) survive; it is left out when empty.
 type MCPServerUpdate struct {
 	Description      string            `json:"description"`
 	URL              string            `json:"url"`
-	Env              map[string]string `json:"env"`
+	EnvPatch         map[string]string `json:"env_patch,omitempty"`
 	AllowedTools     []string          `json:"allowed_tools"`
 	Enabled          bool              `json:"enabled"`
 	PermissionTier   string            `json:"permission_tier"`
@@ -130,9 +131,9 @@ func (client *Client) UpdateMCPServer(ctx context.Context, serverID string, requ
 }
 
 // DeleteMCPServer removes a server and its grants. A server already gone is
-// not an error.
+// a NotFound APIError.
 func (client *Client) DeleteMCPServer(ctx context.Context, serverID string) error {
-	return client.doRequest(ctx, http.MethodDelete, mcpServerPath(serverID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, mcpServerPath(serverID), nil, nil)
 }
 
 // ListMCPToolGrants lists a server's tool grants. A server that is gone is a
@@ -156,8 +157,8 @@ func (client *Client) CreateMCPToolGrant(ctx context.Context, serverID, toolName
 }
 
 // DeleteMCPToolGrant revokes one tool from one role. A grant already gone is
-// not an error.
+// a NotFound APIError.
 func (client *Client) DeleteMCPToolGrant(ctx context.Context, serverID, toolName, role string) error {
 	grantPath := mcpServerPath(serverID) + "/grants/" + url.PathEscape(toolName) + "/" + url.PathEscape(role)
-	return client.doRequest(ctx, http.MethodDelete, grantPath, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, grantPath, nil, nil)
 }

@@ -5,8 +5,10 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -15,6 +17,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 var (
@@ -66,7 +70,10 @@ func (grant *mcpToolGrantResource) Schema(_ context.Context, _ resource.SchemaRe
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"role": schema.StringAttribute{
-				MarkdownDescription: "Organisation role the tool is granted to. Defaults to `member`.",
+				MarkdownDescription: "Organisation role slug the tool is granted to, as `ankra org roles` lists it. Omitted, it is " +
+					"`member`, and the platform treats a `member` grant as granted to every role. The platform accepts any string and a " +
+					"grant to a role that does not exist grants nothing, so the provider checks the role against the organisation's " +
+					"roles at creation (skipped, with a warning, when the provider token cannot list roles).",
 				Optional:            true,
 				Computed:            true,
 				Default:             stringdefault.StaticString("member"),
@@ -87,6 +94,9 @@ func (grant *mcpToolGrantResource) Create(ctx context.Context, request resource.
 	if response.Diagnostics.HasError() {
 		return
 	}
+	if !mcpToolGrantRoleExists(ctx, apiClient, plan.Role.ValueString(), &response.Diagnostics) {
+		return
+	}
 	created, err := apiClient.CreateMCPToolGrant(ctx, plan.ServerID.ValueString(), plan.ToolName.ValueString(), plan.Role.ValueString())
 	if err != nil {
 		response.Diagnostics.AddError("Unable to grant MCP tool", err.Error())
@@ -94,6 +104,29 @@ func (grant *mcpToolGrantResource) Create(ctx context.Context, request resource.
 	}
 	plan.ID = types.StringValue(created.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+}
+
+// mcpToolGrantRoleExists refuses a role the organisation does not have: the
+// platform stores any string, and a grant to a misspelled role grants
+// nothing. When the caller cannot list roles (it lacks members.read), the
+// check is skipped with a warning.
+func mcpToolGrantRoleExists(ctx context.Context, apiClient *client.Client, role string, diagnostics *diag.Diagnostics) bool {
+	roles, err := apiClient.ListOrganisationRoles(ctx)
+	if err != nil {
+		diagnostics.AddWarning("Role not checked", "Unable to list the organisation's roles, so role "+role+" was not checked: "+err.Error())
+		return true
+	}
+	known := make([]string, 0, len(roles))
+	for _, listed := range roles {
+		if listed.Slug == role {
+			return true
+		}
+		known = append(known, listed.Slug)
+	}
+	diagnostics.AddAttributeError(path.Root("role"), "Unknown role",
+		fmt.Sprintf("The organisation has no role %q, so the grant would allow nothing. Known roles: %s.", role, strings.Join(known, ", ")))
+	return false
 }
 
 func (grant *mcpToolGrantResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -120,10 +153,12 @@ func (grant *mcpToolGrantResource) Read(ctx context.Context, request resource.Re
 			continue
 		}
 		if readTargetChanged(state.ID, listed.ID) {
-			break
+			removeWhenTargetChanged(ctx, apiClient, response)
+			return
 		}
 		state.ID = types.StringValue(listed.ID)
 		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		return
 	}
 	response.State.RemoveResource(ctx)
@@ -153,9 +188,11 @@ func (grant *mcpToolGrantResource) Delete(ctx context.Context, request resource.
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteMCPToolGrant(ctx, state.ServerID.ValueString(), state.ToolName.ValueString(), state.Role.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to revoke MCP tool grant", err.Error())
+	err := apiClient.DeleteMCPToolGrant(ctx, state.ServerID.ValueString(), state.ToolName.ValueString(), state.Role.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to revoke MCP tool grant", err.Error())
 }
 
 // ImportState imports by "<server_id>/<role>/<tool_name>".

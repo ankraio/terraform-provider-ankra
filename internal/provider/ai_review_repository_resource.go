@@ -113,18 +113,18 @@ func (rule *aiReviewRepositoryResource) Schema(_ context.Context, _ resource.Sch
 }
 
 func (rule *aiReviewRepositoryResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
-	rule.write(ctx, request.Plan, &response.State, &response.Diagnostics)
+	rule.write(ctx, request.Plan, &response.State, response.Private, &response.Diagnostics)
 }
 
 func (rule *aiReviewRepositoryResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	rule.write(ctx, request.Plan, &response.State, &response.Diagnostics)
+	rule.write(ctx, request.Plan, &response.State, response.Private, &response.Diagnostics)
 }
 
 // write upserts the rule and reads it back. review_model is always sent, an
 // empty value inheriting the binding's model, so removing it from
 // configuration clears it; review_drafts and max_reviews_per_pr are sent
 // only when configured.
-func (rule *aiReviewRepositoryResource) write(ctx context.Context, plan tfsdk.Plan, state *tfsdk.State, diagnostics *diag.Diagnostics) {
+func (rule *aiReviewRepositoryResource) write(ctx context.Context, plan tfsdk.Plan, state *tfsdk.State, private privateStateWriter, diagnostics *diag.Diagnostics) {
 	apiClient := rule.requireClient(diagnostics)
 	if apiClient == nil {
 		return
@@ -158,6 +158,7 @@ func (rule *aiReviewRepositoryResource) write(ctx context.Context, plan tfsdk.Pl
 	}
 	aiReviewApplyRule(&model, stored)
 	diagnostics.Append(state.Set(ctx, &model)...)
+	diagnostics.Append(trackScope(ctx, apiClient, private)...)
 }
 
 func (rule *aiReviewRepositoryResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -181,6 +182,7 @@ func (rule *aiReviewRepositoryResource) Read(ctx context.Context, request resour
 	}
 	aiReviewApplyRule(&state, stored)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (rule *aiReviewRepositoryResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -193,9 +195,11 @@ func (rule *aiReviewRepositoryResource) Delete(ctx context.Context, request reso
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteAIReviewRepositoryRule(ctx, state.Provider.ValueString(), state.BindingExternalID.ValueString(), state.RepoFullName.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove AI review rule", err.Error())
+	err := apiClient.DeleteAIReviewRepositoryRule(ctx, state.Provider.ValueString(), state.BindingExternalID.ValueString(), state.RepoFullName.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove AI review rule", err.Error())
 }
 
 // ImportState imports by "<scm_provider>/<binding_external_id>/<repo_full_name>".

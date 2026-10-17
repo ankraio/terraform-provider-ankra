@@ -36,27 +36,6 @@ type OrganisationCISettings struct {
 	IsDefault              bool     `json:"is_default"`
 }
 
-// OrganisationCISettingsUpdate is the full settings write. Every member is
-// sent, so the write states the whole configuration; a null ci_cluster_id
-// clears the pipeline cluster. The list members must be non-nil: the
-// platform refuses a null list.
-type OrganisationCISettingsUpdate struct {
-	ClusterID              *string  `json:"ci_cluster_id"`
-	BuildFallback          string   `json:"ci_build_fallback"`
-	MaxParallelRuns        int64    `json:"ci_max_parallel_runs"`
-	MaxParallelSteps       int64    `json:"ci_max_parallel_steps"`
-	AllowedImagePrefixes   []string `json:"ci_allowed_image_prefixes"`
-	ArtifactRetentionDays  int64    `json:"ci_artifact_retention_days"`
-	CacheRetentionDays     int64    `json:"ci_cache_retention_days"`
-	RunRetentionDays       int64    `json:"ci_run_retention_days"`
-	ImageGate              string   `json:"ci_image_gate"`
-	IgnoreUnfixed          bool     `json:"ci_ignore_unfixed"`
-	EgressAllowedCIDRs     []string `json:"ci_egress_allowed_cidrs"`
-	AlwaysRunStages        []string `json:"ci_always_run_stages"`
-	FullRunOnDefaultBranch bool     `json:"ci_full_run_on_default_branch"`
-	SkipMarkers            string   `json:"ci_skip_markers"`
-}
-
 // OrganisationCIPoolMember is one cluster of the organisation's CI pool.
 // IsListed is false for the pipeline cluster when it is in the pool only by
 // being the primary.
@@ -87,9 +66,11 @@ func (client *Client) GetOrganisationCISettings(ctx context.Context) (*Organisat
 	return &settings, nil
 }
 
-// UpdateOrganisationCISettings writes the CI settings and returns what was
-// stored.
-func (client *Client) UpdateOrganisationCISettings(ctx context.Context, request OrganisationCISettingsUpdate) (*OrganisationCISettings, error) {
+// UpdateOrganisationCISettings writes the named CI settings and returns what
+// was stored. Every member is tri-state: an absent key keeps the stored value
+// and a null ci_cluster_id clears the pipeline cluster; the platform refuses
+// a null for any other key and a body naming nothing.
+func (client *Client) UpdateOrganisationCISettings(ctx context.Context, request map[string]any) (*OrganisationCISettings, error) {
 	var settings OrganisationCISettings
 	if err := client.doRequest(ctx, http.MethodPut, ciSettingsPath, request, &settings); err != nil {
 		return nil, err
@@ -117,7 +98,7 @@ func (client *Client) PutOrganisationCIPoolMember(ctx context.Context, clusterID
 }
 
 // RemoveOrganisationCIPoolMember unlists a cluster. A cluster not listed is
-// not an error.
+// a NotFound APIError.
 func (client *Client) RemoveOrganisationCIPoolMember(ctx context.Context, clusterID string) error {
-	return client.doRequest(ctx, http.MethodDelete, ciPoolPath+"/"+url.PathEscape(clusterID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, ciPoolPath+"/"+url.PathEscape(clusterID), nil, nil)
 }

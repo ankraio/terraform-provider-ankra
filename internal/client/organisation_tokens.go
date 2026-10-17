@@ -29,13 +29,17 @@ type OrganisationAPIToken struct {
 	ProjectName *string  `json:"project_name"`
 }
 
-// OrganisationAPITokenCreate is the create body. A nil ExpiresAt takes the platform's
-// 90-day default; an explicit null would be a server error, so it is left
-// out. Nil Scopes keeps the token at its user's full authority.
+// OrganisationAPITokenCreate is the create body. A nil ExpiresAt takes the
+// platform's 90-day default; an explicit null would be a server error, so it is
+// left out. Scopes and ProjectID are always sent: a null scopes keeps the token
+// at its user's full authority, and a null project_id makes it
+// organisation-wide, where an absent key would pin an MCP token to whatever
+// project the user last selected in the portal.
 type OrganisationAPITokenCreate struct {
 	Name      string   `json:"name"`
 	ExpiresAt *string  `json:"expires_at,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Scopes    []string `json:"scopes"`
+	ProjectID *string  `json:"project_id"`
 }
 
 // OrganisationAPITokenCreated carries the token value, which the platform reveals only
@@ -67,7 +71,8 @@ type OrganisationServiceTokenCreate struct {
 	Label     string   `json:"label,omitempty"`
 	RoleSlug  string   `json:"role_slug"`
 	ExpiresAt *string  `json:"expires_at,omitempty"`
-	Scopes    []string `json:"scopes,omitempty"`
+	Scopes    []string `json:"scopes"`
+	ProjectID *string  `json:"project_id"`
 }
 
 // OrganisationServiceTokenCreated carries the token value, revealed only here.
@@ -79,6 +84,21 @@ type OrganisationServiceTokenCreated struct {
 	Label       string `json:"label"`
 	RoleSlug    string `json:"role_slug"`
 	ExpiresAt   string `json:"expires_at"`
+}
+
+// OrganisationTokenRotated is the renewal answer: the replacement's id. Its
+// value is not kept: the provider only renews to free a name.
+type OrganisationTokenRotated struct {
+	ID              string `json:"id"`
+	ReplacedTokenID string `json:"replaced_token_id"`
+}
+
+// tokenRotationOverlapHours keeps a renewed token working long enough for the
+// provider to finish replacing it.
+const tokenRotationOverlapHours = 24
+
+type tokenRotationOverlap struct {
+	OverlapHours int `json:"overlap_hours"`
 }
 
 type serviceTokenListEnvelope struct {
@@ -126,10 +146,21 @@ func (client *Client) RevokeAPIToken(ctx context.Context, tokenID string) error 
 	return client.doRequest(ctx, http.MethodPost, apiTokensPath+"/"+url.PathEscape(tokenID)+"/revoke", nil, nil, http.StatusConflict)
 }
 
-// DeleteAPIToken deletes a revoked personal token. A token already gone is
-// not an error.
+// DeleteAPIToken deletes a revoked personal token. A token already gone is a
+// NotFound APIError, so the caller can tell gone from out of scope.
 func (client *Client) DeleteAPIToken(ctx context.Context, tokenID string) error {
-	return client.doRequest(ctx, http.MethodDelete, apiTokensPath+"/"+url.PathEscape(tokenID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, apiTokensPath+"/"+url.PathEscape(tokenID), nil, nil)
+}
+
+// RotateAPIToken renews a personal token: the platform mints a replacement
+// under the same name and renames the old token "<name>-replaced-<stamp>",
+// which keeps working for the overlap.
+func (client *Client) RotateAPIToken(ctx context.Context, tokenID string) (*OrganisationTokenRotated, error) {
+	var rotated OrganisationTokenRotated
+	if err := client.doRequest(ctx, http.MethodPost, apiTokensPath+"/"+url.PathEscape(tokenID)+"/rotate", tokenRotationOverlap{OverlapHours: tokenRotationOverlapHours}, &rotated); err != nil {
+		return nil, err
+	}
+	return &rotated, nil
 }
 
 // ListServiceTokens returns the organisation's service tokens, revoked ones
@@ -166,14 +197,25 @@ func (client *Client) CreateServiceToken(ctx context.Context, request Organisati
 	return &created, nil
 }
 
-// RevokeServiceToken revokes a service token. Already revoked (409) and gone
-// (404) are both accepted.
+// RevokeServiceToken revokes a service token. Already revoked (409) is
+// accepted; gone is a NotFound APIError.
 func (client *Client) RevokeServiceToken(ctx context.Context, tokenID string) error {
-	return client.doRequest(ctx, http.MethodPost, serviceTokensPath+"/"+url.PathEscape(tokenID)+"/revoke", nil, nil, http.StatusConflict, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodPost, serviceTokensPath+"/"+url.PathEscape(tokenID)+"/revoke", nil, nil, http.StatusConflict)
+}
+
+// RotateServiceToken renews a service token on the same account, like
+// RotateAPIToken.
+func (client *Client) RotateServiceToken(ctx context.Context, tokenID string) (*OrganisationTokenRotated, error) {
+	var rotated OrganisationTokenRotated
+	if err := client.doRequest(ctx, http.MethodPost, serviceTokensPath+"/"+url.PathEscape(tokenID)+"/rotate", tokenRotationOverlap{OverlapHours: tokenRotationOverlapHours}, &rotated); err != nil {
+		return nil, err
+	}
+	return &rotated, nil
 }
 
 // DeleteServiceToken deletes a revoked service token. A token already gone
-// is not an error.
+// is a NotFound APIError. Deleting an account's last token stands the
+// account down: its role assignments are retired.
 func (client *Client) DeleteServiceToken(ctx context.Context, tokenID string) error {
-	return client.doRequest(ctx, http.MethodDelete, serviceTokensPath+"/"+url.PathEscape(tokenID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, serviceTokensPath+"/"+url.PathEscape(tokenID), nil, nil)
 }

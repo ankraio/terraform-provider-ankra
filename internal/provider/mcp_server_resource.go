@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"sort"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -89,9 +88,13 @@ func (server *mcpServerResource) Schema(_ context.Context, _ resource.SchemaRequ
 				Required:            true,
 			},
 			"env": schema.MapAttribute{
-				MarkdownDescription: "Environment variables and headers sent to the server. A value under a key that looks sensitive " +
-					"(token, secret, password, api_key, authorization and the like) must be a `${SECRET_SLOT:<id>}` or `${VAULT:<path>}` " +
-					"marker: the platform refuses plaintext there. Values are never returned, so only a change to the set of keys is detected.",
+				MarkdownDescription: "Environment variables and headers sent to the server. Only the keys you set are managed: keys " +
+					"added outside Terraform (an auth header set in the portal, say) are left alone, and leaving `env` unset touches " +
+					"nothing. A key removed from `env` is set to an empty value, because the API cannot delete a single key. A value " +
+					"under a key that looks sensitive (token, secret, password, api_key, authorization and the like) must be a " +
+					"`${SECRET_SLOT:<id>}` or `${VAULT:<path>}` marker: the platform refuses plaintext there. The values you set are " +
+					"stored in Terraform state (marked sensitive). The platform never returns values, so drift is detected only when " +
+					"a configured key disappears.",
 				ElementType: types.StringType,
 				Optional:    true,
 				Sensitive:   true,
@@ -162,6 +165,7 @@ func (server *mcpServerResource) Create(ctx context.Context, request resource.Cr
 	}
 	plan.ID = types.StringValue(created.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (server *mcpServerResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -195,6 +199,7 @@ func (server *mcpServerResource) Read(ctx context.Context, request resource.Read
 	state.AdapterKey = types.StringPointerValue(stored.AdapterKey)
 	state.ClusterAllowList = organisationSetFromStrings(stored.ClusterAllowList)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (server *mcpServerResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -202,25 +207,23 @@ func (server *mcpServerResource) Update(ctx context.Context, request resource.Up
 	if apiClient == nil {
 		return
 	}
-	var plan mcpServerModel
+	var state, plan mcpServerModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	env := mcpServerEnv(ctx, plan.Env, &response.Diagnostics)
+	envPatch := mcpServerEnvPatch(mcpServerEnv(ctx, state.Env, &response.Diagnostics), mcpServerEnv(ctx, plan.Env, &response.Diagnostics))
 	allowedTools := organisationStringsFromSet(ctx, plan.AllowedTools, &response.Diagnostics)
 	clusterAllowList := organisationStringsFromSet(ctx, plan.ClusterAllowList, &response.Diagnostics)
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if env == nil {
-		env = map[string]string{}
-	}
 
 	if _, err := apiClient.UpdateMCPServer(ctx, plan.ID.ValueString(), client.MCPServerUpdate{
 		Description:      plan.Description.ValueString(),
 		URL:              plan.URL.ValueString(),
-		Env:              env,
+		EnvPatch:         envPatch,
 		AllowedTools:     allowedTools,
 		Enabled:          plan.Enabled.ValueBool(),
 		PermissionTier:   plan.PermissionTier.ValueString(),
@@ -243,14 +246,15 @@ func (server *mcpServerResource) Delete(ctx context.Context, request resource.De
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteMCPServer(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove MCP server", err.Error())
+	err := apiClient.DeleteMCPServer(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove MCP server", err.Error())
 }
 
 // ImportState imports by server id. env values cannot be read back, so an
-// imported server with env keys plans an update that sets the configured
-// values.
+// imported server plans an update that writes the configured env keys.
 func (server *mcpServerResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 }
@@ -264,26 +268,43 @@ func mcpServerEnv(ctx context.Context, env types.Map, diagnostics *diag.Diagnost
 	return values
 }
 
-// mcpServerEnvState keeps the state's env while the platform holds the same
-// keys. When the keys differ, the stored keys are recorded with empty values,
-// which plans an update that writes the configured env back.
-func mcpServerEnvState(ctx context.Context, stateValue types.Map, storedKeys []string, diagnostics *diag.Diagnostics) types.Map {
-	stateKeys := []string{}
-	for key := range mcpServerEnv(ctx, stateValue, diagnostics) {
-		stateKeys = append(stateKeys, key)
+// mcpServerEnvPatch is the env_patch of an update: the configured keys, and
+// an empty value for each key configuration dropped, since the API cannot
+// delete a key. Keys never configured are not named, so values set outside
+// Terraform survive. Nil means env is left untouched.
+func mcpServerEnvPatch(previous, planned map[string]string) map[string]string {
+	patch := map[string]string{}
+	for key, value := range planned {
+		patch[key] = value
 	}
-	sort.Strings(stateKeys)
-	platformKeys := append([]string{}, storedKeys...)
-	sort.Strings(platformKeys)
-	if strings.Join(stateKeys, "\x00") == strings.Join(platformKeys, "\x00") {
+	for key := range previous {
+		if _, kept := planned[key]; !kept {
+			patch[key] = ""
+		}
+	}
+	if len(patch) == 0 {
+		return nil
+	}
+	return patch
+}
+
+// mcpServerEnvState keeps the configured keys the platform still holds and
+// drops the ones it lost, which plans an update that writes them back. Keys
+// set outside Terraform are ignored.
+func mcpServerEnvState(ctx context.Context, stateValue types.Map, storedKeys []string, diagnostics *diag.Diagnostics) types.Map {
+	configured := mcpServerEnv(ctx, stateValue, diagnostics)
+	if configured == nil {
 		return stateValue
 	}
-	if len(platformKeys) == 0 {
-		return types.MapNull(types.StringType)
+	stored := map[string]bool{}
+	for _, key := range storedKeys {
+		stored[key] = true
 	}
-	elements := make(map[string]attr.Value, len(platformKeys))
-	for _, key := range platformKeys {
-		elements[key] = types.StringValue("")
+	elements := map[string]attr.Value{}
+	for key, value := range configured {
+		if stored[key] {
+			elements[key] = types.StringValue(value)
+		}
 	}
 	return types.MapValueMust(types.StringType, elements)
 }

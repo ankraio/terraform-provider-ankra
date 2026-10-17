@@ -95,6 +95,7 @@ func (member *ciPoolMemberResource) Create(ctx context.Context, request resource
 	}
 	ciPoolMemberApply(&plan, pool)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (member *ciPoolMemberResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -137,6 +138,7 @@ func (member *ciPoolMemberResource) Read(ctx context.Context, request resource.R
 	}
 	ciPoolMemberApply(&state, pool)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (member *ciPoolMemberResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -149,9 +151,11 @@ func (member *ciPoolMemberResource) Delete(ctx context.Context, request resource
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.RemoveOrganisationCIPoolMember(ctx, state.ClusterID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove cluster from the CI pool", err.Error())
+	err := apiClient.RemoveOrganisationCIPoolMember(ctx, state.ClusterID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove cluster from the CI pool", err.Error())
 }
 
 // ImportState imports by cluster id.

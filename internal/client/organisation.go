@@ -32,6 +32,7 @@ type OrganisationMember struct {
 	Email                *string `json:"email"`
 	Status               *string `json:"status"`
 	Role                 *string `json:"role"`
+	UserCurrent          *bool   `json:"user_current"`
 	ServicePrincipalKind *string `json:"service_principal_kind"`
 	ServicePrincipalName *string `json:"service_principal_name"`
 }
@@ -122,10 +123,57 @@ func (client *Client) InviteOrganisationMember(ctx context.Context, request Orga
 }
 
 // RemoveOrganisationMember removes a member or a pending invite by user id.
-// A membership already gone is not an error.
+// A membership already gone is a NotFound APIError.
 func (client *Client) RemoveOrganisationMember(ctx context.Context, organisationID, userID string) error {
 	body := organisationMemberRemoval{UserID: userID, OrganisationID: organisationID}
-	return client.doRequest(ctx, http.MethodDelete, organisationPath+"/user", body, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, organisationPath+"/user", body, nil)
+}
+
+// OrganisationCaller is the organisation requests act in and the user the
+// token authenticates as there.
+type OrganisationCaller struct {
+	OrganisationID string
+	UserID         string
+}
+
+// CurrentCaller resolves the current organisation and finds the token's user
+// in its roster, the row the platform marks user_current.
+func (client *Client) CurrentCaller(ctx context.Context) (*OrganisationCaller, error) {
+	organisationID, err := client.CurrentOrganisationID(ctx)
+	if err != nil {
+		return nil, err
+	}
+	detail, err := client.GetOrganisation(ctx, organisationID)
+	if err != nil {
+		return nil, err
+	}
+	for _, member := range detail.Users {
+		if member.UserCurrent != nil && *member.UserCurrent && member.ID != nil {
+			return &OrganisationCaller{OrganisationID: organisationID, UserID: *member.ID}, nil
+		}
+	}
+	return nil, errors.New("the organisation roster does not mark the token's user")
+}
+
+// OrganisationRole is one role an organisation can grant.
+type OrganisationRole struct {
+	Slug    string `json:"slug"`
+	Name    string `json:"name"`
+	Builtin bool   `json:"builtin"`
+}
+
+type organisationRolesEnvelope struct {
+	Roles []OrganisationRole `json:"roles"`
+}
+
+// ListOrganisationRoles lists the built-in and custom roles. It needs the
+// members.read permission.
+func (client *Client) ListOrganisationRoles(ctx context.Context) ([]OrganisationRole, error) {
+	var envelope organisationRolesEnvelope
+	if err := client.doRequest(ctx, http.MethodGet, organisationPath+"/roles", nil, &envelope); err != nil {
+		return nil, err
+	}
+	return envelope.Roles, nil
 }
 
 // CurrentOrganisationID is the organisation requests act in: the provider's

@@ -77,33 +77,10 @@ type OrganisationAISpendCap struct {
 	DailyTokenHardCap *int64   `json:"daily_token_hard_cap"`
 }
 
-// OrganisationAISpendCapUpdate is the full cap write: every key is sent, and a null
-// clears that cap.
-type OrganisationAISpendCapUpdate struct {
-	DailyChatUSDCap   *float64 `json:"daily_chat_usd_cap"`
-	DailyTokenSoftCap *int64   `json:"daily_token_soft_cap"`
-	DailyTokenHardCap *int64   `json:"daily_token_hard_cap"`
-}
-
 // OrganisationAIEnvironment is the organisation's AI workspace and preview environment.
 type OrganisationAIEnvironment struct {
 	StagingClusterID     *string `json:"staging_cluster_id"`
 	StagingClusterName   *string `json:"staging_cluster_name"`
-	WorkspaceTTLHours    int64   `json:"workspace_ttl_hours"`
-	DemoTTLHours         int64   `json:"demo_ttl_hours"`
-	DefaultGatewayMode   string  `json:"default_gateway_mode"`
-	DemoBaseDomain       *string `json:"demo_base_domain"`
-	DemoIngressClassName *string `json:"demo_ingress_class_name"`
-	DemoTLSSecretName    *string `json:"demo_tls_secret_name"`
-	DemoCertIssuerName   *string `json:"demo_cert_issuer_name"`
-}
-
-// OrganisationAIEnvironmentUpdate writes the environment settings this provider owns.
-// Every key is sent, so a null staging cluster or demo setting clears it.
-// dns_root_domain is deliberately absent: it moves the organisation's DNS
-// and is managed separately.
-type OrganisationAIEnvironmentUpdate struct {
-	StagingClusterID     *string `json:"staging_cluster_id"`
 	WorkspaceTTLHours    int64   `json:"workspace_ttl_hours"`
 	DemoTTLHours         int64   `json:"demo_ttl_hours"`
 	DefaultGatewayMode   string  `json:"default_gateway_mode"`
@@ -142,12 +119,12 @@ func (client *Client) PutAIReviewRepositoryRule(ctx context.Context, provider, b
 }
 
 // DeleteAIReviewRepositoryRule reverts a repository to the binding's
-// settings. A binding already gone is not an error.
+// settings. A binding already gone is a NotFound APIError.
 func (client *Client) DeleteAIReviewRepositoryRule(ctx context.Context, provider, bindingExternalID, repoFullName string) error {
 	query := url.Values{}
 	query.Set("repo_full_name", repoFullName)
 	rulePath := scmBindingPath(provider, bindingExternalID) + "/repo-overrides?" + query.Encode()
-	return client.doRequest(ctx, http.MethodDelete, rulePath, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, rulePath, nil, nil)
 }
 
 // ListAIReviewRelatedRepositories lists the related-repository pairs of one
@@ -173,10 +150,10 @@ func (client *Client) CreateAIReviewRelatedRepository(ctx context.Context, reque
 	return &created, nil
 }
 
-// DeleteAIReviewRelatedRepository removes a pair. A pair already gone is not
-// an error.
+// DeleteAIReviewRelatedRepository removes a pair. A pair already gone is a
+// NotFound APIError.
 func (client *Client) DeleteAIReviewRelatedRepository(ctx context.Context, relatedRepositoryID string) error {
-	return client.doRequest(ctx, http.MethodDelete, relatedReposPath+"/"+url.PathEscape(relatedRepositoryID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, relatedReposPath+"/"+url.PathEscape(relatedRepositoryID), nil, nil)
 }
 
 // GetAISpendCap reads the organisation's daily AI caps.
@@ -188,8 +165,9 @@ func (client *Client) GetAISpendCap(ctx context.Context) (*OrganisationAISpendCa
 	return &spendCap, nil
 }
 
-// UpdateAISpendCap writes the organisation's daily AI caps.
-func (client *Client) UpdateAISpendCap(ctx context.Context, request OrganisationAISpendCapUpdate) (*OrganisationAISpendCap, error) {
+// UpdateAISpendCap writes the named caps: an absent key keeps the stored cap
+// and a null clears it.
+func (client *Client) UpdateAISpendCap(ctx context.Context, request map[string]any) (*OrganisationAISpendCap, error) {
 	var spendCap OrganisationAISpendCap
 	if err := client.doRequest(ctx, http.MethodPut, aiSpendCapPath, request, &spendCap); err != nil {
 		return nil, err
@@ -206,8 +184,10 @@ func (client *Client) GetAIEnvironment(ctx context.Context) (*OrganisationAIEnvi
 	return &environment, nil
 }
 
-// UpdateAIEnvironment writes the organisation's AI environment settings.
-func (client *Client) UpdateAIEnvironment(ctx context.Context, request OrganisationAIEnvironmentUpdate) (*OrganisationAIEnvironment, error) {
+// UpdateAIEnvironment writes the named environment settings: an absent key
+// keeps the stored value and a null clears a nullable one. The provider never
+// names dns_root_domain, which moves the organisation's DNS.
+func (client *Client) UpdateAIEnvironment(ctx context.Context, request map[string]any) (*OrganisationAIEnvironment, error) {
 	var environment OrganisationAIEnvironment
 	if err := client.doRequest(ctx, http.MethodPut, aiEnvironmentPath, request, &environment); err != nil {
 		return nil, err

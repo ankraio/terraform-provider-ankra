@@ -23,6 +23,7 @@ var (
 	_ resource.Resource                = (*organisationMemberResource)(nil)
 	_ resource.ResourceWithConfigure   = (*organisationMemberResource)(nil)
 	_ resource.ResourceWithImportState = (*organisationMemberResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*organisationMemberResource)(nil)
 )
 
 // organisationMemberRoles are the roles the invite endpoint accepts.
@@ -54,8 +55,11 @@ func (member *organisationMemberResource) Metadata(_ context.Context, request re
 func (member *organisationMemberResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A member of an organisation, added by invitation. The counterpart of `ankra org invite` and `ankra org remove`.\n\n" +
-			"The API offers API tokens no role change, so changing `role` removes the member and invites them again; " +
-			"an active member is then pending until they accept.",
+			"API tokens have no role change, and removing and re-inviting a member would retire their role assignments, delete " +
+			"their GitHub credentials and leave them pending, so a change of `role` (in configuration, or made in the portal) " +
+			"stops the plan with an error: change the role in the portal and set `role` to match. A plan that would remove or " +
+			"replace the provider's own membership is refused too. Destroy removes the member, which retires their role " +
+			"assignments.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "The member's user id.",
@@ -69,15 +73,15 @@ func (member *organisationMemberResource) Schema(_ context.Context, _ resource.S
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()},
 			},
 			"email": schema.StringAttribute{
-				MarkdownDescription: "Email address invited. The member's account may carry a different address (a relay address, for example), so this is not read back.",
+				MarkdownDescription: "Email address invited. The member's account may carry a different address (a relay address, for example), so it is never read back, and a change of letter case is not a change. Changing it invites someone else.",
 				Required:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(organisationMemberEmailChanged,
+					"Inviting a different address replaces the member.", "Inviting a different address replaces the member.")},
 			},
 			"role": schema.StringAttribute{
-				MarkdownDescription: "Role: `member`, `admin` or `read-only`. Changing it re-invites the member.",
+				MarkdownDescription: "Role at invitation: `member`, `admin` or `read-only`. It cannot be changed here; change it in the portal and set this to match.",
 				Required:            true,
 				Validators:          []validator.String{organisationStringOneOf{values: organisationMemberRoles}},
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"status": schema.StringAttribute{
 				MarkdownDescription: "Membership status, `pending` until the invite is accepted, then `active`.",
@@ -142,6 +146,7 @@ func (member *organisationMemberResource) Create(ctx context.Context, request re
 	plan.Status = types.StringValue(organisationMemberStatus(row))
 	plan.InviteID = types.StringPointerValue(row.InviteID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (member *organisationMemberResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -178,16 +183,62 @@ func (member *organisationMemberResource) Read(ctx context.Context, request reso
 	if row.Role != nil {
 		state.Role = types.StringValue(*row.Role)
 	}
-	if state.Email.IsNull() && row.Email != nil {
-		state.Email = types.StringValue(*row.Email)
-	}
 	state.Status = types.StringValue(organisationMemberStatus(row))
 	state.InviteID = types.StringPointerValue(row.InviteID)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
-// Update is never reached with a change: every configurable attribute
-// forces replacement.
+// ModifyPlan refuses what the API cannot do safely: a role change, which
+// would mean removing and re-inviting the member, and removing or replacing
+// the provider's own membership.
+func (member *organisationMemberResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() {
+		return
+	}
+	var state organisationMemberModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	isRemoval := request.Plan.Raw.IsNull()
+	if !isRemoval {
+		var plan organisationMemberModel
+		response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+		if response.Diagnostics.HasError() {
+			return
+		}
+		if !plan.Role.IsUnknown() && !plan.Role.Equal(state.Role) {
+			response.Diagnostics.AddAttributeError(path.Root("role"), "Member role cannot change here",
+				fmt.Sprintf("Member %s holds the %s role, and configuration says %s. API tokens cannot change a role, and removing and "+
+					"re-inviting the member would retire their role assignments and delete their GitHub credentials. Change the role in "+
+					"the portal, then set role to match.", state.ID.ValueString(), state.Role.ValueString(), plan.Role.ValueString()))
+			return
+		}
+		isRemoval = organisationMemberEmailReplaced(state.Email, plan.Email)
+	}
+	if !isRemoval {
+		return
+	}
+	apiClient := member.requireClient(&response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
+	caller, err := apiClient.CurrentCaller(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to resolve the provider's identity", err.Error())
+		return
+	}
+	if caller.UserID == state.ID.ValueString() {
+		response.Diagnostics.AddError("Refusing to remove the provider's own membership",
+			fmt.Sprintf("This plan would remove user %s from organisation %s, and that is the user the provider authenticates as: "+
+				"every later request would fail. Remove it from Terraform with `terraform state rm` instead.",
+				state.ID.ValueString(), state.OrganisationID.ValueString()))
+	}
+}
+
+// Update stores the plan: role changes are refused at plan time, so only an
+// email spelling change, or an imported member's first email, reaches it.
 func (member *organisationMemberResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	if member.requireClient(&response.Diagnostics) == nil {
 		return
@@ -210,13 +261,16 @@ func (member *organisationMemberResource) Delete(ctx context.Context, request re
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.RemoveOrganisationMember(ctx, state.OrganisationID.ValueString(), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove organisation member", err.Error())
+	err := apiClient.RemoveOrganisationMember(ctx, state.OrganisationID.ValueString(), state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove organisation member", err.Error())
 }
 
-// ImportState imports by "<organisation_id>/<user_id>". email is filled
-// from the roster.
+// ImportState imports by "<organisation_id>/<user_id>". email is not read
+// from the roster, which may hold a relay address: the first apply records
+// the configured one without replacing the member.
 func (member *organisationMemberResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	parts, err := organisationSplitImportID(request.ID, 2, "<organisation_id>/<user_id>")
 	if err != nil {
@@ -234,6 +288,20 @@ func organisationMemberByEmail(members []client.OrganisationMember, email string
 		}
 	}
 	return nil
+}
+
+// organisationMemberEmailReplaced reports whether a planned email names a
+// different address: an imported member has no recorded email, and a change
+// of letter case is the same address.
+func organisationMemberEmailReplaced(state, plan types.String) bool {
+	if state.IsNull() || state.IsUnknown() || plan.IsUnknown() {
+		return false
+	}
+	return !strings.EqualFold(state.ValueString(), plan.ValueString())
+}
+
+func organisationMemberEmailChanged(_ context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	response.RequiresReplace = organisationMemberEmailReplaced(request.StateValue, request.PlanValue)
 }
 
 func organisationMemberStatus(row *client.OrganisationMember) string {

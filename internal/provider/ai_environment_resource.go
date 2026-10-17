@@ -11,9 +11,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -31,12 +30,18 @@ var (
 const aiEnvironmentID = "ai_environment"
 
 // aiEnvironmentDefaults is what the platform answers for an organisation
-// that never chose (usecase/aienvironment defaultSettings), and what
-// destroy restores.
-var aiEnvironmentDefaults = client.OrganisationAIEnvironmentUpdate{
-	WorkspaceTTLHours:  8,
-	DemoTTLHours:       24,
-	DefaultGatewayMode: "ask",
+// that never chose (usecase/aienvironment defaultSettings). Destroy writes
+// these back for the fields the configuration set. staging_cluster_id has no
+// entry: clearing it would stop every AI workspace and demo, so destroy
+// leaves it as it is.
+var aiEnvironmentDefaults = map[string]any{
+	"workspace_ttl_hours":     8,
+	"demo_ttl_hours":          24,
+	"default_gateway_mode":    "ask",
+	"demo_base_domain":        nil,
+	"demo_ingress_class_name": nil,
+	"demo_tls_secret_name":    nil,
+	"demo_cert_issuer_name":   nil,
 }
 
 type aiEnvironmentResource struct {
@@ -66,97 +71,108 @@ func (environment *aiEnvironmentResource) Metadata(_ context.Context, request re
 	response.TypeName = request.ProviderTypeName + "_ai_environment"
 }
 
+func aiEnvironmentString(description string, validators ...validator.String) schema.StringAttribute {
+	return schema.StringAttribute{
+		MarkdownDescription: description, Optional: true, Computed: true, Validators: validators,
+		PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+	}
+}
+
+func aiEnvironmentInt64(description string) schema.Int64Attribute {
+	return schema.Int64Attribute{
+		MarkdownDescription: description, Optional: true, Computed: true,
+		PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+	}
+}
+
 func (environment *aiEnvironmentResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The organisation's AI environment: the staging cluster AI workspaces and pull request demos run on, " +
 			"their lifetimes, the default AI Gateway mode, and the preview domain demos are published under. The counterpart of " +
-			"`ankra org ai-environment set`. One per organisation; changes need organisation admin. Destroy restores the platform " +
-			"defaults and clears the staging cluster and preview settings. The organisation's DNS root domain lives on the same " +
-			"platform object but is not managed here.",
+			"`ankra org ai-environment set`. One per organisation; changes need organisation admin.\n\n" +
+			"Only the attributes you set are managed: an attribute left unset keeps the organisation's value and is read back as a " +
+			"computed value, and removing one from configuration stops managing it without clearing it. Destroy resets the " +
+			"attributes the configuration set to the platform defaults, except `staging_cluster_id`, which is left as it is because " +
+			"clearing it would stop every AI workspace and demo. The organisation's DNS root domain lives on the same platform " +
+			"object but is never touched here.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Always `ai_environment`.",
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
-			"staging_cluster_id": schema.StringAttribute{
-				MarkdownDescription: "Cluster AI workspaces and demos run on. It must be an eligible cluster of the organisation.",
-				Optional:            true,
-			},
+			"staging_cluster_id": aiEnvironmentString("Cluster AI workspaces and demos run on. It must be an eligible cluster of the organisation. The provider never clears it."),
 			"staging_cluster_name": schema.StringAttribute{
 				MarkdownDescription: "Name of the staging cluster.",
 				Computed:            true,
 			},
-			"workspace_ttl_hours": schema.Int64Attribute{
-				MarkdownDescription: "AI workspace lifetime, 1 to 168 hours. Defaults to 8.",
-				Optional:            true, Computed: true,
-				Default: int64default.StaticInt64(aiEnvironmentDefaults.WorkspaceTTLHours),
-			},
-			"demo_ttl_hours": schema.Int64Attribute{
-				MarkdownDescription: "Demo lifetime, 1 to 720 hours. Defaults to 24.",
-				Optional:            true, Computed: true,
-				Default: int64default.StaticInt64(aiEnvironmentDefaults.DemoTTLHours),
-			},
-			"default_gateway_mode": schema.StringAttribute{
-				MarkdownDescription: "Default AI Gateway mode for integrations: `ask` (default) or `agent`.",
-				Optional:            true, Computed: true,
-				Default:    stringdefault.StaticString(aiEnvironmentDefaults.DefaultGatewayMode),
-				Validators: []validator.String{organisationStringOneOf{values: []string{"ask", "agent"}}},
-			},
-			"demo_base_domain": schema.StringAttribute{
-				MarkdownDescription: "Wildcard zone demos are published under. Unset falls back to the staging cluster's own DNS zone.",
-				Optional:            true,
-			},
-			"demo_ingress_class_name": schema.StringAttribute{
-				MarkdownDescription: "Ingress class for demo ingresses.",
-				Optional:            true,
-			},
-			"demo_tls_secret_name": schema.StringAttribute{
-				MarkdownDescription: "Secret holding a certificate for the preview domain.",
-				Optional:            true,
-			},
-			"demo_cert_issuer_name": schema.StringAttribute{
-				MarkdownDescription: "cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`.",
-				Optional:            true,
-			},
+			"workspace_ttl_hours": aiEnvironmentInt64("AI workspace lifetime, 1 to 168 hours. Platform default 8."),
+			"demo_ttl_hours":      aiEnvironmentInt64("Demo lifetime, 1 to 720 hours. Platform default 24."),
+			"default_gateway_mode": aiEnvironmentString("Default AI Gateway mode for integrations: `ask` (the platform default) or `agent`.",
+				organisationStringOneOf{values: []string{"ask", "agent"}}),
+			"demo_base_domain":        aiEnvironmentString("Wildcard zone demos are published under; null falls back to the staging cluster's own DNS zone. Stored lowercased."),
+			"demo_ingress_class_name": aiEnvironmentString("Ingress class for demo ingresses. Stored lowercased."),
+			"demo_tls_secret_name":    aiEnvironmentString("Secret holding a certificate for the preview domain. Stored lowercased."),
+			"demo_cert_issuer_name":   aiEnvironmentString("cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`. Stored lowercased."),
 		},
 	}
 }
 
 func (environment *aiEnvironmentResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
-	environment.write(ctx, request.Plan, &response.State, &response.Diagnostics)
+	environment.write(ctx, request.Config, &response.State, response.Private, &response.Diagnostics)
 }
 
 func (environment *aiEnvironmentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
-	environment.write(ctx, request.Plan, &response.State, &response.Diagnostics)
+	environment.write(ctx, request.Config, &response.State, response.Private, &response.Diagnostics)
 }
 
-func (environment *aiEnvironmentResource) write(ctx context.Context, plan tfsdk.Plan, state *tfsdk.State, diagnostics *diag.Diagnostics) {
+// write sends only the configured fields; the platform keeps every key the
+// body does not carry.
+func (environment *aiEnvironmentResource) write(ctx context.Context, config tfsdk.Config, state *tfsdk.State, private privateStateWriter, diagnostics *diag.Diagnostics) {
 	apiClient := environment.requireClient(diagnostics)
 	if apiClient == nil {
 		return
 	}
 	var model aiEnvironmentModel
-	diagnostics.Append(plan.Get(ctx, &model)...)
+	diagnostics.Append(config.Get(ctx, &model)...)
 	if diagnostics.HasError() {
 		return
 	}
-	stored, err := apiClient.UpdateAIEnvironment(ctx, client.OrganisationAIEnvironmentUpdate{
-		StagingClusterID:     stringPointer(model.StagingClusterID),
-		WorkspaceTTLHours:    model.WorkspaceTTLHours.ValueInt64(),
-		DemoTTLHours:         model.DemoTTLHours.ValueInt64(),
-		DefaultGatewayMode:   model.DefaultGatewayMode.ValueString(),
-		DemoBaseDomain:       stringPointer(model.DemoBaseDomain),
-		DemoIngressClassName: stringPointer(model.DemoIngressClassName),
-		DemoTLSSecretName:    stringPointer(model.DemoTLSSecretName),
-		DemoCertIssuerName:   stringPointer(model.DemoCertIssuerName),
-	})
+	body := map[string]any{}
+	putString := func(key string, value types.String) {
+		if !value.IsNull() && !value.IsUnknown() {
+			body[key] = value.ValueString()
+		}
+	}
+	putInt64 := func(key string, value types.Int64) {
+		if !value.IsNull() && !value.IsUnknown() {
+			body[key] = value.ValueInt64()
+		}
+	}
+	putString("staging_cluster_id", model.StagingClusterID)
+	putInt64("workspace_ttl_hours", model.WorkspaceTTLHours)
+	putInt64("demo_ttl_hours", model.DemoTTLHours)
+	putString("default_gateway_mode", model.DefaultGatewayMode)
+	putString("demo_base_domain", model.DemoBaseDomain)
+	putString("demo_ingress_class_name", model.DemoIngressClassName)
+	putString("demo_tls_secret_name", model.DemoTLSSecretName)
+	putString("demo_cert_issuer_name", model.DemoCertIssuerName)
+
+	var stored *client.OrganisationAIEnvironment
+	var err error
+	if len(body) == 0 {
+		stored, err = apiClient.GetAIEnvironment(ctx)
+	} else {
+		stored, err = apiClient.UpdateAIEnvironment(ctx, body)
+	}
 	if err != nil {
 		diagnostics.AddError("Unable to write AI environment", err.Error())
 		return
 	}
 	aiEnvironmentApply(&model, stored)
 	diagnostics.Append(state.Set(ctx, &model)...)
+	diagnostics.Append(organisationRecordManagedKeys(ctx, body, private)...)
+	diagnostics.Append(trackScope(ctx, apiClient, private)...)
 }
 
 func (environment *aiEnvironmentResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -176,16 +192,21 @@ func (environment *aiEnvironmentResource) Read(ctx context.Context, request reso
 	}
 	aiEnvironmentApply(&state, stored)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
-// Delete restores the defaults and clears the staging cluster and preview
-// settings.
-func (environment *aiEnvironmentResource) Delete(ctx context.Context, _ resource.DeleteRequest, response *resource.DeleteResponse) {
+// Delete resets the fields the configuration set and leaves the rest, and
+// the staging cluster, alone.
+func (environment *aiEnvironmentResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	apiClient := environment.requireClient(&response.Diagnostics)
 	if apiClient == nil {
 		return
 	}
-	if _, err := apiClient.UpdateAIEnvironment(ctx, aiEnvironmentDefaults); err != nil {
+	body := organisationResetBody(organisationManagedKeys(ctx, request.Private), aiEnvironmentDefaults)
+	if len(body) == 0 {
+		return
+	}
+	if _, err := apiClient.UpdateAIEnvironment(ctx, body); err != nil {
 		response.Diagnostics.AddError("Unable to restore the default AI environment", err.Error())
 	}
 }
