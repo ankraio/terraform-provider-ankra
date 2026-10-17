@@ -12,11 +12,20 @@ import (
 func configurationResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewOrganisationVariableResource,
+		NewHelmRegistryResource,
+		NewHelmRegistryCredentialResource,
+		NewClusterVariableResource,
+		NewClusterStackVariableResource,
 	}
 }
 
 func configurationDataSources() []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewOrganisationVariablesDataSource,
+		NewHelmRegistriesDataSource,
+		NewHelmRegistryCredentialsDataSource,
+		NewHelmChartDataSource,
+		NewClusterVariablesDataSource,
+		NewClusterStackVariablesDataSource,
 	}
 }
