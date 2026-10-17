@@ -22,7 +22,7 @@ import (
 )
 
 // clusterSettingsResolvePlacement stores a ci_placement write the way the
-// platform does (enginekit/agentcisettings ResolvePlacement): null clears
+// platform does: null clears
 // it; node group "ci" contributes its selector and the toleration of its
 // taint; the mode defaults to required and a toleration's operator to Equal
 // with a value and Exists without.
@@ -37,12 +37,13 @@ func clusterSettingsResolvePlacement(t *testing.T, raw json.RawMessage) any {
 	}
 	selector := map[string]string{}
 	for key, value := range placement.NodeSelector {
-		selector[key] = value
+		selector[strings.TrimSpace(key)] = strings.TrimSpace(value)
 	}
 	tolerations := []client.ClusterAgentCIPlacementToleration{}
 	for _, toleration := range placement.Tolerations {
 		tolerations = append(tolerations, clusterAgentCIPlacementNormaliseToleration(toleration))
 	}
+	placement.NodeGroup = strings.TrimSpace(placement.NodeGroup)
 	if placement.NodeGroup == "ci" {
 		selector["ankra.io/node-group"] = "ci"
 		tolerations = append(tolerations, client.ClusterAgentCIPlacementToleration{Key: "dedicated", Operator: "Equal", Value: "ci", Effect: "NoSchedule"})
@@ -63,7 +64,7 @@ type clusterSettingsFollowupState struct {
 }
 
 // addFollowupRoutes registers the control-plane self-heal, agent resources
-// and labels routes (cluster go/internal/cliapi), answering as the platform
+// and labels routes, answering as the platform
 // does: the agent sizing write canonicalises quantities ("2048Mi" is stored
 // as "2Gi") and refuses a body naming nothing; the labels PATCH refuses an
 // empty change and the reserved environment key.
@@ -173,8 +174,8 @@ resource "ankra_cluster_agent_ci_settings" "prod" {
 `, clusterSettingsTestCluster, admitting, placement)
 	}
 	byGroup := `{
-    node_group  = "ci"
-    tolerations = [{ key = "gpu", effect = "NoSchedule" }]
+    node_group  = " ci"
+    tolerations = [{ key = "gpu ", effect = "NoSchedule" }]
   }`
 	bySelector := `{
     node_selector = { "pool" = "builders" }
@@ -195,7 +196,7 @@ resource "ankra_cluster_agent_ci_settings" "prod" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_max_admitting_runs", "4"),
 					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_reservation_sizing", "measured"),
-					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_placement.node_group", "ci"),
+					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_placement.node_group", " ci"),
 					resource.TestCheckNoResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_placement.node_selector.%"),
 					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_placement.tolerations.#", "1"),
 					func(*terraform.State) error {
@@ -302,7 +303,13 @@ resource "ankra_cluster_labels" "prod" {
 				ExpectError: regexp.MustCompile(`Invalid label key`),
 			},
 			{
-				Config: config(false, "2048Mi", `{ tier = "gold", region = "eu" }`),
+				// A label added in the portal is not removed silently on create.
+				Config:      config(false, "2048Mi", `{ tier = "gold", region = "eu" }`),
+				ExpectError: regexp.MustCompile(`Cluster already has labels`),
+			},
+			{
+				PreConfig: func() { delete(state.labels, "team"); state.labels["tier"] = "bronze" },
+				Config:    config(false, "2048Mi", `{ tier = "gold", region = "eu" }`),
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttr("ankra_cluster_control_plane_self_heal.prod", "enabled", "false"),
 					// The platform stores 2Gi; the configured spelling is kept.
@@ -376,7 +383,7 @@ resource "ankra_cluster_labels" "prod" {
 }
 
 // stackProtectionFake models the stack protect, unprotect and backup
-// posture routes (cluster go/internal/restorepointsapi and backupapi): the
+// posture routes: the
 // policy names the vault by name whether the write named it by name or id,
 // unprotect needs the stack name as confirmation, and the posture answers
 // unprotected/no_policy for a stack without a policy.
@@ -386,6 +393,9 @@ type stackProtectionFake struct {
 	schedule   string
 	protects   []map[string]any
 	unprotects int
+	// policyUnreadable makes the posture answer unknown/policy_unreadable,
+	// with no vault or schedule.
+	policyUnreadable bool
 }
 
 func newStackProtectionFake(t *testing.T) *stackProtectionFake {
@@ -434,12 +444,17 @@ func newStackProtectionFake(t *testing.T) *stackProtectionFake {
 			return
 		}
 		posture := map[string]any{"cluster_id": clusterSettingsTestCluster, "stack_name": "shop", "stateful": true}
-		if fake.vaultName == "" {
+		if fake.policyUnreadable {
+			posture["protection_state"] = "unknown"
+			posture["unknown_reason"] = "policy_unreadable"
+		} else if fake.vaultName == "" {
 			posture["protection_state"] = "unprotected"
 			posture["unprotected_reason"] = "no_policy"
 		} else {
 			posture["protection_state"] = "protected"
 			posture["vault_name"] = fake.vaultName
+			// The platform reports its default for a policy written without one.
+			posture["schedule"] = "daily"
 			if fake.schedule != "" {
 				posture["schedule"] = fake.schedule
 			}
@@ -536,6 +551,45 @@ resource "ankra_stack_backup_protection" "shop" {
 	if fake.unprotects != 1 || fake.vaultName != "" {
 		t.Errorf("destroy unprotected %d times, vault %q; want once", fake.unprotects, fake.vaultName)
 	}
+}
+
+// TestAccStackBackupProtectionDefaultScheduleAndUnreadablePolicy: an unset
+// schedule reads back as the platform default without a diff, and a policy
+// the platform cannot read keeps the resource instead of re-protecting.
+func TestAccStackBackupProtectionDefaultScheduleAndUnreadablePolicy(t *testing.T) {
+	fake := newStackProtectionFake(t)
+	config := fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_stack_backup_protection" "shop" {
+  cluster_id = %q
+  stack_name = "shop"
+  vault      = "production-backups"
+}
+`, clusterSettingsTestCluster)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check:  resource.TestCheckNoResourceAttr("ankra_stack_backup_protection.shop", "schedule"),
+			},
+			{Config: config, PlanOnly: true},
+			{
+				PreConfig: func() { fake.policyUnreadable = true },
+				Config:    config,
+				PlanOnly:  true,
+			},
+			{
+				Config: config,
+				Check: func(*terraform.State) error {
+					if len(fake.protects) != 1 {
+						return fmt.Errorf("protected %d times; an unreadable policy must not be overwritten", len(fake.protects))
+					}
+					fake.policyUnreadable = false
+					return nil
+				},
+			},
+		},
+	})
 }
 
 func TestAccStackBackupProtectionMissingStack(t *testing.T) {

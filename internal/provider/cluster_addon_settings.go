@@ -75,8 +75,9 @@ func addonSettingsBlock() schema.SingleNestedBlock {
 	return schema.SingleNestedBlock{
 		MarkdownDescription: "How the platform syncs the addon, the counterpart of `ankra cluster addons settings set`. " +
 			"Without the block the addon keeps the settings it has (set in the portal or the CLI). With it, the settings are " +
-			"written on every apply and each one the block leaves out takes the platform default. The platform does not report " +
-			"settings back, so a change made outside Terraform is not detected.",
+			"written on every apply and each one the block leaves out takes the platform default, so an empty `settings {}` resets " +
+			"every setting to its default. Like the rest of `stacks`, the provider does not read the settings back, so a change made " +
+			"outside Terraform is not detected until the next apply that changes the stack rewrites it.",
 		Attributes: map[string]schema.Attribute{
 			"revision_history_limit":          optionalInt("How many release revisions are kept. Default 10."),
 			"strict_health_check":             optionalBool("Whether the addon counts as healthy only when every resource is. Default `false`."),

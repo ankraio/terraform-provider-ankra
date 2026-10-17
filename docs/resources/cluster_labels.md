@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_labels Resource - ankra"
 subcategory: ""
 description: |-
-  The free-form labels on a cluster, which dynamic cluster groups select on. The resource owns the cluster's whole label set: a label that is not in labels, including one added in the portal, is removed on the next apply. Destroying the resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.
+  The free-form labels on a cluster, which dynamic cluster groups select on. The resource owns the cluster's whole label set: a label that is not in labels, including one added in the portal, is removed on the next apply. Declare at most one ankra_cluster_labels per cluster. Creating it on a cluster that already carries labels the configuration does not name fails; add them to labels or terraform import the cluster's labels first. Destroying the resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.
 ---
 
 # ankra_cluster_labels (Resource)
 
-The free-form labels on a cluster, which dynamic cluster groups select on. The resource owns the cluster's whole label set: a label that is not in `labels`, including one added in the portal, is removed on the next apply. Destroying the resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.
+The free-form labels on a cluster, which dynamic cluster groups select on. The resource owns the cluster's whole label set: a label that is not in `labels`, including one added in the portal, is removed on the next apply. Declare at most one `ankra_cluster_labels` per cluster. Creating it on a cluster that already carries labels the configuration does not name fails; add them to `labels` or `terraform import` the cluster's labels first. Destroying the resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.
 
 ## Example Usage
 

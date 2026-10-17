@@ -29,7 +29,7 @@ var (
 )
 
 // The platform defaults destroy restores for the settings added after the
-// first release of this resource (enginekit/agentcisettings).
+// first release of this resource.
 const (
 	clusterAgentCIDefaultMaxAdmittingRuns  = 2
 	clusterAgentCIDefaultReservationSizing = "declared"

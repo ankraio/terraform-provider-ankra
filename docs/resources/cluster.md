@@ -134,7 +134,7 @@ Optional:
 - `registry_name` (String) Name of the Helm registry as connected to the Ankra organisation. Defaults to a name derived from `registry_url`; the platform accepts any name when the URL matches a registry already connected, and otherwise asks for the registry to be connected first.
 - `registry_url` (String) URL of the Helm registry that serves the chart (`https://...` or `oci://...`). Required unless the deprecated `repository_url` is set.
 - `repository_url` (String, Deprecated) Deprecated alias of `registry_url`.
-- `settings` (Block, Optional) How the platform syncs the addon, the counterpart of `ankra cluster addons settings set`. Without the block the addon keeps the settings it has (set in the portal or the CLI). With it, the settings are written on every apply and each one the block leaves out takes the platform default. The platform does not report settings back, so a change made outside Terraform is not detected. (see [below for nested schema](#nestedblock--stacks--addons--settings))
+- `settings` (Block, Optional) How the platform syncs the addon, the counterpart of `ankra cluster addons settings set`. Without the block the addon keeps the settings it has (set in the portal or the CLI). With it, the settings are written on every apply and each one the block leaves out takes the platform default, so an empty `settings {}` resets every setting to its default. Like the rest of `stacks`, the provider does not read the settings back, so a change made outside Terraform is not detected until the next apply that changes the stack rewrites it. (see [below for nested schema](#nestedblock--stacks--addons--settings))
 
 <a id="nestedblock--stacks--addons--settings"></a>
 ### Nested Schema for `stacks.addons.settings`

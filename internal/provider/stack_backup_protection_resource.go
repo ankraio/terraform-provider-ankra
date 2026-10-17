@@ -29,6 +29,10 @@ var (
 // stack that carries no backup policy.
 const stackBackupNoPolicy = "no_policy"
 
+// stackBackupDefaultSchedule is the schedule the platform reports for a
+// policy written without one.
+const stackBackupDefaultSchedule = "daily"
+
 type stackBackupProtectionResource struct {
 	configuredClient
 }
@@ -146,7 +150,7 @@ func (protectionResource *stackBackupProtectionResource) Schema(_ context.Contex
 			},
 			"backup_now": schema.BoolAttribute{
 				MarkdownDescription: "Take the first restore point when the resource is created instead of waiting for the schedule. " +
-					"Only read on create.",
+					"Only read on create: changing it later sends nothing and takes no restore point.",
 				Optional: true,
 			},
 			"protection_state": schema.StringAttribute{
@@ -242,9 +246,23 @@ func (protectionResource *stackBackupProtectionResource) Read(ctx context.Contex
 		response.Diagnostics.AddError("Unable to read the stack's backup posture", err.Error())
 		return
 	}
-	if posture.UnprotectedReason == stackBackupNoPolicy || posture.VaultName == "" {
+	if posture.UnprotectedReason == stackBackupNoPolicy {
 		// The stack no longer carries a policy: protect it again.
 		response.State.RemoveResource(ctx)
+		return
+	}
+	if posture.VaultName == "" {
+		// The stack carries a policy the platform cannot read right now
+		// (protection_state unknown). Keep what state holds rather than
+		// overwrite that policy on the next apply.
+		if state.Vault.IsNull() {
+			response.Diagnostics.AddError("Backup policy not readable",
+				"The platform reports the stack's backup protection as "+posture.ProtectionState+" and cannot read its policy, so it cannot be imported now. Try again later.")
+			return
+		}
+		state.ID = types.StringValue(clusterID + "/" + stackName)
+		state.ProtectionState = types.StringValue(posture.ProtectionState)
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 		return
 	}
 	applyStackBackupPosture(&state, posture)
@@ -299,8 +317,10 @@ func applyStackBackupPosture(model *stackBackupProtectionModel, posture *client.
 		model.Vault = types.StringValue(posture.VaultName)
 	}
 	model.VaultName = types.StringValue(posture.VaultName)
-	if strings.TrimSpace(posture.Schedule) != model.Schedule.ValueString() {
-		model.Schedule = optionalString(strings.TrimSpace(posture.Schedule))
+	reported := strings.TrimSpace(posture.Schedule)
+	unsetReadsAsDefault := model.Schedule.IsNull() && reported == stackBackupDefaultSchedule
+	if reported != model.Schedule.ValueString() && !unsetReadsAsDefault {
+		model.Schedule = optionalString(reported)
 	}
 	model.ProtectionState = types.StringValue(posture.ProtectionState)
 }

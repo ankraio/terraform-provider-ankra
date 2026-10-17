@@ -44,7 +44,7 @@ resource "ankra_stack_backup_protection" "shop" {
 
 ### Optional
 
-- `backup_now` (Boolean) Take the first restore point when the resource is created instead of waiting for the schedule. Only read on create.
+- `backup_now` (Boolean) Take the first restore point when the resource is created instead of waiting for the schedule. Only read on create: changing it later sends nothing and takes no restore point.
 - `retention` (Attributes) How many restore points each tier keeps. Unset keeps every restore point. (see [below for nested schema](#nestedatt--retention))
 - `schedule` (String) `hourly`, `daily`, `weekly` or a five-field cron expression. Unset, the platform default (daily) applies.
 - `selection` (Attributes) Which of the stack's data the restore points carry. Unset, databases are captured and no volume is. (see [below for nested schema](#nestedatt--selection))

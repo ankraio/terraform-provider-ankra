@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -25,7 +26,7 @@ var (
 	_ resource.ResourceWithImportState = (*clusterLabelsResource)(nil)
 )
 
-// The platform's label rules (enginekit/clusterlabels): lower-case keys, the
+// The platform's label rules: lower-case keys, the
 // environment key reserved for the cluster's own environment, at most 32
 // labels of at most 63 characters a part.
 const (
@@ -62,7 +63,9 @@ func (labelsResource *clusterLabelsResource) Schema(_ context.Context, _ resourc
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The free-form labels on a cluster, which dynamic cluster groups select on. The resource owns the " +
 			"cluster's whole label set: a label that is not in `labels`, including one added in the portal, is removed on the next " +
-			"apply. Destroying the resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.",
+			"apply. Declare at most one `ankra_cluster_labels` per cluster. Creating it on a cluster that already carries labels the " +
+			"configuration does not name fails; add them to `labels` or `terraform import` the cluster's labels first. Destroying the " +
+			"resource removes every label it manages. The cluster's environment is not a label; it is set on the cluster.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -81,7 +84,7 @@ func (labelsResource *clusterLabelsResource) Schema(_ context.Context, _ resourc
 func (labelsResource *clusterLabelsResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var plan clusterLabelsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if labelsResource.converge(ctx, &plan, &response.Diagnostics) {
+	if labelsResource.converge(ctx, &plan, true, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 		response.Diagnostics.Append(trackScope(ctx, labelsResource.client, response.Private)...)
 	}
@@ -90,14 +93,14 @@ func (labelsResource *clusterLabelsResource) Create(ctx context.Context, request
 func (labelsResource *clusterLabelsResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var plan clusterLabelsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if labelsResource.converge(ctx, &plan, &response.Diagnostics) {
+	if labelsResource.converge(ctx, &plan, false, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	}
 }
 
 // converge makes the cluster carry exactly the planned labels: it sets
 // every planned label and removes every other key the cluster carries.
-func (labelsResource *clusterLabelsResource) converge(ctx context.Context, plan *clusterLabelsModel, diagnostics *diag.Diagnostics) bool {
+func (labelsResource *clusterLabelsResource) converge(ctx context.Context, plan *clusterLabelsModel, isCreate bool, diagnostics *diag.Diagnostics) bool {
 	apiClient := labelsResource.requireClient(diagnostics)
 	if apiClient == nil || diagnostics.HasError() {
 		return false
@@ -114,6 +117,13 @@ func (labelsResource *clusterLabelsResource) converge(ctx context.Context, plan 
 		return false
 	}
 	change := clusterLabelsChange(current.Labels, desired)
+	if isCreate && len(change.Remove) > 0 {
+		diagnostics.AddError("Cluster already has labels",
+			fmt.Sprintf("Cluster %s carries labels this configuration does not name (%s). Creating the resource would remove them "+
+				"without the plan showing it. Add them to `labels`, or adopt the cluster's labels with "+
+				"`terraform import <address> %s` and review the next plan.", clusterID, strings.Join(change.Remove, ", "), clusterID))
+		return false
+	}
 	result := current
 	if len(change.Set) > 0 || len(change.Remove) > 0 {
 		result, err = apiClient.ChangeClusterLabels(ctx, clusterID, change)

@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -195,22 +196,18 @@ func clusterAgentCIPlacementState(ctx context.Context, prior types.Object, store
 // clusterAgentCIPlacementCovers reports whether the stored placement carries
 // everything the requested one names.
 func clusterAgentCIPlacementCovers(stored client.ClusterAgentCIPlacement, requested client.ClusterAgentCIPlacement) bool {
-	if requested.NodeGroup != stored.NodeGroup {
+	if strings.TrimSpace(requested.NodeGroup) != strings.TrimSpace(stored.NodeGroup) {
 		return false
 	}
-	requestedMode := requested.Mode
-	if requestedMode == "" {
-		requestedMode = "required"
-	}
-	storedMode := stored.Mode
-	if storedMode == "" {
-		storedMode = "required"
-	}
-	if requestedMode != storedMode {
+	if clusterAgentCIPlacementMode(requested.Mode) != clusterAgentCIPlacementMode(stored.Mode) {
 		return false
+	}
+	storedSelector := map[string]string{}
+	for key, value := range stored.NodeSelector {
+		storedSelector[strings.TrimSpace(key)] = strings.TrimSpace(value)
 	}
 	for key, value := range requested.NodeSelector {
-		if storedValue, present := stored.NodeSelector[key]; !present || storedValue != value {
+		if storedValue, present := storedSelector[strings.TrimSpace(key)]; !present || storedValue != strings.TrimSpace(value) {
 			return false
 		}
 	}
@@ -226,9 +223,26 @@ func clusterAgentCIPlacementCovers(stored client.ClusterAgentCIPlacement, reques
 	return true
 }
 
-// clusterAgentCIPlacementNormaliseToleration applies the platform's default
-// operator: Equal with a value, Exists without.
+// clusterAgentCIPlacementMode is a mode as the platform stores it: trimmed,
+// required when unset.
+func clusterAgentCIPlacementMode(mode string) string {
+	trimmed := strings.TrimSpace(mode)
+	if trimmed == "" {
+		return "required"
+	}
+	return trimmed
+}
+
+// clusterAgentCIPlacementNormaliseToleration applies the platform's
+// normalisation: members trimmed, the operator Equal with a value and
+// Exists without when unset.
 func clusterAgentCIPlacementNormaliseToleration(toleration client.ClusterAgentCIPlacementToleration) client.ClusterAgentCIPlacementToleration {
+	toleration = client.ClusterAgentCIPlacementToleration{
+		Key:      strings.TrimSpace(toleration.Key),
+		Operator: strings.TrimSpace(toleration.Operator),
+		Value:    strings.TrimSpace(toleration.Value),
+		Effect:   strings.TrimSpace(toleration.Effect),
+	}
 	if toleration.Operator == "" {
 		toleration.Operator = "Equal"
 		if toleration.Value == "" {

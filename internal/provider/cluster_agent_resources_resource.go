@@ -120,6 +120,7 @@ func (resourcesResource *clusterAgentResourcesResource) Create(ctx context.Conte
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(response.Private.SetKey(ctx, clusterAgentResourcesStoredKey, stored)...)
+	response.Diagnostics.Append(trackScope(ctx, resourcesResource.client, response.Private)...)
 }
 
 func (resourcesResource *clusterAgentResourcesResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -195,6 +196,7 @@ func (resourcesResource *clusterAgentResourcesResource) Read(ctx context.Context
 	}
 	applyClusterAgentResources(&state, resources, clusterAgentResourcesRecorded(previous))
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete returns each quantity Terraform wrote to the chart default; a
