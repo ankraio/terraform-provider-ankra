@@ -195,6 +195,7 @@ func (profileResource *stackProfileResource) Create(ctx context.Context, request
 	requestedVersion := plan.CurrentVersion
 	stackProfileToState(created.Profile, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() || requestedVersion.IsUnknown() || requestedVersion.IsNull() ||
 		requestedVersion.ValueInt64() == created.Profile.CurrentVersion {
 		return
@@ -205,6 +206,7 @@ func (profileResource *stackProfileResource) Create(ctx context.Context, request
 	}
 	plan.CurrentVersion = requestedVersion
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (profileResource *stackProfileResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -219,7 +221,7 @@ func (profileResource *stackProfileResource) Read(ctx context.Context, request r
 	}
 
 	detail, err := apiClient.GetStackProfile(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -228,6 +230,7 @@ func (profileResource *stackProfileResource) Read(ctx context.Context, request r
 	}
 	stackProfileToState(detail.Profile, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (profileResource *stackProfileResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -276,6 +279,7 @@ func (profileResource *stackProfileResource) Update(ctx context.Context, request
 	}
 	stackProfileToState(detail.Profile, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (profileResource *stackProfileResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -288,9 +292,11 @@ func (profileResource *stackProfileResource) Delete(ctx context.Context, request
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteStackProfile(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete stack profile", err.Error())
+	err := apiClient.DeleteStackProfile(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete stack profile", err.Error())
 }
 
 // ImportState imports by profile ID. The version 1 inputs are not read

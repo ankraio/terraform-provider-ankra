@@ -102,6 +102,7 @@ func (shareResource *stackProfileShareResource) Create(ctx context.Context, requ
 	}
 	stackProfileShareToState(share, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (shareResource *stackProfileShareResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -116,7 +117,7 @@ func (shareResource *stackProfileShareResource) Read(ctx context.Context, reques
 	}
 
 	shares, err := apiClient.ListStackProfileShares(ctx, state.ProfileID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -130,6 +131,7 @@ func (shareResource *stackProfileShareResource) Read(ctx context.Context, reques
 	}
 	stackProfileShareToState(share, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update is never called with a change: every configurable attribute
@@ -150,9 +152,11 @@ func (shareResource *stackProfileShareResource) Delete(ctx context.Context, requ
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteStackProfileShare(ctx, state.ProfileID.ValueString(), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to revoke stack profile share", err.Error())
+	err := apiClient.DeleteStackProfileShare(ctx, state.ProfileID.ValueString(), state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to revoke stack profile share", err.Error())
 }
 
 // ImportState imports by "<profile_id>/<organisation_slug>".

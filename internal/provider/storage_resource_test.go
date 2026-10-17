@@ -10,7 +10,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -28,9 +27,6 @@ import (
 // in X-Ankra-Project-Id, and reads in another project answer 404.
 type storageFake struct {
 	*routeFake
-	// serial runs every handler of this fake one at a time: they share
-	// maps, and routeFake only serialises handlers of the same pattern.
-	serial  sync.Mutex
 	vaults  map[string]map[string]any
 	buckets map[string]map[string]any
 	// pendingReads is how many reads a provisioning row answers before it
@@ -99,10 +95,10 @@ func newStorageFake(t *testing.T) *storageFake {
 		return fmt.Sprintf("%s-0000-0000-0000-%012d", prefix, fake.created)
 	}
 
-	fake.serialHandle("GET /api/v1/org/backup-vaults", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/backup-vaults", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"items": list(fake.vaults, request), "platform_default_in_use": false})
 	})
-	fake.serialHandle("POST /api/v1/org/backup-vaults", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/backup-vaults", func(writer http.ResponseWriter, request *http.Request) {
 		body := record(request)
 		provider, _ := body["provider"].(string)
 		if provider == "" {
@@ -116,7 +112,7 @@ func newStorageFake(t *testing.T) *storageFake {
 			"created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z", "project": request.Header.Get("X-Ankra-Project-Id")}
 		writeJSON(t, writer, http.StatusOK, public(fake.vaults[identifier]))
 	})
-	fake.serialHandle("POST /api/v1/org/backup-vaults/provision", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/backup-vaults/provision", func(writer http.ResponseWriter, request *http.Request) {
 		body := record(request)
 		identifier := newIdentifier("bbbbbbbb")
 		bucket, _ := body["bucket"].(string)
@@ -130,7 +126,7 @@ func newStorageFake(t *testing.T) *storageFake {
 		fake.pendingReads[identifier] = 2
 		writeJSON(t, writer, http.StatusAccepted, public(fake.vaults[identifier]))
 	})
-	fake.serialHandle("GET /api/v1/org/backup-vaults/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/backup-vaults/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		row := visible(fake.vaults, request, request.PathValue("id"))
 		if row == nil {
 			notFound(writer, "Backup vault not found.")
@@ -138,7 +134,7 @@ func newStorageFake(t *testing.T) *storageFake {
 		}
 		writeJSON(t, writer, http.StatusOK, public(row))
 	})
-	fake.serialHandle("DELETE /api/v1/org/backup-vaults/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("DELETE /api/v1/org/backup-vaults/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("id")
 		fake.deletes = append(fake.deletes, request.URL.String())
 		row, exists := fake.vaults[identifier]
@@ -154,10 +150,10 @@ func newStorageFake(t *testing.T) *storageFake {
 		writer.WriteHeader(http.StatusNoContent)
 	})
 
-	fake.serialHandle("GET /api/v1/org/object-storage-buckets", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/object-storage-buckets", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"items": list(fake.buckets, request)})
 	})
-	fake.serialHandle("POST /api/v1/org/object-storage-buckets", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/object-storage-buckets", func(writer http.ResponseWriter, request *http.Request) {
 		body := record(request)
 		identifier := newIdentifier("cccccccc")
 		bucket, _ := body["bucket"].(string)
@@ -172,7 +168,7 @@ func newStorageFake(t *testing.T) *storageFake {
 		fake.pendingReads[identifier] = 1
 		writeJSON(t, writer, http.StatusAccepted, public(fake.buckets[identifier]))
 	})
-	fake.serialHandle("GET /api/v1/org/object-storage-buckets/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/object-storage-buckets/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		row := visible(fake.buckets, request, request.PathValue("id"))
 		if row == nil {
 			notFound(writer, "Object storage bucket not found.")
@@ -180,7 +176,7 @@ func newStorageFake(t *testing.T) *storageFake {
 		}
 		writeJSON(t, writer, http.StatusOK, public(row))
 	})
-	fake.serialHandle("DELETE /api/v1/org/object-storage-buckets/{id}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("DELETE /api/v1/org/object-storage-buckets/{id}", func(writer http.ResponseWriter, request *http.Request) {
 		identifier := request.PathValue("id")
 		fake.deletes = append(fake.deletes, request.URL.String())
 		if row, exists := fake.buckets[identifier]; !exists || row["project"] != request.Header.Get("X-Ankra-Project-Id") {
@@ -364,10 +360,10 @@ resource "ankra_object_storage_bucket" "assets" {
 	})
 }
 
-// TestAccBackupVaultStaysInItsProject pins project scoping: a vault created
-// in one project is not visible from another, so moving the provider to
-// another project plans a new vault there instead of adopting anything.
-func TestAccBackupVaultStaysInItsProject(t *testing.T) {
+// TestAccBackupVaultScopeMoveKeepsTheVault pins project scoping: a vault
+// created in one project is invisible from another, and moving the provider
+// there neither plans a duplicate vault nor lets destroy report success.
+func TestAccBackupVaultScopeMoveKeepsTheVault(t *testing.T) {
 	fake := newStorageFake(t)
 	config := func(project string) string {
 		return fmt.Sprintf(`
@@ -386,14 +382,29 @@ resource "ankra_backup_vault" "own" {
 }
 `, fake.server.URL, project)
 	}
+	const owningProject = "11111111-2222-3333-4444-555555555555"
+	const otherProject = "66666666-7777-8888-9999-000000000000"
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
-			{Config: config("11111111-2222-3333-4444-555555555555")},
+			{Config: config(owningProject)},
 			{
-				Config:             config("66666666-7777-8888-9999-000000000000"),
-				PlanOnly:           true,
-				ExpectNonEmptyPlan: true,
+				Config:      config(otherProject),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config:      config(otherProject),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: config(owningProject),
+				Check: func(_ *terraform.State) error {
+					if len(fake.vaults) != 1 {
+						return fmt.Errorf("the scope move left %d vaults, want the original one", len(fake.vaults))
+					}
+					return nil
+				},
 			},
 		},
 	})
@@ -504,13 +515,5 @@ data "ankra_object_storage_buckets" "all" {
 			}
 			return nil
 		},
-	})
-}
-
-func (fake *storageFake) serialHandle(pattern string, handler http.HandlerFunc) {
-	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
-		fake.serial.Lock()
-		defer fake.serial.Unlock()
-		handler(writer, request)
 	})
 }

@@ -107,11 +107,12 @@ func (client *Client) ProvisionBackupVault(ctx context.Context, request BackupVa
 
 // DeleteBackupVault forgets a vault. With destroyProviderResources the
 // platform also empties and deletes the bucket it provisioned, which it
-// refuses for a bring-your-own vault. A vault already gone is not an error.
+// refuses for a bring-your-own vault. A vault the scope cannot see is a NotFound
+// APIError: the caller decides whether that means gone.
 func (client *Client) DeleteBackupVault(ctx context.Context, vaultID string, destroyProviderResources bool) error {
 	path := backupVaultsPath + "/" + url.PathEscape(vaultID)
 	if destroyProviderResources {
 		path += "?destroy_provider_resources=true"
 	}
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }

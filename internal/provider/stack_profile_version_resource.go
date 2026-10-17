@@ -203,6 +203,7 @@ func (versionResource *stackProfileVersionResource) Create(ctx context.Context, 
 	stackProfileVersionToState(saved, &plan)
 	plan.Deprecation = nil
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() || deprecation == nil {
 		return
 	}
@@ -212,6 +213,7 @@ func (versionResource *stackProfileVersionResource) Create(ctx context.Context, 
 	}
 	plan.Deprecation = deprecation
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (versionResource *stackProfileVersionResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -226,7 +228,7 @@ func (versionResource *stackProfileVersionResource) Read(ctx context.Context, re
 	}
 
 	version, err := apiClient.GetStackProfileVersion(ctx, state.ProfileID.ValueString(), state.Version.ValueInt64())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -234,11 +236,12 @@ func (versionResource *stackProfileVersionResource) Read(ctx context.Context, re
 		return
 	}
 	if readTargetChanged(state.VersionID, version.ID) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	stackProfileVersionToState(version, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update only ever changes the deprecation notice, or a create-only input
@@ -270,6 +273,7 @@ func (versionResource *stackProfileVersionResource) Update(ctx context.Context, 
 		}
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete removes the version from state only: the platform keeps every

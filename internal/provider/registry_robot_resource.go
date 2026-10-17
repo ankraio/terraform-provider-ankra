@@ -271,6 +271,7 @@ func (robotResource *registryRobotResource) Create(ctx context.Context, request 
 	plan.Secret = types.StringValue(created.Secret)
 	plan.DockerLogin = optionalString(created.DockerLogin)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (robotResource *registryRobotResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -285,7 +286,7 @@ func (robotResource *registryRobotResource) Read(ctx context.Context, request re
 	}
 
 	robot, err := apiClient.GetRegistryRobot(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -293,11 +294,12 @@ func (robotResource *registryRobotResource) Read(ctx context.Context, request re
 		return
 	}
 	if readTargetChanged(state.CreatedAt, robot.CreatedAt) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	registryRobotToState(robot, &state, &response.Diagnostics)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update only ever rotates: every other configurable attribute replaces the
@@ -329,6 +331,7 @@ func (robotResource *registryRobotResource) Update(ctx context.Context, request 
 		plan.DockerLogin = optionalString(rotated.DockerLogin)
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (robotResource *registryRobotResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {

@@ -369,6 +369,7 @@ func (vaultResource *backupVaultResource) Create(ctx context.Context, request re
 	}
 	backupVaultToState(vault, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -383,6 +384,7 @@ func (vaultResource *backupVaultResource) Create(ctx context.Context, request re
 	})
 	backupVaultToState(vault, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if waitError != nil {
 		response.Diagnostics.AddError("Backup vault did not finish provisioning", waitError.Error())
 		return
@@ -405,7 +407,7 @@ func (vaultResource *backupVaultResource) Read(ctx context.Context, request reso
 	}
 
 	vault, err := apiClient.GetBackupVault(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -414,6 +416,7 @@ func (vaultResource *backupVaultResource) Read(ctx context.Context, request reso
 	}
 	backupVaultToState(vault, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update only ever changes destroy_provider_resources, which lives in state:
@@ -440,9 +443,11 @@ func (vaultResource *backupVaultResource) Delete(ctx context.Context, request re
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteBackupVault(ctx, state.ID.ValueString(), state.DestroyProviderResources.ValueBool()); err != nil {
-		response.Diagnostics.AddError("Unable to delete backup vault", err.Error())
+	err := apiClient.DeleteBackupVault(ctx, state.ID.ValueString(), state.DestroyProviderResources.ValueBool())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete backup vault", err.Error())
 }
 
 // ImportState imports by vault ID. Keys are never returned: after an import

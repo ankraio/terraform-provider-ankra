@@ -24,7 +24,7 @@ resource "ankra_stack_profile_share" "partner" {
 
 ### Required
 
-- `organisation_slug` (String) Slug of the organisation to share with.
+- `organisation_slug` (String) Slug of the organisation to share with. The platform matches it case-insensitively; state keeps the configured spelling.
 - `profile_id` (String) Profile to share.
 
 ### Read-Only

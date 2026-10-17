@@ -44,13 +44,13 @@ output "docker_login" {
 ### Optional
 
 - `admin_credential_name` (String) The organisation credential allowed to manage robots on `registry`.
-- `description` (String) Free-text description. Changing it replaces the robot.
+- `description` (String) Free-text description, at most 200 characters, without leading or trailing whitespace (the platform trims it). Changing it replaces the robot.
 - `expires_in_days` (Number) Days until the registry stops honouring the robot. Unset is a robot that never expires. The platform reports only `expires_at`, so after an import this value is taken from configuration without replacing the robot.
-- `permissions` (Set of String) The robot's own grants, written `resource:action` (see `ankra registry robots permissions`). Conflicts with `scope`. Grants beyond push and pull need the `credentials.reveal` permission.
+- `permissions` (Set of String) The robot's own grants, written `resource:action` (see `ankra registry robots permissions`). Conflicts with `scope`. Grants beyond push and pull need the `credentials.reveal` permission. The platform normalises the selection (lower case, `repository:pull` added to `repository:push`); a configured set that normalises to what the platform holds is kept as written.
 - `project` (String) Registry project the robot is bound to: `default` (the organisation's own project, the default) or the name of an `ankra_registry_project`. On an integrated registry, that registry's project, and required there.
 - `registry` (String) Integrated OCI registry entry (a Harbor the organisation runs itself) to mint the robot on, instead of the Ankra registry. Requires `admin_credential_name` and `project`.
 - `rotation_triggers` (Map of String) Arbitrary values; changing any of them rotates the robot's secret in place.
-- `scope` (String) Preset grants: `push` (push and pull) or `pull`. Conflicts with `permissions`. When neither is set the platform mints a push robot; when `permissions` is set the platform reports `custom` here.
+- `scope` (String) Preset grants: `push` (push and pull) or `pull`. Conflicts with `permissions`. When neither is set the platform mints a push robot. When `permissions` is set the platform reports the preset they amount to (`push` or `pull`), or `custom` when they are neither.
 
 ### Read-Only
 

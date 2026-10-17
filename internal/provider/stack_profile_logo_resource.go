@@ -90,6 +90,7 @@ func (logoResource *stackProfileLogoResource) Create(ctx context.Context, reques
 	}
 	if logoResource.upload(ctx, &plan, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, logoResource.client, response.Private)...)
 	}
 }
 
@@ -101,6 +102,7 @@ func (logoResource *stackProfileLogoResource) Update(ctx context.Context, reques
 	}
 	if logoResource.upload(ctx, &plan, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, logoResource.client, response.Private)...)
 	}
 }
 
@@ -137,7 +139,7 @@ func (logoResource *stackProfileLogoResource) Read(ctx context.Context, request 
 	}
 
 	logo, err := apiClient.GetStackProfileLogo(ctx, state.ProfileID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -154,6 +156,7 @@ func (logoResource *stackProfileLogoResource) Read(ctx context.Context, request 
 		state.ContentType = types.StringValue(mediaType)
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (logoResource *stackProfileLogoResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
@@ -166,9 +169,11 @@ func (logoResource *stackProfileLogoResource) Delete(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteStackProfileLogo(ctx, state.ProfileID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove stack profile logo", err.Error())
+	err := apiClient.DeleteStackProfileLogo(ctx, state.ProfileID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove stack profile logo", err.Error())
 }
 
 // ImportState imports by profile ID.

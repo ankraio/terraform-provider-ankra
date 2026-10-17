@@ -4,7 +4,7 @@ page_title: "ankra_registry_retention Resource - ankra"
 subcategory: ""
 description: |-
   The organisation's image retention on the Ankra registry: which images it keeps, so it can bring its storage down itself. One per organisation. The counterpart of ankra registry storage retention set and ankra registry storage retention rule add|remove.
-  This resource owns the whole policy and rule list: rules added outside Terraform show as drift and are removed on the next apply. Every save sends the version Terraform last read, so a change someone made in between is refused instead of overwritten. Destroying the resource restores the platform default and removes every rule.
+  This resource owns the whole policy and rule list: rules added outside Terraform show as drift and are removed on the next apply. Creating it refuses to overwrite a policy or rules the organisation already set; import them instead. Every save sends the version Terraform last read, so a change someone made in between is refused instead of overwritten. Destroying the resource restores the platform default and removes every rule.
   Retention deletes images. Two protections hold whatever is set: at least the newest image of every repository is kept, and an organisation-set policy also keeps every image pulled within the last week.
 ---
 
@@ -12,7 +12,7 @@ description: |-
 
 The organisation's image retention on the Ankra registry: which images it keeps, so it can bring its storage down itself. One per organisation. The counterpart of `ankra registry storage retention set` and `ankra registry storage retention rule add|remove`.
 
-This resource owns the whole policy and rule list: rules added outside Terraform show as drift and are removed on the next apply. Every save sends the version Terraform last read, so a change someone made in between is refused instead of overwritten. Destroying the resource restores the platform default and removes every rule.
+This resource owns the whole policy and rule list: rules added outside Terraform show as drift and are removed on the next apply. Creating it refuses to overwrite a policy or rules the organisation already set; import them instead. Every save sends the version Terraform last read, so a change someone made in between is refused instead of overwritten. Destroying the resource restores the platform default and removes every rule.
 
 Retention deletes images. Two protections hold whatever is set: at least the newest image of every repository is kept, and an organisation-set policy also keeps every image pulled within the last week.
 
@@ -71,7 +71,7 @@ Required:
 
 Optional:
 
-- `application_id` (String) Application the rule was made for, if any.
+- `application_id` (String) Application the rule was made for, if any: a lower-case UUID.
 
 
 <a id="nestedatt--default_in_force"></a>

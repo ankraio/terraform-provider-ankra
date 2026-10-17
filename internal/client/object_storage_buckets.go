@@ -75,11 +75,11 @@ func (client *Client) CreateObjectStorageBucket(ctx context.Context, request Obj
 
 // DeleteObjectStorageBucket stops Ankra managing a bucket. With
 // destroyProviderResources the platform also empties and deletes it. A
-// bucket already gone is not an error.
+// bucket the scope cannot see is a NotFound APIError.
 func (client *Client) DeleteObjectStorageBucket(ctx context.Context, bucketID string, destroyProviderResources bool) error {
 	path := objectStorageBucketsPath + "/" + url.PathEscape(bucketID)
 	if destroyProviderResources {
 		path += "?destroy_provider_resources=true"
 	}
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, path, nil, nil)
 }

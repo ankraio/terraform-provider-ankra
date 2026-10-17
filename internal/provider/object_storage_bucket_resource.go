@@ -201,6 +201,7 @@ func (bucketResource *objectStorageBucketResource) Create(ctx context.Context, r
 	}
 	objectStorageBucketToState(bucket, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -215,6 +216,7 @@ func (bucketResource *objectStorageBucketResource) Create(ctx context.Context, r
 	})
 	objectStorageBucketToState(bucket, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if waitError != nil {
 		response.Diagnostics.AddError("Object storage bucket did not finish provisioning", waitError.Error())
 		return
@@ -236,7 +238,7 @@ func (bucketResource *objectStorageBucketResource) Read(ctx context.Context, req
 	}
 
 	bucket, err := apiClient.GetObjectStorageBucket(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -245,6 +247,7 @@ func (bucketResource *objectStorageBucketResource) Read(ctx context.Context, req
 	}
 	objectStorageBucketToState(bucket, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update only ever changes destroy_provider_resources, or keys after an
@@ -272,9 +275,11 @@ func (bucketResource *objectStorageBucketResource) Delete(ctx context.Context, r
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteObjectStorageBucket(ctx, state.ID.ValueString(), state.DestroyProviderResources.ValueBool()); err != nil {
-		response.Diagnostics.AddError("Unable to delete object storage bucket", err.Error())
+	err := apiClient.DeleteObjectStorageBucket(ctx, state.ID.ValueString(), state.DestroyProviderResources.ValueBool())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete object storage bucket", err.Error())
 }
 
 // ImportState imports by bucket ID. Keys are never returned: after an import

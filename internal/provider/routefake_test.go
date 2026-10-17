@@ -22,6 +22,13 @@ type routeFake struct {
 	server *httptest.Server
 	mux    *http.ServeMux
 	mutex  sync.Mutex
+	// serial runs every handler one at a time, across all routes, so handlers
+	// may share state without locking even when Terraform applies resources
+	// in parallel.
+	serial sync.Mutex
+	// projectsRegistered records that a test registered its own
+	// GET /api/v1/org/projects, replacing the default.
+	projectsRegistered bool
 	// requests records "METHOD path" for every request served, in order.
 	requests []string
 	// organisationHeaders records the organisation override each request carried.
@@ -32,6 +39,12 @@ func newRouteFake(t *testing.T) *routeFake {
 	t.Helper()
 	fake := &routeFake{t: t, mux: http.NewServeMux()}
 	fake.mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.Method == http.MethodGet && request.URL.Path == "/api/v1/org/projects" && !fake.projectsRegistered {
+			// The default: an organisation without projects, which is what the
+			// platform answers (404) when the projects flag is off.
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Projects are not enabled for this organisation"})
+			return
+		}
 		t.Errorf("unexpected request: %s %s", request.Method, request.URL.String())
 		writer.WriteHeader(http.StatusNotFound)
 	})
@@ -47,13 +60,15 @@ func newRouteFake(t *testing.T) *routeFake {
 	return fake
 }
 
-// handle registers a handler for a ServeMux pattern. Handlers run serially
-// with respect to each other, so they may share state without locking.
+// handle registers a handler for a ServeMux pattern. All handlers of a fake
+// run one at a time, across routes, so they may share state without locking.
 func (fake *routeFake) handle(pattern string, handler http.HandlerFunc) {
-	var serial sync.Mutex
+	if pattern == "GET /api/v1/org/projects" {
+		fake.projectsRegistered = true
+	}
 	fake.mux.HandleFunc(pattern, func(writer http.ResponseWriter, request *http.Request) {
-		serial.Lock()
-		defer serial.Unlock()
+		fake.serial.Lock()
+		defer fake.serial.Unlock()
 		handler(writer, request)
 	})
 }

@@ -177,6 +177,7 @@ func (retentionResource *registryRetentionResource) Create(ctx context.Context, 
 	registryRetentionHarborWarning(harborApplyError, &response.Diagnostics)
 	registryRetentionToState(retention, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (retentionResource *registryRetentionResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -197,6 +198,7 @@ func (retentionResource *registryRetentionResource) Read(ctx context.Context, re
 	}
 	registryRetentionToState(retention, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (retentionResource *registryRetentionResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -219,6 +221,7 @@ func (retentionResource *registryRetentionResource) Update(ctx context.Context, 
 	registryRetentionHarborWarning(harborApplyError, &response.Diagnostics)
 	registryRetentionToState(retention, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Delete restores the platform default and removes every rule.

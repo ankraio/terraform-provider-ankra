@@ -4,14 +4,21 @@ page_title: "ankra_backup_vault Resource - ankra"
 subcategory: ""
 description: |-
   A backup vault: the S3-compatible bucket cluster backups, restore points and migration data move through. Either registers a bucket the organisation already has (endpoint, bucket and a key pair: ankra backup vaults create) or has Ankra create the bucket on a provider credential (credential_id and region: ankra backup vaults provision, after which Terraform waits for the bucket to be ready).
-  The platform has no update for a vault, so changing any setting replaces it; the platform refuses to delete a vault that holds the state a stopped cluster needs to start again. Keys are never returned, so a key changed outside Terraform is not detected. Vaults are scoped to the provider's project. Requires the organisation's backups feature.
+  Replacing a vault is not harmless. The platform has no update for a vault, so changing any setting (even name) replaces it, and a replacement deletes the old vault the way destroy does:
+  with destroy_provider_resources = true, the provisioned bucket is emptied and deleted, with every backup in it. Terraform therefore refuses to plan a replacement while state holds true: set it to false and apply first.a bring-your-own vault loses the migration import dumps it uploaded into your bucket and the keys Ankra stored, and stack backup policies keep pointing at the old vault ID. Terraform therefore refuses to change the keys of a bring-your-own vault; the platform cannot rotate them in place.
+  The platform refuses to delete a vault that holds the state a stopped cluster needs to start again. Keys are never returned, so a key changed outside Terraform is not detected. Vaults are scoped to the provider's project. Requires the organisation's backups feature.
 ---
 
 # ankra_backup_vault (Resource)
 
 A backup vault: the S3-compatible bucket cluster backups, restore points and migration data move through. Either registers a bucket the organisation already has (`endpoint`, `bucket` and a key pair: `ankra backup vaults create`) or has Ankra create the bucket on a provider credential (`credential_id` and `region`: `ankra backup vaults provision`, after which Terraform waits for the bucket to be ready).
 
-The platform has no update for a vault, so changing any setting replaces it; the platform refuses to delete a vault that holds the state a stopped cluster needs to start again. Keys are never returned, so a key changed outside Terraform is not detected. Vaults are scoped to the provider's project. Requires the organisation's `backups` feature.
+**Replacing a vault is not harmless.** The platform has no update for a vault, so changing any setting (even `name`) replaces it, and a replacement deletes the old vault the way destroy does:
+
+- with `destroy_provider_resources = true`, the provisioned bucket is emptied and deleted, with every backup in it. Terraform therefore refuses to plan a replacement while state holds `true`: set it to `false` and apply first.
+- a bring-your-own vault loses the migration import dumps it uploaded into your bucket and the keys Ankra stored, and stack backup policies keep pointing at the old vault ID. Terraform therefore refuses to change the keys of a bring-your-own vault; the platform cannot rotate them in place.
+
+The platform refuses to delete a vault that holds the state a stopped cluster needs to start again. Keys are never returned, so a key changed outside Terraform is not detected. Vaults are scoped to the provider's project. Requires the organisation's `backups` feature.
 
 ## Example Usage
 
@@ -58,7 +65,7 @@ variable "backup_secret_access_key" {
 - `access_key_id` (String, Sensitive) Access key for the bucket. Required for an existing bucket; for a provisioned vault only on Hetzner, whose API cannot mint Object Storage keys. Never returned by the platform.
 - `bucket` (String) Bucket name. Required for an existing bucket; for a provisioned vault the platform derives a unique name when it is left out.
 - `credential_id` (String) Provider credential Ankra creates the bucket with. Set it to provision the bucket; leave it out to register an existing bucket.
-- `destroy_provider_resources` (Boolean) On destroy, also empty and delete the bucket Ankra provisioned, with everything in it. Defaults to `false`, which only forgets the vault and leaves the bucket on the provider. Only valid with `credential_id`. A vault destroyed while still provisioning is always torn down.
+- `destroy_provider_resources` (Boolean) On destroy **or replacement**, also empty and delete the bucket Ankra provisioned, with every backup in it. Defaults to `false`, which only forgets the vault and leaves the bucket on the provider. Only valid with `credential_id`. While it is `true` in state, Terraform refuses to plan a replacement. A vault destroyed while still provisioning is always torn down.
 - `endpoint` (String) S3 endpoint of an existing bucket, an https URL with no path. Computed for a provisioned vault.
 - `path_style` (Boolean) Whether the bucket is addressed path-style rather than virtual-host-style.
 - `region` (String) Bucket region. Required for a provisioned vault.

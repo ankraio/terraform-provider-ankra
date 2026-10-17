@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
@@ -30,9 +29,6 @@ import (
 // answers the raw bytes.
 type stackProfileFake struct {
 	*routeFake
-	// serial runs every handler of this fake one at a time: they share
-	// maps, and routeFake only serialises handlers of the same pattern.
-	serial   sync.Mutex
 	profiles map[string]map[string]any
 	versions map[string][]map[string]any
 	shares   map[string][]map[string]any
@@ -43,6 +39,9 @@ type stackProfileFake struct {
 	logoUploads   int
 	versionSaves  []map[string]json.RawMessage
 	organisations map[string]string
+	// projectOf is the project each profile was created in; a request from
+	// another project sees 404, as the platform's scoped reads do.
+	projectOf map[string]string
 }
 
 type stackProfileFakeLogo struct {
@@ -55,7 +54,7 @@ const stackProfileFakeOrganisation = "99999999-0000-0000-0000-000000000000"
 func newStackProfileFake(t *testing.T) *stackProfileFake {
 	fake := &stackProfileFake{
 		routeFake: newRouteFake(t), profiles: map[string]map[string]any{}, versions: map[string][]map[string]any{},
-		shares: map[string][]map[string]any{}, logos: map[string]stackProfileFakeLogo{},
+		shares: map[string][]map[string]any{}, logos: map[string]stackProfileFakeLogo{}, projectOf: map[string]string{},
 		organisations: map[string]string{"partner-org": "88888888-0000-0000-0000-000000000001", "other-org": "88888888-0000-0000-0000-000000000002"},
 	}
 	notFound := func(writer http.ResponseWriter, detail string) {
@@ -94,7 +93,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		return version
 	}
 
-	fake.serialHandle("GET /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Query().Get("page_size") == "" {
 			t.Errorf("listing sent no page_size")
 		}
@@ -104,7 +103,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"result": result, "total_count": len(result), "page": 1, "page_size": 100})
 	})
-	fake.serialHandle("POST /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/stack-profiles", func(writer http.ResponseWriter, request *http.Request) {
 		_, body := decode(request)
 		for _, required := range []string{"name", "source_cluster_id", "stack_name"} {
 			if _, present := body[required]; !present {
@@ -128,11 +127,12 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		fake.profiles[identifier] = map[string]any{"id": identifier, "organisation_id": stackProfileFakeOrganisation, "name": body["name"],
 			"description": body["description"], "logo_url": body["logo_url"], "has_uploaded_logo": false, "category": category, "tags": tags,
 			"visibility": visibility, "source_cluster_id": body["source_cluster_id"], "is_owner": true, "shared_with_you": false}
+		fake.projectOf[identifier] = request.Header.Get("X-Ankra-Project-Id")
 		version := newVersion(identifier, body)
 		writeJSON(t, writer, http.StatusCreated, map[string]any{"profile": fake.profiles[identifier], "version": version, "warnings": []string{}})
 	})
-	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		profile, exists := fake.profiles[request.PathValue("id")]
+	fake.handle("GET /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -140,8 +140,8 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"profile": profile, "versions": fake.versions[request.PathValue("id")],
 			"update_status": map[string]any{"outdated_instantiation_count": 0, "has_update_available": false}})
 	})
-	fake.serialHandle("PATCH /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		profile, exists := fake.profiles[request.PathValue("id")]
+	fake.handle("PATCH /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -166,16 +166,16 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
-		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
+	fake.handle("DELETE /api/v1/org/stack-profiles/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		if _, exists := fake.scopedProfile(request); !exists {
 			notFound(writer, "Stack profile not found")
 			return
 		}
 		delete(fake.profiles, request.PathValue("id"))
 		writeJSON(t, writer, http.StatusOK, map[string]any{"deleted": true})
 	})
-	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/current-version", func(writer http.ResponseWriter, request *http.Request) {
-		profile, exists := fake.profiles[request.PathValue("id")]
+	fake.handle("POST /api/v1/org/stack-profiles/{id}/current-version", func(writer http.ResponseWriter, request *http.Request) {
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -195,8 +195,8 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		profile["current_version"] = number
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/versions", func(writer http.ResponseWriter, request *http.Request) {
-		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
+	fake.handle("POST /api/v1/org/stack-profiles/{id}/versions", func(writer http.ResponseWriter, request *http.Request) {
+		if _, exists := fake.scopedProfile(request); !exists {
 			notFound(writer, "Stack profile not found")
 			return
 		}
@@ -205,7 +205,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writeJSON(t, writer, http.StatusCreated, newVersion(request.PathValue("id"), body))
 	})
 	version := func(writer http.ResponseWriter, request *http.Request) map[string]any {
-		profile, exists := fake.profiles[request.PathValue("id")]
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return nil
@@ -219,12 +219,12 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		_ = profile
 		return versions[number-1]
 	}
-	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/versions/{version}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/stack-profiles/{id}/versions/{version}", func(writer http.ResponseWriter, request *http.Request) {
 		if found := version(writer, request); found != nil {
 			writeJSON(t, writer, http.StatusOK, found)
 		}
 	})
-	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
 		found := version(writer, request)
 		if found == nil {
 			return
@@ -241,14 +241,14 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		found["deprecation"] = map[string]any{"reason": body["reason"], "note": body["note"], "references": references, "deprecated_at": "2026-10-17T02:00:00Z"}
 		writeJSON(t, writer, http.StatusOK, found)
 	})
-	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/versions/{version}/deprecation", func(writer http.ResponseWriter, request *http.Request) {
 		if found := version(writer, request); found != nil {
 			found["deprecation"] = nil
 			writeJSON(t, writer, http.StatusOK, found)
 		}
 	})
-	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
-		if _, exists := fake.profiles[request.PathValue("id")]; !exists {
+	fake.handle("GET /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
+		if _, exists := fake.scopedProfile(request); !exists {
 			notFound(writer, "Stack profile not found")
 			return
 		}
@@ -258,9 +258,9 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"result": shares})
 	})
-	fake.serialHandle("POST /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("POST /api/v1/org/stack-profiles/{id}/shares", func(writer http.ResponseWriter, request *http.Request) {
 		profileID := request.PathValue("id")
-		if _, exists := fake.profiles[profileID]; !exists {
+		if _, exists := fake.scopedProfile(request); !exists {
 			notFound(writer, "Stack profile not found")
 			return
 		}
@@ -283,8 +283,12 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		fake.shares[profileID] = append(fake.shares[profileID], share)
 		writeJSON(t, writer, http.StatusCreated, share)
 	})
-	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/shares/{share}", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/shares/{share}", func(writer http.ResponseWriter, request *http.Request) {
 		profileID := request.PathValue("id")
+		if _, exists := fake.scopedProfile(request); !exists {
+			notFound(writer, "Stack profile not found")
+			return
+		}
 		for index, share := range fake.shares[profileID] {
 			if share["id"] == request.PathValue("share") {
 				fake.shares[profileID] = append(fake.shares[profileID][:index], fake.shares[profileID][index+1:]...)
@@ -294,8 +298,8 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		}
 		notFound(writer, "Share not found")
 	})
-	fake.serialHandle("PUT /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
-		profile, exists := fake.profiles[request.PathValue("id")]
+	fake.handle("PUT /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -317,7 +321,7 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		profile["has_uploaded_logo"] = true
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
-	fake.serialHandle("GET /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+	fake.handle("GET /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
 		logo, exists := fake.logos[request.PathValue("id")]
 		if !exists {
 			notFound(writer, "Stack profile logo not found")
@@ -327,8 +331,8 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writer.WriteHeader(http.StatusOK)
 		_, _ = writer.Write(logo.content)
 	})
-	fake.serialHandle("DELETE /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
-		profile, exists := fake.profiles[request.PathValue("id")]
+	fake.handle("DELETE /api/v1/org/stack-profiles/{id}/logo", func(writer http.ResponseWriter, request *http.Request) {
+		profile, exists := fake.scopedProfile(request)
 		if !exists {
 			notFound(writer, "Stack profile not found")
 			return
@@ -338,6 +342,15 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		writeJSON(t, writer, http.StatusOK, profile)
 	})
 	return fake
+}
+
+func (fake *stackProfileFake) scopedProfile(request *http.Request) (map[string]any, bool) {
+	identifier := request.PathValue("id")
+	profile, exists := fake.profiles[identifier]
+	if !exists || fake.projectOf[identifier] != request.Header.Get("X-Ankra-Project-Id") {
+		return nil, false
+	}
+	return profile, true
 }
 
 func (fake *stackProfileFake) onlyProfileID() string {
@@ -591,10 +604,57 @@ func TestAccStackProfileRejectsInvalidConfigAtPlan(t *testing.T) {
 	}
 }
 
-func (fake *stackProfileFake) serialHandle(pattern string, handler http.HandlerFunc) {
-	fake.handle(pattern, func(writer http.ResponseWriter, request *http.Request) {
-		fake.serial.Lock()
-		defer fake.serial.Unlock()
-		handler(writer, request)
+// TestAccStackProfileShareScopeMoveIsNotRevoked pins that moving the provider
+// to another project neither drops the share from state nor lets destroy
+// report success: the partner organisation keeps access until the grant is
+// revoked from the project that owns the profile.
+func TestAccStackProfileShareScopeMoveIsNotRevoked(t *testing.T) {
+	fake := newStackProfileFake(t)
+	inProject := func(project string) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token      = "test-token"
+  base_url   = %q
+  project_id = %q
+}
+
+resource "ankra_stack_profile" "platform" {
+  name              = "platform-base"
+  source_cluster_id = "c1111111-0000-0000-0000-000000000001"
+  stack_name        = "platform"
+}
+
+resource "ankra_stack_profile_share" "partner" {
+  profile_id        = ankra_stack_profile.platform.id
+  organisation_slug = "partner-org"
+}
+`, fake.server.URL, project)
+	}
+	const owningProject = "11111111-2222-3333-4444-555555555555"
+	const otherProject = "66666666-7777-8888-9999-000000000000"
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: inProject(owningProject)},
+			{
+				Config:      inProject(otherProject),
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config:      inProject(otherProject),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`Object not visible in the provider's current scope`),
+			},
+			{
+				Config: inProject(owningProject),
+				Check: func(_ *terraform.State) error {
+					if len(fake.profiles) != 1 || len(fake.shares[fake.onlyProfileID()]) != 1 {
+						return fmt.Errorf("the scope move created or lost objects: %d profiles", len(fake.profiles))
+					}
+					return nil
+				},
+			},
+		},
 	})
 }

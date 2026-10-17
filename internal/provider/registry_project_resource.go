@@ -101,6 +101,7 @@ func (projectResource *registryProjectResource) Create(ctx context.Context, requ
 	}
 	registryProjectToState(created, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (projectResource *registryProjectResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -115,7 +116,7 @@ func (projectResource *registryProjectResource) Read(ctx context.Context, reques
 	}
 
 	project, err := apiClient.GetRegistryProject(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -123,11 +124,12 @@ func (projectResource *registryProjectResource) Read(ctx context.Context, reques
 		return
 	}
 	if readTargetChanged(state.CreatedAt, project.CreatedAt) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	registryProjectToState(project, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 // Update is never called with a change: every configurable attribute

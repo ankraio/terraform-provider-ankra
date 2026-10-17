@@ -210,10 +210,10 @@ func (client *Client) SetStackProfileCurrentVersion(ctx context.Context, profile
 	return client.doRequest(ctx, http.MethodPost, stackProfilePath(profileID)+"/current-version", map[string]int64{"version": version}, nil)
 }
 
-// DeleteStackProfile soft-deletes a profile. One already gone is not an
-// error.
+// DeleteStackProfile soft-deletes a profile. A profile the scope cannot see
+// is a NotFound APIError.
 func (client *Client) DeleteStackProfile(ctx context.Context, profileID string) error {
-	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID), nil, nil)
 }
 
 // SaveStackProfileVersion publishes the next version of a profile.
@@ -265,10 +265,10 @@ func (client *Client) CreateStackProfileShare(ctx context.Context, profileID, or
 	return &share, nil
 }
 
-// DeleteStackProfileShare revokes a share grant. One already gone is not an
-// error.
+// DeleteStackProfileShare revokes a share grant. A grant, or a profile, the
+// scope cannot see is a NotFound APIError.
 func (client *Client) DeleteStackProfileShare(ctx context.Context, profileID, shareID string) error {
-	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID)+"/shares/"+url.PathEscape(shareID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID)+"/shares/"+url.PathEscape(shareID), nil, nil)
 }
 
 // GetStackProfileLogo downloads a profile's uploaded logo. A profile without
@@ -305,9 +305,10 @@ func (client *Client) PutStackProfileLogo(ctx context.Context, profileID string,
 }
 
 // DeleteStackProfileLogo removes a profile's uploaded logo. The platform
-// answers success when there is none.
+// answers success when there is none, and NotFound for a profile the scope
+// cannot see.
 func (client *Client) DeleteStackProfileLogo(ctx context.Context, profileID string) error {
-	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID)+"/logo", nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, stackProfilePath(profileID)+"/logo", nil, nil)
 }
 
 type stackProfileLogoResponse struct {

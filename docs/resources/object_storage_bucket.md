@@ -4,14 +4,14 @@ page_title: "ankra_object_storage_bucket Resource - ankra"
 subcategory: ""
 description: |-
   An object-storage bucket Ankra creates on one of the organisation's provider credentials, for applications and add-ons to use. The counterpart of ankra bucket create and ankra bucket delete. Terraform waits for the bucket to be ready.
-  The platform has no update for a bucket, so changing any setting replaces it. Destroying it only stops Ankra managing the bucket unless destroy_provider_resources is set. Buckets are scoped to the provider's project.
+  The platform has no update for a bucket, so changing any setting (even name) replaces it. Destroying it only stops Ankra managing the bucket unless destroy_provider_resources is set. With destroy_provider_resources = true a replacement empties and deletes the bucket and everything in it, so Terraform refuses to plan a replacement while state holds true: set it to false and apply first. Buckets are scoped to the provider's project.
 ---
 
 # ankra_object_storage_bucket (Resource)
 
 An object-storage bucket Ankra creates on one of the organisation's provider credentials, for applications and add-ons to use. The counterpart of `ankra bucket create` and `ankra bucket delete`. Terraform waits for the bucket to be ready.
 
-The platform has no update for a bucket, so changing any setting replaces it. Destroying it only stops Ankra managing the bucket unless `destroy_provider_resources` is set. Buckets are scoped to the provider's project.
+The platform has no update for a bucket, so changing any setting (even `name`) replaces it. Destroying it only stops Ankra managing the bucket unless `destroy_provider_resources` is set. **With `destroy_provider_resources = true` a replacement empties and deletes the bucket and everything in it**, so Terraform refuses to plan a replacement while state holds `true`: set it to `false` and apply first. Buckets are scoped to the provider's project.
 
 ## Example Usage
 
@@ -36,7 +36,7 @@ resource "ankra_object_storage_bucket" "assets" {
 
 - `access_key_id` (String, Sensitive) Hetzner only, whose API cannot mint Object Storage keys; may be left out when the Hetzner credential stores a key pair. Never returned by the platform.
 - `bucket` (String) Bucket name on the provider; the platform derives a unique one when it is left out.
-- `destroy_provider_resources` (Boolean) On destroy, also empty and delete the bucket on the provider, with everything in it. Defaults to `false`. A bucket destroyed while still provisioning is always torn down.
+- `destroy_provider_resources` (Boolean) On destroy **or replacement**, also empty and delete the bucket on the provider, with everything in it. Defaults to `false`. While it is `true` in state, Terraform refuses to plan a replacement. A bucket destroyed while still provisioning is always torn down.
 - `secret_access_key` (String, Sensitive) Secret key paired with `access_key_id`. Never returned by the platform.
 
 ### Read-Only

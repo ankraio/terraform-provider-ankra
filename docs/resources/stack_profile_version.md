@@ -47,9 +47,9 @@ resource "ankra_stack_profile_version" "withdrawn" {
 
 ### Optional
 
-- `changelog` (String) What changed in this version.
+- `changelog` (String) What changed in this version. Only sent when the version is published: a later change is kept in state and does not publish another version, because a published version is immutable.
 - `channel` (String) Release channel. Defaults to `stable`.
-- `deprecation` (Attributes) Withdraws the version from new deployments. Unset clears it. The platform refuses to deprecate the profile's current version. (see [below for nested schema](#nestedatt--deprecation))
+- `deprecation` (Attributes) Withdraws the version from new deployments. Unset clears it. The platform refuses to deprecate the profile's current version, which a newly published version always is, so set this only after another version has been made current. (see [below for nested schema](#nestedatt--deprecation))
 - `include_addon_configurations` (Boolean) Whether the version carries the add-ons' configuration values. Defaults to `true`.
 
 ### Read-Only

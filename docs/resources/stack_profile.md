@@ -4,14 +4,17 @@ page_title: "ankra_stack_profile Resource - ankra"
 subcategory: ""
 description: |-
   A stack profile: a reusable, versioned definition of a stack, published to the organisation's catalogue. Creating it snapshots stack_name on source_cluster_id as version 1. The counterpart of ankra stack-profiles create, update, delete and set-current-version.
-  Publish further versions with ankra_stack_profile_version, share the profile with ankra_stack_profile_share, and upload a logo with ankra_stack_profile_logo. source_cluster_id, stack_name, include_addon_configurations and changelog only shape version 1: they are not read back, and changing them replaces the profile, deleting every version. Builder drafts and suggestions are interactive editing sessions and are not managed here.
+  Publish further versions with ankra_stack_profile_version, share the profile with ankra_stack_profile_share, and upload a logo with ankra_stack_profile_logo. source_cluster_id, stack_name, include_addon_configurations and changelog only shape version 1: they are not read back, and changing the first three replaces the profile. Builder drafts and suggestions are interactive editing sessions and are not managed here.
+  Replacing or destroying a profile deletes it for everyone: every version goes, and the profile disappears for every organisation it is shared with and, when visibility = "public", from the public catalogue. Deployments already made from it keep running.
 ---
 
 # ankra_stack_profile (Resource)
 
 A stack profile: a reusable, versioned definition of a stack, published to the organisation's catalogue. Creating it snapshots `stack_name` on `source_cluster_id` as version 1. The counterpart of `ankra stack-profiles create`, `update`, `delete` and `set-current-version`.
 
-Publish further versions with `ankra_stack_profile_version`, share the profile with `ankra_stack_profile_share`, and upload a logo with `ankra_stack_profile_logo`. `source_cluster_id`, `stack_name`, `include_addon_configurations` and `changelog` only shape version 1: they are not read back, and changing them replaces the profile, deleting every version. Builder drafts and suggestions are interactive editing sessions and are not managed here.
+Publish further versions with `ankra_stack_profile_version`, share the profile with `ankra_stack_profile_share`, and upload a logo with `ankra_stack_profile_logo`. `source_cluster_id`, `stack_name`, `include_addon_configurations` and `changelog` only shape version 1: they are not read back, and changing the first three replaces the profile. Builder drafts and suggestions are interactive editing sessions and are not managed here.
+
+**Replacing or destroying a profile deletes it for everyone**: every version goes, and the profile disappears for every organisation it is shared with and, when `visibility = "public"`, from the public catalogue. Deployments already made from it keep running.
 
 ## Example Usage
 
@@ -38,8 +41,8 @@ resource "ankra_stack_profile" "platform" {
 ### Optional
 
 - `category` (String) Catalogue category. Defaults to `general`.
-- `changelog` (String) Changelog of version 1.
-- `current_version` (Number) The version new deployments get. Publishing a version makes it current; set this to pin another one. The platform refuses a deprecated version.
+- `changelog` (String) Changelog of version 1. Only used when the profile is created; a later change is kept in state and sent nowhere, because a published version is immutable.
+- `current_version` (Number) The version new deployments get. Publishing a version makes it current; set this to pin another one. The platform refuses a deprecated version, and a new profile only has version 1.
 - `description` (String) Free-text description.
 - `include_addon_configurations` (Boolean) Whether version 1 carries the add-ons' configuration values. Defaults to `true`.
 - `logo_url` (String) External http(s) logo URL. A profile carries either this or an uploaded logo (`ankra_stack_profile_logo`), never both: do not set it alongside one.
