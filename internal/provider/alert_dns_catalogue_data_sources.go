@@ -205,8 +205,8 @@ func (zonesDataSource *clusterDNSZonesDataSource) Metadata(_ context.Context, re
 
 func (zonesDataSource *clusterDNSZonesDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, response *datasource.SchemaResponse) {
 	response.Schema = schema.Schema{
-		MarkdownDescription: "Lists every cluster's generated DNS domain in the organisation (the per-cluster zone under the organisation's root domain) " +
-			"with its reconciliation state.",
+		MarkdownDescription: "Lists the generated DNS domains (the per-cluster zone under the organisation's root domain) of the clusters in the " +
+			"provider's scope, with their reconciliation state. When the provider sets `project_id`, only that project's clusters are listed.",
 		Attributes: map[string]schema.Attribute{
 			"id": alertDNSComputedString("Placeholder identifier for the data source."),
 			"zones": alertDNSListAttribute("Cluster DNS domains.", map[string]schema.Attribute{
@@ -371,15 +371,17 @@ type alertIngestCredentialsDataSource struct {
 }
 
 type alertIngestCredentialItemModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	ClusterID   types.String `tfsdk:"cluster_id"`
-	Scope       types.String `tfsdk:"scope"`
-	Enabled     types.Bool   `tfsdk:"enabled"`
-	WebhookPath types.String `tfsdk:"webhook_path"`
-	CreatedAt   types.String `tfsdk:"created_at"`
-	UpdatedAt   types.String `tfsdk:"updated_at"`
-	LastUsedAt  types.String `tfsdk:"last_used_at"`
+	ID                 types.String `tfsdk:"id"`
+	Name               types.String `tfsdk:"name"`
+	ClusterID          types.String `tfsdk:"cluster_id"`
+	ClusterName        types.String `tfsdk:"cluster_name"`
+	ClusterUnavailable types.Bool   `tfsdk:"cluster_unavailable"`
+	Scope              types.String `tfsdk:"scope"`
+	Enabled            types.Bool   `tfsdk:"enabled"`
+	WebhookPath        types.String `tfsdk:"webhook_path"`
+	CreatedAt          types.String `tfsdk:"created_at"`
+	UpdatedAt          types.String `tfsdk:"updated_at"`
+	LastUsedAt         types.String `tfsdk:"last_used_at"`
 }
 
 type alertIngestCredentialsDataSourceModel struct {
@@ -407,6 +409,9 @@ func (credentialsDataSource *alertIngestCredentialsDataSource) Schema(_ context.
 				"id":           alertDNSComputedString("Credential id."),
 				"name":         alertDNSComputedString("Credential name."),
 				"cluster_id":   alertDNSComputedString("Cluster the credential is pinned to; null when it is not pinned."),
+				"cluster_name": alertDNSComputedString("Name of the pinned cluster, also when it is no longer available; null when it is not pinned."),
+				"cluster_unavailable": alertDNSComputedBool("Whether the pinned cluster is no longer available (deleted, archived or being deleted), " +
+					"so the pin needs moving."),
 				"scope":        alertDNSComputedString("`cluster`, `platform` or `mixed`: which alerts the credential accepts."),
 				"enabled":      alertDNSComputedBool("Whether the credential accepts alerts."),
 				"webhook_path": alertDNSComputedString("Path on the Ankra API the notifier posts to, `/webhooks/alerts/<id>`."),
@@ -434,15 +439,17 @@ func (credentialsDataSource *alertIngestCredentialsDataSource) Read(ctx context.
 	}
 	for _, credential := range credentials {
 		state.Credentials = append(state.Credentials, alertIngestCredentialItemModel{
-			ID:          types.StringValue(credential.ID),
-			Name:        types.StringValue(credential.Name),
-			ClusterID:   optionalString(alertDNSStringValue(credential.ClusterID)),
-			Scope:       optionalString(alertDNSStringValue(credential.Scope)),
-			Enabled:     types.BoolValue(credential.Enabled),
-			WebhookPath: types.StringValue(client.AlertIngestWebhookPathPrefix + credential.ID),
-			CreatedAt:   optionalString(credential.CreatedAt),
-			UpdatedAt:   optionalString(credential.UpdatedAt),
-			LastUsedAt:  optionalString(alertDNSStringValue(credential.LastUsedAt)),
+			ID:                 types.StringValue(credential.ID),
+			Name:               types.StringValue(credential.Name),
+			ClusterID:          optionalString(alertDNSStringValue(credential.ClusterID)),
+			ClusterName:        optionalString(alertDNSStringValue(credential.ClusterName)),
+			ClusterUnavailable: types.BoolValue(credential.ClusterUnavailable),
+			Scope:              optionalString(alertDNSStringValue(credential.Scope)),
+			Enabled:            types.BoolValue(credential.Enabled),
+			WebhookPath:        types.StringValue(client.AlertIngestWebhookPathPrefix + credential.ID),
+			CreatedAt:          optionalString(credential.CreatedAt),
+			UpdatedAt:          optionalString(credential.UpdatedAt),
+			LastUsedAt:         optionalString(alertDNSStringValue(credential.LastUsedAt)),
 		})
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)

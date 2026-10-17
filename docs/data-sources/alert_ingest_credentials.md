@@ -36,6 +36,8 @@ output "alertmanager_webhook_paths" {
 Read-Only:
 
 - `cluster_id` (String) Cluster the credential is pinned to; null when it is not pinned.
+- `cluster_name` (String) Name of the pinned cluster, also when it is no longer available; null when it is not pinned.
+- `cluster_unavailable` (Boolean) Whether the pinned cluster is no longer available (deleted, archived or being deleted), so the pin needs moving.
 - `created_at` (String) Creation time, RFC 3339.
 - `enabled` (Boolean) Whether the credential accepts alerts.
 - `id` (String) Credential id.

@@ -185,6 +185,62 @@ resource "ankra_alert_route" "existing" {
 	})
 }
 
+// TestAccAlertRouteProjectAfterUpgrade pins that a route created by 0.3.0,
+// which records no project, is replaced (not updated in place, which would
+// leave it in its old project) when project_id is first set after upgrading.
+func TestAccAlertRouteProjectAfterUpgrade(t *testing.T) {
+	fake := newRouteProjectFake(t)
+	configuration := func(projectArguments string) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_alert_route" "upgraded" {
+  destination_id = %q
+  %s
+}
+`, routeTestDestination, projectArguments)
+	}
+	released := map[string]resource.ExternalProvider{
+		"ankra": {Source: "ankraio/ankra", VersionConstraint: "0.3.0"},
+	}
+
+	resource.Test(t, resource.TestCase{
+		Steps: []resource.TestStep{
+			{
+				ExternalProviders: released,
+				Config:            configuration(""),
+			},
+			{
+				// The first refresh under the new version reads the absent
+				// organisation_wide as false, so nothing is planned.
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Config:                   configuration(""),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+			{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Config:                   configuration("organisation_wide = false"),
+				PlanOnly:                 true,
+			},
+			{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Config:                   configuration(fmt.Sprintf("project_id = %q", routeTestProject)),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("ankra_alert_route.upgraded", plancheck.ResourceActionDestroyBeforeCreate),
+					},
+				},
+				Check: func(_ *terraform.State) error {
+					if got := lastRouteProject(fake); got != `"`+routeTestProject+`"` {
+						return fmt.Errorf("replacement create sent project_id %s, want %q", got, routeTestProject)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 func TestAccAlertRouteProjectOutsideProviderProject(t *testing.T) {
 	fake := newRouteProjectFake(t)
 	provider := fmt.Sprintf(`
@@ -205,6 +261,8 @@ resource "ankra_alert_route" "elsewhere" {
   project_id     = %q
 }
 `, routeTestDestination, otherRouteTestProject),
+				// Refused by the plan itself, before any apply.
+				PlanOnly:    true,
 				ExpectError: regexp.MustCompile(`Alert route project outside the provider's project`),
 			},
 			{
@@ -248,6 +306,11 @@ func newCatalogueFake(t *testing.T) (*routeFake, *[]string) {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"items": []map[string]any{{
 			"id": "30000000-0000-0000-0000-000000000001", "name": "alertmanager", "cluster_id": nil, "scope": "platform", "enabled": true,
 			"created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z", "last_used_at": nil,
+			"cluster_name": nil, "cluster_unavailable": false,
+		}, {
+			"id": "30000000-0000-0000-0000-000000000002", "name": "old-cluster", "cluster_id": "40000000-0000-0000-0000-000000000001",
+			"cluster_name": "retired", "cluster_unavailable": true, "scope": "cluster", "enabled": true,
+			"created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z", "last_used_at": "2026-10-17T01:00:00Z",
 		}}})
 	})
 	fake.handle("GET /api/v1/org/dns/cluster-zones", func(writer http.ResponseWriter, _ *http.Request) {
@@ -301,6 +364,10 @@ data "ankra_cloudflare_dns_records" "mx" {
 					resource.TestCheckResourceAttr("data.ankra_slack_channels.all", "channels.1.is_private", "true"),
 					resource.TestCheckResourceAttr("data.ankra_teams_channels.all", "channels.0.tenant_id", "tenant-1"),
 					resource.TestCheckResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.0.scope", "platform"),
+					resource.TestCheckResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.0.cluster_unavailable", "false"),
+					resource.TestCheckNoResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.0.cluster_name"),
+					resource.TestCheckResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.1.cluster_name", "retired"),
+					resource.TestCheckResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.1.cluster_unavailable", "true"),
 					resource.TestCheckResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.0.webhook_path",
 						"/webhooks/alerts/30000000-0000-0000-0000-000000000001"),
 					resource.TestCheckNoResourceAttr("data.ankra_alert_ingest_credentials.all", "credentials.0.cluster_id"),

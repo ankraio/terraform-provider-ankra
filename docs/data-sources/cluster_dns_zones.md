@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_dns_zones Data Source - ankra"
 subcategory: ""
 description: |-
-  Lists every cluster's generated DNS domain in the organisation (the per-cluster zone under the organisation's root domain) with its reconciliation state.
+  Lists the generated DNS domains (the per-cluster zone under the organisation's root domain) of the clusters in the provider's scope, with their reconciliation state. When the provider sets project_id, only that project's clusters are listed.
 ---
 
 # ankra_cluster_dns_zones (Data Source)
 
-Lists every cluster's generated DNS domain in the organisation (the per-cluster zone under the organisation's root domain) with its reconciliation state.
+Lists the generated DNS domains (the per-cluster zone under the organisation's root domain) of the clusters in the provider's scope, with their reconciliation state. When the provider sets `project_id`, only that project's clusters are listed.
 
 ## Example Usage
 

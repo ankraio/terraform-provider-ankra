@@ -69,14 +69,18 @@ func (client *Client) ListTeamsChannels(ctx context.Context) ([]TeamsChannel, er
 // AlertIngestCredential is an alert ingest credential as listed. The token
 // is only returned when the credential is minted, never here.
 type AlertIngestCredential struct {
-	ID         string  `json:"id"`
-	Name       string  `json:"name"`
-	ClusterID  *string `json:"cluster_id"`
-	Scope      *string `json:"scope"`
-	Enabled    bool    `json:"enabled"`
-	CreatedAt  string  `json:"created_at"`
-	UpdatedAt  string  `json:"updated_at"`
-	LastUsedAt *string `json:"last_used_at"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	ClusterID *string `json:"cluster_id"`
+	// ClusterName is served even when the pinned cluster is no longer
+	// available; ClusterUnavailable then reports that.
+	ClusterName        *string `json:"cluster_name"`
+	ClusterUnavailable bool    `json:"cluster_unavailable"`
+	Scope              *string `json:"scope"`
+	Enabled            bool    `json:"enabled"`
+	CreatedAt          string  `json:"created_at"`
+	UpdatedAt          string  `json:"updated_at"`
+	LastUsedAt         *string `json:"last_used_at"`
 }
 
 type alertIngestCredentialListing struct {
@@ -107,7 +111,8 @@ type clusterDNSZoneListing struct {
 	Items []ClusterDNSZone `json:"items"`
 }
 
-// ListClusterDNSZones lists every cluster DNS domain in the organisation.
+// ListClusterDNSZones lists the DNS domains of the clusters in the request's
+// scope: the project's clusters when a project is set.
 func (client *Client) ListClusterDNSZones(ctx context.Context) ([]ClusterDNSZone, error) {
 	var listing clusterDNSZoneListing
 	if err := client.doRequest(ctx, http.MethodGet, organisationClusterZonesPath, nil, &listing); err != nil {
