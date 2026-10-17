@@ -284,7 +284,7 @@ func (clusterResource *managedClusterResource) Read(ctx context.Context, request
 	applyClusterIdentity(&state.State, &state.Kind, cluster)
 
 	pools, err := apiClient.ListManagedNodePools(ctx, state.Provider.ValueString(), clusterID)
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

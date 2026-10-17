@@ -153,7 +153,7 @@ func (playground *playgroundResource) Read(ctx context.Context, request resource
 		return
 	}
 	status, err := apiClient.GetPlaygroundStatus(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {

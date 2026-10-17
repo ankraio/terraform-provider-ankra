@@ -296,7 +296,7 @@ func (groupResource *nodeGroupResource) Read(ctx context.Context, request resour
 	}
 
 	group, err := apiClient.GetNodeGroup(ctx, lane, clusterID, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
