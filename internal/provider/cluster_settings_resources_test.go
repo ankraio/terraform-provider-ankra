@@ -41,6 +41,21 @@ type clusterSettingsFake struct {
 	meshes        map[string]map[string]any
 	created       int
 	hasAgent      bool
+	// clusterHidden makes the cluster-scoped routes answer 404 "Cluster not
+	// found", as ClusterIsInScope does for a cluster outside the project scope.
+	clusterHidden bool
+	// duplicateCreate makes a schedule create commit two identical rows.
+	duplicateCreate bool
+	// joinFailsAfterCommit records a mesh membership and then answers 400.
+	joinFailsAfterCommit bool
+}
+
+func (fake *clusterSettingsFake) answerHidden(t *testing.T, writer http.ResponseWriter) bool {
+	if !fake.clusterHidden {
+		return false
+	}
+	writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster not found"})
+	return true
 }
 
 func (fake *clusterSettingsFake) nextID(prefix string) string {
@@ -91,7 +106,9 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 					return
 				}
 				grant["expires_at"] = body["expires_at"]
-				grant["reason"] = body["reason"]
+				if reason, present := body["reason"]; present && reason != nil {
+					grant["reason"] = reason
+				}
 				writeJSON(t, writer, http.StatusOK, map[string]any{"grant": grant})
 				return
 			}
@@ -177,9 +194,15 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 	})
 
 	fake.handle("GET "+importedPrefix+"/power-schedules", func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": fake.schedules})
 	})
 	fake.handle("POST "+importedPrefix+"/power-schedules", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		row, refusal := clusterSettingsDecodeSchedule(request, false)
 		if refusal != "" {
 			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": refusal})
@@ -187,9 +210,20 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 		}
 		row["id"] = fake.nextID("schedule")
 		fake.schedules = append([]map[string]any{row}, fake.schedules...)
+		if fake.duplicateCreate {
+			twin := map[string]any{}
+			for key, value := range row {
+				twin[key] = value
+			}
+			twin["id"] = fake.nextID("schedule")
+			fake.schedules = append([]map[string]any{twin}, fake.schedules...)
+		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": fake.schedules})
 	})
 	fake.handle("PUT "+importedPrefix+"/power-schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		row, refusal := clusterSettingsDecodeSchedule(request, true)
 		if refusal != "" {
 			t.Errorf("update refused: %s", refusal)
@@ -207,6 +241,9 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 		writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Power schedule not found"})
 	})
 	fake.handle("DELETE "+importedPrefix+"/power-schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		for index, existing := range fake.schedules {
 			if existing["id"] == request.PathValue("schedule_id") {
 				fake.schedules = append(fake.schedules[:index], fake.schedules[index+1:]...)
@@ -218,6 +255,9 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 	})
 
 	fake.handle("GET "+importedPrefix+"/agent", func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		if !fake.hasAgent {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "This cluster doesn't have an agent registered."})
 			return
@@ -225,6 +265,9 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"agent_version": "1.2.3", "disable_auto_upgrade": fake.disableUpdate, "is_online": true})
 	})
 	fake.handle("PATCH "+importedPrefix+"/agent/settings", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		var body map[string]*bool
 		decodeJSON(t, request, &body)
 		if body["disable_auto_upgrade"] == nil {
@@ -236,9 +279,15 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 	})
 
 	fake.handle("GET "+organisationPrefix+"/agent/ci-settings", func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, fake.ciSettingsAnswer())
 	})
 	fake.handle("PUT "+organisationPrefix+"/agent/ci-settings", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		var body map[string]json.RawMessage
 		decodeJSON(t, request, &body)
 		for key, raw := range body {
@@ -254,9 +303,15 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 	})
 
 	fake.handle("GET "+organisationPrefix+"/hosted-logs", func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, fake.shippingAnswer())
 	})
 	fake.handle("PUT "+organisationPrefix+"/hosted-logs", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.answerHidden(t, writer) {
+			return
+		}
 		var body map[string]any
 		decodeJSON(t, request, &body)
 		enabled, isBool := body["shipping_enabled"].(bool)
@@ -321,6 +376,10 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 			}
 		}
 		mesh["members"] = append(members, map[string]any{"cluster_id": body["cluster_id"], "cilium_cluster_id": len(members) + 1, "cilium_cluster_name": "prod", "status": "joining"})
+		if fake.joinFailsAfterCommit {
+			writeJSON(t, writer, http.StatusBadRequest, map[string]any{"detail": "writing the mesh peer secret failed"})
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true})
 	})
 	fake.handle("DELETE /api/v1/org/cluster-meshes/{mesh_id}/members/{cluster_id}", func(writer http.ResponseWriter, request *http.Request) {
@@ -652,6 +711,8 @@ data "ankra_cluster_power_schedules" "all" {
 
 func TestAccClusterAgentAndLogShippingSettings(t *testing.T) {
 	fake := newClusterSettingsFake(t)
+	fake.ciSettings["ci_storage_class"] = "portal-ssd"
+	fake.ciSettings["ci_image_prepull"] = "on"
 	config := func(autoUpgrade bool, workers int, shipping bool) string {
 		return fake.providerBlock() + fmt.Sprintf(`
 resource "ankra_cluster_agent_auto_upgrade" "prod" {
@@ -677,8 +738,8 @@ resource "ankra_cluster_log_shipping" "prod" {
 			{
 				Config: config(false, 4, true),
 				Check: resource.ComposeAggregateTestCheckFunc(
-					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_storage_class", ""),
-					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_image_prepull", "off"),
+					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_storage_class", "portal-ssd"),
+					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "ci_image_prepull", "on"),
 					resource.TestCheckResourceAttr("ankra_cluster_agent_ci_settings.prod", "apply_state", "applied"),
 					resource.TestCheckResourceAttr("ankra_cluster_log_shipping.prod", "available", "true"),
 					func(*terraform.State) error {
@@ -714,8 +775,9 @@ resource "ankra_cluster_log_shipping" "prod" {
 			},
 		},
 	})
-	if fake.disableUpdate || fake.shipping || fmt.Sprint(fake.ciSettings["ci_worker_count"]) != "0" || fake.ciSettings["ci_run_reservation"] != "off" {
-		t.Errorf("destroy did not restore defaults: disable=%v shipping=%v ci=%v", fake.disableUpdate, fake.shipping, fake.ciSettings)
+	if fake.disableUpdate || fake.shipping || fmt.Sprint(fake.ciSettings["ci_worker_count"]) != "0" || fake.ciSettings["ci_run_reservation"] != "off" ||
+		fake.ciSettings["ci_storage_class"] != "portal-ssd" || fake.ciSettings["ci_image_prepull"] != "on" {
+		t.Errorf("destroy did not restore exactly the configured defaults: disable=%v shipping=%v ci=%v", fake.disableUpdate, fake.shipping, fake.ciSettings)
 	}
 }
 

@@ -101,7 +101,7 @@ func (meshResource *clusterMeshResource) Read(ctx context.Context, request resou
 		return
 	}
 	mesh, err := apiClient.GetClusterMesh(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, "", response) {
 		return
 	}
 	if err != nil {
@@ -128,8 +128,9 @@ func (meshResource *clusterMeshResource) Delete(ctx context.Context, request res
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteClusterMesh(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete cluster mesh", err.Error())
+	err := apiClient.DeleteClusterMesh(ctx, state.ID.ValueString())
+	if deleteError := clusterSettingsDeleteError(err, ""); deleteError != nil {
+		response.Diagnostics.AddError("Unable to delete cluster mesh", deleteError.Error())
 	}
 }
 
@@ -171,7 +172,9 @@ func (memberResource *clusterMeshMemberResource) Metadata(_ context.Context, req
 func (memberResource *clusterMeshMemberResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A cluster's membership of a Cilium ClusterMesh. The counterpart of `ankra cluster mesh join` and `leave`. " +
-			"Run `ankra cluster mesh make-ready` (an operation, not managed here) before a cluster joins.",
+			"Run `ankra cluster mesh make-ready` (an operation, not managed here) before a cluster joins. Set `mesh_id` from " +
+			"`ankra_cluster_mesh.<name>.id` so Terraform removes the members before it deletes the mesh. If a join fails after the " +
+			"platform has recorded the membership, the membership is kept in state as tainted and replaced on the next apply.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("`<cluster_id>/<mesh_id>`."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -206,11 +209,21 @@ func (memberResource *clusterMeshMemberResource) Create(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.JoinClusterMesh(ctx, plan.MeshID.ValueString(), plan.ClusterID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to join cluster mesh", err.Error())
+	plan.ID = types.StringValue(plan.ClusterID.ValueString() + "/" + plan.MeshID.ValueString())
+	if joinError := apiClient.JoinClusterMesh(ctx, plan.MeshID.ValueString(), plan.ClusterID.ValueString()); joinError != nil {
+		// The platform commits the membership before later join steps run, so
+		// a failed join can still leave the cluster in the mesh. Track it then,
+		// so the resource is tainted and replaced rather than lost and joined
+		// again into a 409.
+		if mesh, getError := apiClient.GetClusterMesh(ctx, plan.MeshID.ValueString()); getError == nil {
+			if member := clusterMeshMemberOf(mesh, plan.ClusterID.ValueString()); member != nil {
+				applyClusterMeshMember(&plan, member)
+				response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+			}
+		}
+		response.Diagnostics.AddError("Unable to join cluster mesh", joinError.Error())
 		return
 	}
-	plan.ID = types.StringValue(plan.ClusterID.ValueString() + "/" + plan.MeshID.ValueString())
 	mesh, err := apiClient.GetClusterMesh(ctx, plan.MeshID.ValueString())
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read cluster mesh after joining", err.Error())
@@ -236,7 +249,7 @@ func (memberResource *clusterMeshMemberResource) Read(ctx context.Context, reque
 		return
 	}
 	mesh, err := apiClient.GetClusterMesh(ctx, state.MeshID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -268,8 +281,9 @@ func (memberResource *clusterMeshMemberResource) Delete(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.LeaveClusterMesh(ctx, state.MeshID.ValueString(), state.ClusterID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to leave cluster mesh", err.Error())
+	err := apiClient.LeaveClusterMesh(ctx, state.MeshID.ValueString(), state.ClusterID.ValueString())
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to leave cluster mesh", deleteError.Error())
 	}
 }
 

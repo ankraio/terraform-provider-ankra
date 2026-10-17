@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -20,6 +21,7 @@ var (
 	_ resource.Resource                = (*clusterPowerScheduleResource)(nil)
 	_ resource.ResourceWithConfigure   = (*clusterPowerScheduleResource)(nil)
 	_ resource.ResourceWithImportState = (*clusterPowerScheduleResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*clusterPowerScheduleResource)(nil)
 )
 
 type clusterPowerScheduleResource struct {
@@ -58,7 +60,11 @@ func (scheduleResource *clusterPowerScheduleResource) Schema(_ context.Context, 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A scheduled stop or start of a cluster: once at `run_at`, or repeatedly per `cron_expression` in `timezone`. " +
 			"The counterpart of `ankra cluster power-schedules create`, `update` and `delete`. Every attribute but `cluster_id` " +
-			"updates in place.",
+			"updates in place.\n\n" +
+			"After a `once` schedule fires the platform disables it and clears `next_run_at`; the provider keeps the configured " +
+			"`enabled` in state for such a spent schedule, so it shows no diff. A spent schedule cannot be changed in place, because " +
+			"the platform refuses a `run_at` in the past: the plan fails until `run_at` is moved to the future, or the resource is " +
+			"replaced (`terraform apply -replace`) or removed.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("Identifier of the schedule."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -159,7 +165,7 @@ func (scheduleResource *clusterPowerScheduleResource) Read(ctx context.Context, 
 		return
 	}
 	schedule, err := apiClient.GetClusterPowerSchedule(ctx, state.ClusterID.ValueString(), state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -169,7 +175,11 @@ func (scheduleResource *clusterPowerScheduleResource) Read(ctx context.Context, 
 	if state.AcceptNodeLocalDataLoss.IsNull() {
 		state.AcceptNodeLocalDataLoss = types.BoolValue(false)
 	}
+	priorEnabled := state.Enabled
 	applyClusterPowerSchedule(&state, schedule)
+	if clusterPowerScheduleSpent(schedule) && !priorEnabled.IsNull() && !priorEnabled.IsUnknown() {
+		state.Enabled = priorEnabled
+	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 
@@ -202,8 +212,9 @@ func (scheduleResource *clusterPowerScheduleResource) Delete(ctx context.Context
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteClusterPowerSchedule(ctx, state.ClusterID.ValueString(), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete cluster power schedule", err.Error())
+	err := apiClient.DeleteClusterPowerSchedule(ctx, state.ClusterID.ValueString(), state.ID.ValueString())
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to delete cluster power schedule", deleteError.Error())
 	}
 }
 
@@ -239,4 +250,36 @@ func applyClusterPowerSchedule(model *clusterPowerScheduleModel, schedule *clien
 	model.NextRunAt = types.StringPointerValue(schedule.NextRunAt)
 	model.LastRunAt = types.StringPointerValue(schedule.LastRunAt)
 	model.LastRunStatus = types.StringPointerValue(schedule.LastRunStatus)
+}
+
+// clusterPowerScheduleSpent reports a once schedule that has fired: the
+// platform disables it and clears next_run_at, which is not a change the
+// configuration asked for.
+func clusterPowerScheduleSpent(schedule *client.ClusterPowerSchedule) bool {
+	return schedule.ScheduleKind == "once" && !schedule.Enabled && schedule.LastRunAt != nil && *schedule.LastRunAt != ""
+}
+
+// ModifyPlan fails the plan of a create or in-place update of a once
+// schedule whose run_at has passed: the platform refuses it at apply with
+// "Run at must be in the future", on every apply.
+func (scheduleResource *clusterPowerScheduleResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.Plan.Raw.IsNull() {
+		return
+	}
+	if !request.State.Raw.IsNull() && request.Plan.Raw.Equal(request.State.Raw) {
+		return
+	}
+	var plan clusterPowerScheduleModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if plan.ScheduleKind.ValueString() != "once" || plan.RunAt.IsNull() || plan.RunAt.IsUnknown() {
+		return
+	}
+	if clusterSettingsIsPast(plan.RunAt.ValueString()) {
+		response.Diagnostics.AddAttributeError(path.Root("run_at"), "run_at is in the past",
+			"The platform only accepts a once schedule whose run_at is in the future, so this create or update would fail at apply. "+
+				"Move run_at to the future, or remove the resource if the schedule has done its job.")
+	}
 }

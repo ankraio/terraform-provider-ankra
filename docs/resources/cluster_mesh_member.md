@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_mesh_member Resource - ankra"
 subcategory: ""
 description: |-
-  A cluster's membership of a Cilium ClusterMesh. The counterpart of ankra cluster mesh join and leave. Run ankra cluster mesh make-ready (an operation, not managed here) before a cluster joins.
+  A cluster's membership of a Cilium ClusterMesh. The counterpart of ankra cluster mesh join and leave. Run ankra cluster mesh make-ready (an operation, not managed here) before a cluster joins. Set mesh_id from ankra_cluster_mesh.<name>.id so Terraform removes the members before it deletes the mesh. If a join fails after the platform has recorded the membership, the membership is kept in state as tainted and replaced on the next apply.
 ---
 
 # ankra_cluster_mesh_member (Resource)
 
-A cluster's membership of a Cilium ClusterMesh. The counterpart of `ankra cluster mesh join` and `leave`. Run `ankra cluster mesh make-ready` (an operation, not managed here) before a cluster joins.
+A cluster's membership of a Cilium ClusterMesh. The counterpart of `ankra cluster mesh join` and `leave`. Run `ankra cluster mesh make-ready` (an operation, not managed here) before a cluster joins. Set `mesh_id` from `ankra_cluster_mesh.<name>.id` so Terraform removes the members before it deletes the mesh. If a join fails after the platform has recorded the membership, the membership is kept in state as tainted and replaced on the next apply.
 
 ## Example Usage
 

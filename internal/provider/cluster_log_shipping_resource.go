@@ -106,7 +106,7 @@ func (shippingResource *clusterLogShippingResource) Read(ctx context.Context, re
 		return
 	}
 	shipping, err := apiClient.GetClusterLogShipping(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -128,8 +128,9 @@ func (shippingResource *clusterLogShippingResource) Delete(ctx context.Context, 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if _, err := apiClient.SetClusterLogShipping(ctx, state.ClusterID.ValueString(), false); err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to turn cluster log shipping off", err.Error())
+	_, err := apiClient.SetClusterLogShipping(ctx, state.ClusterID.ValueString(), false)
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to turn cluster log shipping off", deleteError.Error())
 	}
 }
 

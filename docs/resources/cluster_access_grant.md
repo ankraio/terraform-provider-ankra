@@ -4,14 +4,14 @@ page_title: "ankra_cluster_access_grant Resource - ankra"
 subcategory: ""
 description: |-
   Kubernetes access to a cluster through the Ankra gateway for one organisation member. The counterpart of ankra cluster access grant and ankra cluster access revoke.
-  Once a grant's expiry has passed the platform retires it, and the next plan proposes creating it again; move expires_at forward or remove the resource.
+  A grant whose expiry has passed stays in state without a diff; move expires_at forward to extend it, or remove the resource (destroy revokes it and tolerates a grant the platform already retired). Create refuses when a live grant with the same member, scope, namespace and role exists, because the platform would take it over; import that grant instead.
 ---
 
 # ankra_cluster_access_grant (Resource)
 
 Kubernetes access to a cluster through the Ankra gateway for one organisation member. The counterpart of `ankra cluster access grant` and `ankra cluster access revoke`.
 
-Once a grant's expiry has passed the platform retires it, and the next plan proposes creating it again; move `expires_at` forward or remove the resource.
+A grant whose expiry has passed stays in state without a diff; move `expires_at` forward to extend it, or remove the resource (destroy revokes it and tolerates a grant the platform already retired). Create refuses when a live grant with the same member, scope, namespace and role exists, because the platform would take it over; import that grant instead.
 
 ## Example Usage
 

@@ -5,7 +5,10 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -16,7 +19,107 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+
+	"ankra.io/terraform-provider-ankra/internal/client"
 )
+
+// clusterSettingsNow is the clock plan-time checks read; tests replace it.
+var clusterSettingsNow = time.Now
+
+// clusterSettingsRFC3339Validator refuses a timestamp the platform would
+// refuse, at plan time.
+type clusterSettingsRFC3339Validator struct{}
+
+func (clusterSettingsRFC3339Validator) Description(_ context.Context) string {
+	return "value must be an RFC 3339 timestamp, e.g. 2026-12-31T23:00:00Z"
+}
+
+func (rfc3339 clusterSettingsRFC3339Validator) MarkdownDescription(ctx context.Context) string {
+	return rfc3339.Description(ctx)
+}
+
+func (rfc3339 clusterSettingsRFC3339Validator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	if _, err := time.Parse(time.RFC3339, request.ConfigValue.ValueString()); err != nil {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid timestamp", rfc3339.Description(ctx)+".")
+	}
+}
+
+// clusterSettingsIsPast reports whether an RFC 3339 timestamp lies in the
+// past; an unparsable or empty one is not.
+func clusterSettingsIsPast(value string) bool {
+	parsed, err := time.Parse(time.RFC3339, value)
+	return err == nil && !parsed.After(clusterSettingsNow())
+}
+
+// clusterSettingsNotFoundDetail reads the detail of a 404 from the platform,
+// and reports whether err is a 404 at all.
+func clusterSettingsNotFoundDetail(err error) (string, bool) {
+	var apiError *client.APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusNotFound {
+		return "", false
+	}
+	var body struct {
+		Detail string `json:"detail"`
+	}
+	if json.Unmarshal([]byte(apiError.Body), &body) != nil {
+		return "", true
+	}
+	return strings.TrimSpace(body.Detail), true
+}
+
+// clusterSettingsScopeError tells a 404 that means "you cannot see this"
+// from one that means "this object is gone". The cluster routes answer
+// "Cluster not found" when the cluster is outside the provider's
+// organisation and project scope (ClusterIsInScope), and the mesh routes
+// answer "Not Found" while the organisation's cluster_mesh feature is dark.
+// Neither says the object is gone, so dropping it from state, or counting a
+// delete as done, would leave it running unmanaged. It returns nil for any
+// other error.
+func clusterSettingsScopeError(err error, clusterID string) error {
+	detail, isNotFound := clusterSettingsNotFoundDetail(err)
+	if !isNotFound {
+		return nil
+	}
+	switch {
+	case strings.EqualFold(detail, "cluster not found"):
+		return fmt.Errorf("cluster %s is not visible in the provider's organisation and project scope. "+
+			"Set the provider's project_id (or organisation_id) to the scope that holds the cluster; if the cluster was "+
+			"deleted, remove this resource with `terraform state rm`. (%w)", clusterID, err)
+	case detail == "Not Found":
+		return fmt.Errorf("the cluster mesh feature is not enabled for this organisation, so the mesh cannot be read; "+
+			"if the mesh is really gone, remove this resource with `terraform state rm`. (%w)", err)
+	}
+	return nil
+}
+
+// clusterSettingsReadNotFound handles a Read error that is a 404: an object
+// really gone is removed from state, and a 404 that only means the cluster
+// is out of scope is reported as an error. It reports whether it handled err.
+func clusterSettingsReadNotFound(ctx context.Context, err error, clusterID string, response *resource.ReadResponse) bool {
+	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+		response.Diagnostics.AddError("Cluster not in scope", scopeError.Error())
+		return true
+	}
+	return removeWhenNotFound(ctx, err, response)
+}
+
+// clusterSettingsDeleteError is the error a Delete reports: nil when the
+// object is already gone, the scope error when the cluster is out of scope.
+func clusterSettingsDeleteError(err error, clusterID string) error {
+	if err == nil {
+		return nil
+	}
+	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+		return scopeError
+	}
+	if client.IsNotFound(err) {
+		return nil
+	}
+	return err
+}
 
 // clusterSettingsOneOfValidator refuses at plan time a value outside the
 // vocabulary the platform accepts, which it would refuse at apply.
@@ -145,4 +248,19 @@ func clusterSettingsTimestamp(configured types.String, returned *string) types.S
 // lower case, without the trailing root dot or a leading wildcard label.
 func clusterSettingsNormaliseZone(zone string) string {
 	return strings.TrimPrefix(strings.TrimSuffix(strings.ToLower(strings.TrimSpace(zone)), "."), "*.")
+}
+
+// clusterSettingsErrorText is the diagnostic detail for an API error, which
+// names the scope problem when the cluster is out of scope.
+func clusterSettingsErrorText(err error, clusterID string) string {
+	if scopeError := clusterSettingsScopeError(err, clusterID); scopeError != nil {
+		return scopeError.Error()
+	}
+	return err.Error()
+}
+
+// clusterSettingsIsConflict reports whether err is a 409 from the platform.
+func clusterSettingsIsConflict(err error) bool {
+	var apiError *client.APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == http.StatusConflict
 }

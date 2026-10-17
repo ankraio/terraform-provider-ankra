@@ -120,7 +120,9 @@ func (keysResource *clusterSSHKeysResource) Read(ctx context.Context, request re
 		return
 	}
 	if cluster == nil {
-		response.State.RemoveResource(ctx)
+		response.Diagnostics.AddError("Cluster not in scope", fmt.Sprintf("cluster %s is not in the cluster listing of the provider's organisation and project scope. "+
+			"Set the provider's project_id (or organisation_id) to the scope that holds the cluster; if the cluster was deleted, "+
+			"remove this resource with `terraform state rm`.", state.ClusterID.ValueString()))
 		return
 	}
 	if !clusterSSHKeysKinds[cluster.Kind] {
@@ -128,7 +130,7 @@ func (keysResource *clusterSSHKeysResource) Read(ctx context.Context, request re
 		return
 	}
 	keys, err := apiClient.GetClusterSSHKeys(ctx, cluster.Kind, cluster.ID)
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -157,7 +159,7 @@ func clusterSSHKeysKind(ctx context.Context, apiClient *client.Client, clusterID
 		return "", err
 	}
 	if cluster == nil {
-		return "", fmt.Errorf("cluster %s not found", clusterID)
+		return "", fmt.Errorf("cluster %s is not in the cluster listing of the provider's organisation and project scope; set the provider's project_id", clusterID)
 	}
 	if !clusterSSHKeysKinds[cluster.Kind] {
 		return "", clusterSSHKeysKindError(cluster)

@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_agent_ci_settings Resource - ankra"
 subcategory: ""
 description: |-
-  How a cluster's Ankra agent runs pipeline steps. The counterpart of ankra cluster agent ci set. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform defaults of the attributes this resource manages. The CI placement (--node-group, --node-selector, --toleration) is not managed here.
+  How a cluster's Ankra agent runs pipeline steps. The counterpart of ankra cluster agent ci set. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting. The CI placement (--node-group, --node-selector, --toleration) is not managed here.
 ---
 
 # ankra_cluster_agent_ci_settings (Resource)
 
-How a cluster's Ankra agent runs pipeline steps. The counterpart of `ankra cluster agent ci set`. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform defaults of the attributes this resource manages. The CI placement (`--node-group`, `--node-selector`, `--toleration`) is not managed here.
+How a cluster's Ankra agent runs pipeline steps. The counterpart of `ankra cluster agent ci set`. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting. The CI placement (`--node-group`, `--node-selector`, `--toleration`) is not managed here.
 
 ## Example Usage
 

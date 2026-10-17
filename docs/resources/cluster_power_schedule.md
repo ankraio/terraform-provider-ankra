@@ -4,11 +4,14 @@ page_title: "ankra_cluster_power_schedule Resource - ankra"
 subcategory: ""
 description: |-
   A scheduled stop or start of a cluster: once at run_at, or repeatedly per cron_expression in timezone. The counterpart of ankra cluster power-schedules create, update and delete. Every attribute but cluster_id updates in place.
+  After a once schedule fires the platform disables it and clears next_run_at; the provider keeps the configured enabled in state for such a spent schedule, so it shows no diff. A spent schedule cannot be changed in place, because the platform refuses a run_at in the past: the plan fails until run_at is moved to the future, or the resource is replaced (terraform apply -replace) or removed.
 ---
 
 # ankra_cluster_power_schedule (Resource)
 
 A scheduled stop or start of a cluster: once at `run_at`, or repeatedly per `cron_expression` in `timezone`. The counterpart of `ankra cluster power-schedules create`, `update` and `delete`. Every attribute but `cluster_id` updates in place.
+
+After a `once` schedule fires the platform disables it and clears `next_run_at`; the provider keeps the configured `enabled` in state for such a spent schedule, so it shows no diff. A spent schedule cannot be changed in place, because the platform refuses a `run_at` in the past: the plan fails until `run_at` is moved to the future, or the resource is replaced (`terraform apply -replace`) or removed.
 
 ## Example Usage
 

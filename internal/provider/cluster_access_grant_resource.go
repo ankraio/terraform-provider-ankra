@@ -5,8 +5,8 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"strings"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -63,13 +63,25 @@ func clusterAccessGrantReplaceWhenStanding(ctx context.Context, request planmodi
 	response.RequiresReplace = expiresAt.IsNull()
 }
 
+// clusterAccessGrantReplaceReason replaces the grant when a reason change
+// cannot be made in place: on a standing grant, and when the reason is
+// removed, because the platform's re-time keeps the stored reason when the
+// request carries none (reason = COALESCE(new, reason)).
+func clusterAccessGrantReplaceReason(ctx context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	clusterAccessGrantReplaceWhenStanding(ctx, request, response)
+	if !request.StateValue.IsNull() && request.PlanValue.IsNull() {
+		response.RequiresReplace = true
+	}
+}
+
 func (grantResource *clusterAccessGrantResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	retimeDescription := "A change is applied in place while `expires_at` is set (the platform re-times the grant); otherwise it replaces the grant."
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Kubernetes access to a cluster through the Ankra gateway for one organisation member. " +
 			"The counterpart of `ankra cluster access grant` and `ankra cluster access revoke`.\n\n" +
-			"Once a grant's expiry has passed the platform retires it, and the next plan proposes creating it again; " +
-			"move `expires_at` forward or remove the resource.",
+			"A grant whose expiry has passed stays in state without a diff; move `expires_at` forward to extend it, or remove the resource " +
+			"(destroy revokes it and tolerates a grant the platform already retired). Create refuses when a live grant with the same " +
+			"member, scope, namespace and role exists, because the platform would take it over; import that grant instead.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("Identifier of the grant."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -100,14 +112,16 @@ func (grantResource *clusterAccessGrantResource) Schema(_ context.Context, _ res
 			"expires_at": schema.StringAttribute{
 				MarkdownDescription: "RFC 3339 time the grant ends. Unset is a standing grant. " + retimeDescription,
 				Optional:            true,
+				Validators:          []validator.String{clusterSettingsRFC3339Validator{}},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(clusterAccessGrantReplaceWhenStanding,
 					"Removing the expiry replaces the grant.", "Removing the expiry replaces the grant.")},
 			},
 			"reason": schema.StringAttribute{
 				MarkdownDescription: "Justification recorded with the grant; the organisation access policy may require one. " + retimeDescription,
 				Optional:            true,
-				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(clusterAccessGrantReplaceWhenStanding,
-					"Changing the reason of a standing grant replaces it.", "Changing the reason of a standing grant replaces it.")},
+				PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(clusterAccessGrantReplaceReason,
+					"Changing the reason of a standing grant, or removing a reason, replaces the grant.",
+					"Changing the reason of a standing grant, or removing a reason, replaces the grant.")},
 			},
 			"ankra_user_id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the member the grant is for.",
@@ -136,13 +150,59 @@ func (grantResource *clusterAccessGrantResource) Create(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	grant, err := apiClient.CreateClusterAccessGrant(ctx, plan.ClusterID.ValueString(), clusterAccessGrantRequest(plan))
+	clusterID := plan.ClusterID.ValueString()
+	grants, err := apiClient.ListClusterAccessGrants(ctx, clusterID)
 	if err != nil {
-		response.Diagnostics.AddError("Unable to create cluster access grant", err.Error())
+		response.Diagnostics.AddError("Unable to create cluster access grant", clusterSettingsErrorText(err, clusterID))
+		return
+	}
+	if existing := clusterAccessGrantMatching(grants, plan); existing != nil {
+		response.Diagnostics.AddError("Cluster access grant already exists", clusterAccessGrantExistsDetail(clusterID, existing.ID))
+		return
+	}
+	grant, err := apiClient.CreateClusterAccessGrant(ctx, clusterID, clusterAccessGrantRequest(plan))
+	if err != nil {
+		detail := clusterSettingsErrorText(err, clusterID)
+		if clusterSettingsIsConflict(err) {
+			if refreshed, listError := apiClient.ListClusterAccessGrants(ctx, clusterID); listError == nil {
+				if existing := clusterAccessGrantMatching(refreshed, plan); existing != nil {
+					detail = clusterAccessGrantExistsDetail(clusterID, existing.ID)
+				}
+			}
+		}
+		response.Diagnostics.AddError("Unable to create cluster access grant", detail)
 		return
 	}
 	applyClusterAccessGrant(&plan, grant)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+}
+
+// clusterAccessGrantMatching finds the live grant the platform would re-time
+// instead of creating one: same member, scope, namespace and role, not past
+// its expiry.
+func clusterAccessGrantMatching(grants []client.ClusterAccessGrant, plan clusterAccessGrantModel) *client.ClusterAccessGrant {
+	for index := range grants {
+		grant := &grants[index]
+		if grant.UserEmail == nil || !strings.EqualFold(*grant.UserEmail, plan.UserEmail.ValueString()) {
+			continue
+		}
+		if grant.Scope != plan.Scope.ValueString() || grant.Role != plan.Role.ValueString() {
+			continue
+		}
+		if types.StringPointerValue(grant.Namespace).ValueString() != plan.Namespace.ValueString() {
+			continue
+		}
+		if grant.ExpiresAt != nil && clusterSettingsIsPast(*grant.ExpiresAt) {
+			continue
+		}
+		return grant
+	}
+	return nil
+}
+
+func clusterAccessGrantExistsDetail(clusterID, grantID string) string {
+	return fmt.Sprintf("A live grant with the same member, scope, namespace and role already exists (%s). Creating this resource "+
+		"would take it over, so it is refused. Import it instead: terraform import <resource address> %s/%s", grantID, clusterID, grantID)
 }
 
 func (grantResource *clusterAccessGrantResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -156,15 +216,14 @@ func (grantResource *clusterAccessGrantResource) Read(ctx context.Context, reque
 		return
 	}
 	grant, err := apiClient.GetClusterAccessGrant(ctx, state.ClusterID.ValueString(), state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if client.IsNotFound(err) && clusterSettingsIsPast(state.ExpiresAt.ValueString()) && clusterSettingsScopeError(err, state.ClusterID.ValueString()) == nil {
+		return
+	}
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read cluster access grant", err.Error())
-		return
-	}
-	if clusterAccessGrantExpired(grant) {
-		response.State.RemoveResource(ctx)
 		return
 	}
 	applyClusterAccessGrant(&state, grant)
@@ -203,8 +262,9 @@ func (grantResource *clusterAccessGrantResource) Delete(ctx context.Context, req
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteClusterAccessGrant(ctx, state.ClusterID.ValueString(), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to revoke cluster access grant", err.Error())
+	err := apiClient.DeleteClusterAccessGrant(ctx, state.ClusterID.ValueString(), state.ID.ValueString())
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to revoke cluster access grant", deleteError.Error())
 	}
 }
 
@@ -240,12 +300,4 @@ func applyClusterAccessGrant(model *clusterAccessGrantModel, grant *client.Clust
 	model.AnkraUserID = types.StringValue(grant.AnkraUserID)
 	model.ReconcileStatus = types.StringValue(grant.ReconcileStatus)
 	model.Source = types.StringPointerValue(grant.Source)
-}
-
-func clusterAccessGrantExpired(grant *client.ClusterAccessGrant) bool {
-	if grant.ExpiresAt == nil {
-		return false
-	}
-	expiresAt, err := time.Parse(time.RFC3339, *grant.ExpiresAt)
-	return err == nil && !expiresAt.After(time.Now())
 }

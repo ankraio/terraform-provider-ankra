@@ -10,8 +10,6 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/types"
-
-	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 var (
@@ -97,7 +95,7 @@ func (upgradeResource *clusterAgentAutoUpgradeResource) Read(ctx context.Context
 		return
 	}
 	agent, err := apiClient.GetClusterAgent(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -121,8 +119,8 @@ func (upgradeResource *clusterAgentAutoUpgradeResource) Delete(ctx context.Conte
 		return
 	}
 	err := apiClient.SetClusterAgentAutoUpgrade(ctx, state.ClusterID.ValueString(), true)
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to restore cluster agent auto-upgrade", err.Error())
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to restore cluster agent auto-upgrade", deleteError.Error())
 	}
 }
 

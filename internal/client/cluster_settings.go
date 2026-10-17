@@ -5,6 +5,8 @@ package client
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -90,10 +92,10 @@ func (client *Client) CreateClusterAccessGrant(ctx context.Context, clusterID st
 	return &envelope.Grant, nil
 }
 
-// DeleteClusterAccessGrant revokes a grant. A grant already gone is not an
-// error.
+// DeleteClusterAccessGrant revokes a grant. A 404 is returned as an error:
+// the caller tells a grant already gone from a cluster out of scope.
 func (client *Client) DeleteClusterAccessGrant(ctx context.Context, clusterID, grantID string) error {
-	return client.doRequest(ctx, http.MethodDelete, clusterSettingsPath(clusterID)+"/access/grants/"+url.PathEscape(grantID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, clusterSettingsPath(clusterID)+"/access/grants/"+url.PathEscape(grantID), nil, nil)
 }
 
 // ClusterSSHKeys is the set of SSH key credentials installed on a cluster's
@@ -170,9 +172,9 @@ func (client *Client) DeclareClusterCustomDNSZone(ctx context.Context, clusterID
 }
 
 // RemoveClusterCustomDNSZone withdraws a zone. A zone the cluster no longer
-// serves answers 404, which is not an error here.
+// serves answers 404, which the caller classifies.
 func (client *Client) RemoveClusterCustomDNSZone(ctx context.Context, clusterID, zone string) error {
-	return client.doRequest(ctx, http.MethodDelete, clusterSettingsPath(clusterID)+"/custom-dns-zones/"+url.PathEscape(zone), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, clusterSettingsPath(clusterID)+"/custom-dns-zones/"+url.PathEscape(zone), nil, nil)
 }
 
 // ClusterPowerSchedule is one scheduled stop or start of a cluster.
@@ -271,21 +273,73 @@ func (client *Client) CreateClusterPowerSchedule(ctx context.Context, clusterID 
 	}
 	var listing clusterPowerScheduleListing
 	if err := client.doRequest(ctx, http.MethodPost, clusterSettingsImportedPath(clusterID)+"/power-schedules", request, &listing); err != nil {
-		return nil, err
+		var apiError *APIError
+		if errors.As(err, &apiError) {
+			return nil, err
+		}
+		return nil, &ClusterPowerScheduleUntrackedError{ClusterID: clusterID, Request: request, Cause: err.Error()}
 	}
 	var created []ClusterPowerSchedule
+	var newIDs []string
 	for _, schedule := range listing.Schedules {
-		if !known[schedule.ID] && clusterPowerScheduleMatches(schedule, request) {
+		if known[schedule.ID] {
+			continue
+		}
+		newIDs = append(newIDs, schedule.ID)
+		if clusterPowerScheduleMatches(schedule, request) {
 			created = append(created, schedule)
 		}
 	}
 	if len(created) != 1 {
-		return nil, &APIError{
-			Method: http.MethodPost, Path: clusterSettingsImportedPath(clusterID) + "/power-schedules", StatusCode: http.StatusOK,
-			Body: "the schedule was created but could not be told apart in the listing; import it by id",
+		candidates := newIDs
+		if len(created) > 1 {
+			candidates = nil
+			for _, schedule := range created {
+				candidates = append(candidates, schedule.ID)
+			}
+		}
+		return nil, &ClusterPowerScheduleUntrackedError{
+			ClusterID: clusterID, Request: request, CandidateIDs: candidates,
+			Cause: fmt.Sprintf("%d new schedules in the listing match the request", len(created)),
 		}
 	}
 	return &created[0], nil
+}
+
+// ClusterPowerScheduleUntrackedError is a create the platform may have
+// committed but the provider could not identify. Applying again would create
+// a second schedule, so the error names the candidates and how to import one.
+type ClusterPowerScheduleUntrackedError struct {
+	ClusterID    string
+	Request      ClusterPowerScheduleRequest
+	CandidateIDs []string
+	Cause        string
+}
+
+func (untracked *ClusterPowerScheduleUntrackedError) Error() string {
+	timing := "cron_expression " + clusterSettingsDereference(untracked.Request.CronExpression)
+	if untracked.Request.ScheduleKind == "once" {
+		timing = "run_at " + clusterSettingsDereference(untracked.Request.RunAt)
+	}
+	message := fmt.Sprintf("the power schedule (action %s, schedule_kind %s, %s) may have been created on cluster %s, "+
+		"but the provider could not identify it (%s). Do not apply again before importing it, or the platform will hold two. ",
+		untracked.Request.Action, untracked.Request.ScheduleKind, timing, untracked.ClusterID, untracked.Cause)
+	if len(untracked.CandidateIDs) == 0 {
+		return message + fmt.Sprintf("Find its id with `ankra cluster power-schedules list %s`, then run: "+
+			"terraform import <resource address> %s/<schedule_id>", untracked.ClusterID, untracked.ClusterID)
+	}
+	commands := make([]string, 0, len(untracked.CandidateIDs))
+	for _, candidate := range untracked.CandidateIDs {
+		commands = append(commands, fmt.Sprintf("terraform import <resource address> %s/%s", untracked.ClusterID, candidate))
+	}
+	return message + "Candidates: " + strings.Join(untracked.CandidateIDs, ", ") + ". Import the right one: " + strings.Join(commands, " | ")
+}
+
+func clusterSettingsDereference(value *string) string {
+	if value == nil {
+		return "(none)"
+	}
+	return *value
 }
 
 // clusterPowerScheduleMatches reports whether a listed schedule is the one a
@@ -320,10 +374,10 @@ func (client *Client) UpdateClusterPowerSchedule(ctx context.Context, clusterID,
 	return findClusterPowerSchedule(listing.Schedules, clusterID, scheduleID)
 }
 
-// DeleteClusterPowerSchedule deletes a schedule. A schedule already gone is
-// not an error.
+// DeleteClusterPowerSchedule deletes a schedule. A 404 is returned for the
+// caller to classify.
 func (client *Client) DeleteClusterPowerSchedule(ctx context.Context, clusterID, scheduleID string) error {
-	return client.doRequest(ctx, http.MethodDelete, clusterSettingsImportedPath(clusterID)+"/power-schedules/"+url.PathEscape(scheduleID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, clusterSettingsImportedPath(clusterID)+"/power-schedules/"+url.PathEscape(scheduleID), nil, nil)
 }
 
 // ClusterAgent is the part of a cluster's agent record the provider reads.
@@ -469,9 +523,9 @@ func (client *Client) CreateClusterMesh(ctx context.Context, name string) (*Clus
 }
 
 // DeleteClusterMesh deletes a mesh, which the platform allows only once it
-// has no members. A mesh already gone is not an error.
+// has no members. A 404 is returned for the caller to classify.
 func (client *Client) DeleteClusterMesh(ctx context.Context, meshID string) error {
-	return client.doRequest(ctx, http.MethodDelete, clusterMeshesPath+"/"+url.PathEscape(meshID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, clusterMeshesPath+"/"+url.PathEscape(meshID), nil, nil)
 }
 
 // JoinClusterMesh admits a cluster to a mesh.
@@ -479,10 +533,10 @@ func (client *Client) JoinClusterMesh(ctx context.Context, meshID, clusterID str
 	return client.doRequest(ctx, http.MethodPost, clusterMeshesPath+"/"+url.PathEscape(meshID)+"/members", map[string]string{"cluster_id": clusterID}, nil)
 }
 
-// LeaveClusterMesh removes a cluster from a mesh. A mesh already gone is not
-// an error.
+// LeaveClusterMesh removes a cluster from a mesh. A 404 is returned for the
+// caller to classify.
 func (client *Client) LeaveClusterMesh(ctx context.Context, meshID, clusterID string) error {
-	return client.doRequest(ctx, http.MethodDelete, clusterMeshesPath+"/"+url.PathEscape(meshID)+"/members/"+url.PathEscape(clusterID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, clusterMeshesPath+"/"+url.PathEscape(meshID)+"/members/"+url.PathEscape(clusterID), nil, nil)
 }
 
 func clusterSettingsNotFound(path, body string) error {

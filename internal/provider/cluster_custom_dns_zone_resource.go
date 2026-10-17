@@ -126,7 +126,7 @@ func (zoneResource *clusterCustomDNSZoneResource) Read(ctx context.Context, requ
 		return
 	}
 	zones, err := apiClient.ListClusterCustomDNSZones(ctx, state.ClusterID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {
@@ -155,8 +155,9 @@ func (zoneResource *clusterCustomDNSZoneResource) Delete(ctx context.Context, re
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.RemoveClusterCustomDNSZone(ctx, state.ClusterID.ValueString(), clusterSettingsNormaliseZone(state.Zone.ValueString())); err != nil {
-		response.Diagnostics.AddError("Unable to withdraw cluster custom DNS zone", err.Error())
+	err := apiClient.RemoveClusterCustomDNSZone(ctx, state.ClusterID.ValueString(), clusterSettingsNormaliseZone(state.Zone.ValueString()))
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to withdraw cluster custom DNS zone", deleteError.Error())
 	}
 }
 
