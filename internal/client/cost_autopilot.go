@@ -52,6 +52,21 @@ type CostAutopilotPolicy struct {
 	NotificationRouteID *string                  `json:"notification_route_id"`
 	EnvironmentKinds    []string                 `json:"environment_kinds"`
 	Clusters            []CostAutopilotCluster   `json:"clusters"`
+	ProjectDefaults     []CostAutopilotProject   `json:"project_defaults"`
+}
+
+// CostAutopilotProject is the default tiers one project set for its own
+// clusters. A kind it leaves out falls through to the organisation default.
+type CostAutopilotProject struct {
+	ProjectID   string            `json:"project_id"`
+	ProjectName string            `json:"project_name"`
+	Defaults    map[string]string `json:"defaults"`
+	SetBy       string            `json:"set_by"`
+	SetAt       string            `json:"set_at"`
+}
+
+type costAutopilotProjectWrite struct {
+	Defaults map[string]string `json:"defaults"`
 }
 
 // CostAutopilotPolicyUpdate is the policy write. Defaults names the kinds it
@@ -144,4 +159,41 @@ func (client *Client) SetCostAutopilotOverride(ctx context.Context, clusterID st
 // already gone answers a NotFound APIError.
 func (client *Client) ClearCostAutopilotOverride(ctx context.Context, clusterID string) error {
 	return client.doRequest(ctx, http.MethodDelete, costAutopilotPath+"/clusters/"+url.PathEscape(clusterID), nil, nil)
+}
+
+func costAutopilotProjectPath(projectID string) string {
+	return costAutopilotPath + "/projects/" + url.PathEscape(projectID)
+}
+
+// GetCostAutopilotProject finds one project's defaults in the policy read,
+// the only read the platform offers. A project without defaults of its own
+// is a NotFound APIError.
+func (client *Client) GetCostAutopilotProject(ctx context.Context, projectID string) (*CostAutopilotProject, error) {
+	policy, err := client.GetCostAutopilot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for index := range policy.ProjectDefaults {
+		if policy.ProjectDefaults[index].ProjectID == projectID && len(policy.ProjectDefaults[index].Defaults) > 0 {
+			return &policy.ProjectDefaults[index], nil
+		}
+	}
+	return nil, &APIError{Method: http.MethodGet, Path: costAutopilotPath, StatusCode: http.StatusNotFound, Body: "project " + projectID + " has no defaults"}
+}
+
+// SetCostAutopilotProject replaces a project's default tiers as a whole. A
+// project that is not a live one of the organisation is a NotFound APIError.
+func (client *Client) SetCostAutopilotProject(ctx context.Context, projectID string, defaults map[string]string) (*CostAutopilotProject, error) {
+	var project CostAutopilotProject
+	if err := client.doRequest(ctx, http.MethodPut, costAutopilotProjectPath(projectID), costAutopilotProjectWrite{Defaults: defaults}, &project); err != nil {
+		return nil, err
+	}
+	return &project, nil
+}
+
+// ClearCostAutopilotProject removes a project's defaults, so its clusters
+// follow the organisation's. Clearing a project without defaults is not an
+// error.
+func (client *Client) ClearCostAutopilotProject(ctx context.Context, projectID string) error {
+	return client.doRequest(ctx, http.MethodDelete, costAutopilotProjectPath(projectID), nil, nil)
 }

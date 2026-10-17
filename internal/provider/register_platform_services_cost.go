@@ -16,6 +16,8 @@ func costResources() []func() resource.Resource {
 		NewCostAutopilotResource,
 		NewCostAutopilotOverrideResource,
 		NewCostSettingsResource,
+		NewCostRateCardResource,
+		NewCostAutopilotProjectDefaultResource,
 	}
 }
 

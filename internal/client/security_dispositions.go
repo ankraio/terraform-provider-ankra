@@ -92,9 +92,28 @@ type securityDispositionPage struct {
 // ListSecurityDispositions returns every disposition policy of the
 // organisation, revoked ones included, walking the pages.
 func (client *Client) ListSecurityDispositions(ctx context.Context) ([]SecurityDisposition, error) {
+	return client.ListSecurityDispositionsFiltered(ctx, SecurityDispositionFilter{})
+}
+
+// SecurityDispositionFilter narrows the policy listing. Statuses match any
+// of the named lifecycle statuses; empty fields do not filter.
+type SecurityDispositionFilter struct {
+	Statuses    []string
+	Disposition string
+}
+
+// ListSecurityDispositionsFiltered returns the policies the filter matches,
+// walking the pages.
+func (client *Client) ListSecurityDispositionsFiltered(ctx context.Context, filter SecurityDispositionFilter) ([]SecurityDisposition, error) {
 	policies := []SecurityDisposition{}
 	for page := 1; ; page++ {
 		query := url.Values{}
+		for _, status := range filter.Statuses {
+			query.Add("status", status)
+		}
+		if filter.Disposition != "" {
+			query.Set("disposition", filter.Disposition)
+		}
 		query.Set("page", strconv.Itoa(page))
 		query.Set("page_size", strconv.Itoa(securityDispositionPageSize))
 		var response securityDispositionPage

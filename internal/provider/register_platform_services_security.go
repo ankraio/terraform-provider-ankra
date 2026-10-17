@@ -21,5 +21,6 @@ func securityResources() []func() resource.Resource {
 func securityDataSources() []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		NewSecurityComplianceFrameworksDataSource,
+		NewSecurityDispositionsDataSource,
 	}
 }
