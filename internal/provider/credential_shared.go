@@ -32,6 +32,19 @@ const credentialImportedKey = "credential_imported"
 const credentialReplaceDescription = "The platform cannot change this setting on an existing credential, so changing it replaces the credential. " +
 	"Right after an import the configured value is adopted without a replacement."
 
+// credentialOperationalNotes are the permission, project and cost notes every
+// credential resource documents.
+const credentialOperationalNotes = "\n\n" +
+	"**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): " +
+	"the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. " +
+	"If that read fails, the error names the `terraform import` to run, because the credential already exists.\n\n" +
+	"**Projects.** A credential is created in the provider's project (`project_id`, or the user's last-selected project) and is listed only " +
+	"in that project and its organisation. Changing the provider's `project_id` makes credentials pinned to the old project read as deleted, " +
+	"and recreating them fails because credential names are unique per provider across the whole organisation. Move them with " +
+	"`terraform state rm` and `terraform import` under the new project instead, or keep one provider block per project.\n\n" +
+	"**Refresh cost.** Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS " +
+	"credential's secret to fill in `scope` and `auth_method`, so a refresh costs one secret read per AWS credential in the organisation."
+
 type credentialPrivateReader interface {
 	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
 }
@@ -118,6 +131,46 @@ func credentialSetListed(ctx context.Context, state *tfsdk.State, credential *cl
 	diagnostics.Append(state.SetAttribute(ctx, path.Root("state"), types.StringPointerValue(credential.State))...)
 	diagnostics.Append(state.SetAttribute(ctx, path.Root("created_at"), types.StringValue(credential.CreatedAt))...)
 	return diagnostics
+}
+
+// credentialSetUnknownListed fills, after an Update, only the read-only
+// attributes the plan left unknown. Known planned values are kept as planned:
+// Terraform refuses an apply result that differs from a known planned value,
+// and the next Read refreshes them anyway.
+func credentialSetUnknownListed(ctx context.Context, plan tfsdk.Plan, state *tfsdk.State, credential *client.Credential) diag.Diagnostics {
+	var diagnostics diag.Diagnostics
+	listedStrings := map[string]types.String{
+		"id":           types.StringValue(credential.ID),
+		"display_name": types.StringPointerValue(credential.DisplayName),
+		"state":        types.StringPointerValue(credential.State),
+		"created_at":   types.StringValue(credential.CreatedAt),
+	}
+	for attributeName, listedValue := range listedStrings {
+		var planned types.String
+		diagnostics.Append(plan.GetAttribute(ctx, path.Root(attributeName), &planned)...)
+		if planned.IsUnknown() {
+			diagnostics.Append(state.SetAttribute(ctx, path.Root(attributeName), listedValue)...)
+		}
+	}
+	var plannedAvailable types.Bool
+	diagnostics.Append(plan.GetAttribute(ctx, path.Root("available"), &plannedAvailable)...)
+	if plannedAvailable.IsUnknown() {
+		diagnostics.Append(state.SetAttribute(ctx, path.Root("available"), types.BoolValue(credential.Available))...)
+	}
+	return diagnostics
+}
+
+// credentialWarnWhenAdopting warns, on the first apply after an import, that
+// the configured write-only settings were recorded without being checked.
+func credentialWarnWhenAdopting(ctx context.Context, private credentialPrivateReader, diagnostics *diag.Diagnostics, label string) {
+	marker, _ := private.GetKey(ctx, credentialImportedKey)
+	if len(marker) == 0 {
+		return
+	}
+	diagnostics.AddWarning("Adopted "+label+" credential settings were not checked",
+		"This credential was imported. The platform never returns its secrets or connection settings (such as tokens, keys, api_url, "+
+			"project_id, region, jumphost or tls_insecure), so the configured values were recorded in state as they are, without being "+
+			"compared with what the platform holds. If they differ, the platform keeps using its own values until the credential is replaced.")
 }
 
 // credentialOneOfValidator rejects at plan time a value the platform refuses

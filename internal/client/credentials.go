@@ -155,9 +155,27 @@ func (client *Client) CreateProviderCredential(ctx context.Context, provider str
 	name, _ := body["name"].(string)
 	created, err := client.GetCredentialByName(ctx, provider, name)
 	if err != nil {
-		return nil, fmt.Errorf("the %s credential %q was created but could not be read back: %w", provider, name, err)
+		return nil, &CredentialReadBackError{Provider: provider, Name: name, Err: err}
 	}
 	return created, nil
+}
+
+// CredentialReadBackError reports a credential the platform created but the
+// listing did not return afterwards, for example because the token lacks
+// credentials.read. The credential exists, so a retried create fails on its
+// name; the caller should point at an import instead.
+type CredentialReadBackError struct {
+	Provider string
+	Name     string
+	Err      error
+}
+
+func (readBackError *CredentialReadBackError) Error() string {
+	return fmt.Sprintf("the %s credential %q was created but could not be read back: %s", readBackError.Provider, readBackError.Name, readBackError.Err)
+}
+
+func (readBackError *CredentialReadBackError) Unwrap() error {
+	return readBackError.Err
 }
 
 // CreateSSHKeyCredential creates an organisation-wide SSH key credential.

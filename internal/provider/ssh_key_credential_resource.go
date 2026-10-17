@@ -64,7 +64,9 @@ func (sshKeyResource *sshKeyCredentialResource) Schema(_ context.Context, _ reso
 		Computed: true,
 		PlanModifiers: []planmodifier.String{
 			stringplanmodifier.UseStateForUnknown(),
-			stringplanmodifier.RequiresReplace(),
+			stringplanmodifier.RequiresReplaceIf(sshKeyCredentialKeyChanged,
+				"Replaces the credential when the key changes, ignoring surrounding whitespace.",
+				"Replaces the credential when the key changes, ignoring surrounding whitespace."),
 		},
 	}
 	attributes["generate"] = schema.BoolAttribute{
@@ -94,7 +96,7 @@ func (sshKeyResource *sshKeyCredentialResource) Schema(_ context.Context, _ reso
 	response.Schema = schema.Schema{
 		MarkdownDescription: "An organisation-wide SSH key credential, referenced by a cluster's `ssh_key_credential_id`. " +
 			"The counterpart of `ankra credentials <provider> ssh-key create` and `ankra credentials delete`: every provider's " +
-			"`ssh-key` command creates the same organisation-wide credential.",
+			"`ssh-key` command creates the same organisation-wide credential." + credentialOperationalNotes,
 		Attributes: attributes,
 	}
 }
@@ -204,8 +206,10 @@ func (sshKeyResource *sshKeyCredentialResource) Read(ctx context.Context, reques
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 
-// Update only adopts the configured generate flag of a just-imported
-// credential; every real change is planned as a replacement.
+// Update sends nothing: it only records the configured generate flag of a
+// just-imported credential, or a public key that differs from the stored one
+// in surrounding whitespace only. Every real change is planned as a
+// replacement.
 func (sshKeyResource *sshKeyCredentialResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	apiClient := sshKeyResource.requireClient(&response.Diagnostics)
 	if apiClient == nil {
@@ -223,10 +227,45 @@ func (sshKeyResource *sshKeyCredentialResource) Update(ctx context.Context, requ
 		response.Diagnostics.AddError("Unable to read SSH key credential", err.Error())
 		return
 	}
+	listed := plan
+	sshKeyResource.applyListed(&listed, credential)
+	plan.ID = state.ID
 	plan.PrivateKey = state.PrivateKey
-	sshKeyResource.applyListed(&plan, credential)
+	plan.DisplayName = sshKeyCredentialKnownOr(plan.DisplayName, listed.DisplayName)
+	plan.State = sshKeyCredentialKnownOr(plan.State, listed.State)
+	plan.CreatedAt = sshKeyCredentialKnownOr(plan.CreatedAt, listed.CreatedAt)
+	plan.Fingerprint = sshKeyCredentialKnownOr(plan.Fingerprint, listed.Fingerprint)
+	plan.KeyType = sshKeyCredentialKnownOr(plan.KeyType, listed.KeyType)
+	plan.Comment = sshKeyCredentialKnownOr(plan.Comment, listed.Comment)
+	if plan.Available.IsUnknown() {
+		plan.Available = listed.Available
+	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	credentialWarnWhenAdopting(ctx, request.Private, &response.Diagnostics, "SSH key")
 	response.Diagnostics.Append(response.Private.SetKey(ctx, credentialImportedKey, nil)...)
+}
+
+// sshKeyCredentialKnownOr keeps a known planned value, which Terraform
+// requires the apply result to match, and fills an unknown one from the
+// listing.
+func sshKeyCredentialKnownOr(planned types.String, listed types.String) types.String {
+	if planned.IsUnknown() {
+		return listed
+	}
+	return planned
+}
+
+// sshKeyCredentialKeyChanged replaces the credential only when the key
+// differs from the stored one after trimming surrounding whitespace, which
+// the platform strips on create. Terraform requires the plan to carry the
+// configured value verbatim, so a whitespace-only difference (a key read
+// with file() after an import) is an in-place update that sends nothing.
+func sshKeyCredentialKeyChanged(_ context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	if request.PlanValue.IsUnknown() || request.StateValue.IsNull() {
+		response.RequiresReplace = true
+		return
+	}
+	response.RequiresReplace = strings.TrimSpace(request.PlanValue.ValueString()) != strings.TrimSpace(request.StateValue.ValueString())
 }
 
 func (sshKeyResource *sshKeyCredentialResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {

@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -186,7 +187,7 @@ func (credentialResource *providerCredentialResource) Schema(_ context.Context, 
 	response.Schema = schema.Schema{
 		MarkdownDescription: kind.description + " The counterpart of `" + kind.command + "` and `ankra credentials delete`.\n\n" +
 			"The platform never returns a credential's secrets or connection settings, so a change made to them outside Terraform is not detected; " +
-			"the name, and the credential's existence, are. The token API cannot change a credential in place, so changing a setting replaces it.",
+			"the name, and the credential's existence, are. The token API cannot change a credential in place, so changing a setting replaces it." + credentialOperationalNotes,
 		Attributes: attributes,
 	}
 }
@@ -284,13 +285,30 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 		}
 		created, err = apiClient.GetCredential(ctx, kind.provider, awsCredential.ID)
 		if err != nil {
+			response.State.Raw = request.Plan.Raw
+			for _, attributeName := range []string{"display_name", "state", "created_at"} {
+				response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root(attributeName), types.StringNull())...)
+			}
+			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("available"), types.BoolNull())...)
+			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), types.StringValue(awsCredential.ID))...)
 			response.Diagnostics.AddError("Unable to read back "+kind.label+" credential",
-				fmt.Sprintf("The credential %s was created but could not be read back: %s", awsCredential.ID, err))
+				fmt.Sprintf("The credential %s was created and is recorded in state, but could not be read back: %s. "+
+					"The token needs credentials.read as well as credentials.write. Terraform marks the resource tainted and replaces it on the next apply; "+
+					"run `terraform untaint` on it to keep this credential instead.", awsCredential.ID, err))
 			return
 		}
 	} else {
 		var err error
 		created, err = apiClient.CreateProviderCredential(ctx, kind.provider, body)
+		var readBackError *client.CredentialReadBackError
+		if errors.As(err, &readBackError) {
+			response.Diagnostics.AddError("Unable to read back "+kind.label+" credential",
+				fmt.Sprintf("The platform created the %s credential %q but it could not be read back: %s. "+
+					"The token needs credentials.read as well as credentials.write. The credential exists, so applying again fails on its name: "+
+					"find its id with `ankra credentials list --provider %s`, then run `terraform import ankra_%s.<name> <id>`.",
+					kind.label, readBackError.Name, readBackError.Err, kind.provider, kind.typeSuffix))
+			return
+		}
 		if err != nil {
 			response.Diagnostics.AddError("Unable to create "+kind.label+" credential", err.Error())
 			return
@@ -369,7 +387,8 @@ func (credentialResource *providerCredentialResource) Update(ctx context.Context
 		return
 	}
 	response.State.Raw = request.Plan.Raw
-	response.Diagnostics.Append(credentialResource.setListed(ctx, &response.State, credential)...)
+	response.Diagnostics.Append(credentialSetUnknownListed(ctx, request.Plan, &response.State, credential)...)
+	credentialWarnWhenAdopting(ctx, request.Private, &response.Diagnostics, kind.label)
 	response.Diagnostics.Append(response.Private.SetKey(ctx, credentialImportedKey, nil)...)
 }
 

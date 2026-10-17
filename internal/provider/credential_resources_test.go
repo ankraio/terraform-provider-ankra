@@ -27,6 +27,8 @@ type credentialFakeRecord struct {
 	publicKey  string
 	scope      string
 	authMethod string
+	// listedState is the lifecycle state the listing reports; empty reads as "up".
+	listedState string
 }
 
 // credentialFake holds credentials the way the platform does: provider
@@ -41,6 +43,9 @@ type credentialFake struct {
 	tailscaleUpdates []map[string]json.RawMessage
 	deletes          []string
 	created          int
+	// listingForbidden answers the listing 403, as for a token without
+	// credentials.read.
+	listingForbidden bool
 }
 
 func newCredentialFake(t *testing.T) *credentialFake {
@@ -68,6 +73,10 @@ func newCredentialFake(t *testing.T) *credentialFake {
 	}
 
 	fake.handle("GET /api/v1/org/credentials", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.listingForbidden {
+			writeJSON(t, writer, http.StatusForbidden, map[string]any{"detail": "Missing permission: credentials.read"})
+			return
+		}
 		provider := request.URL.Query().Get("provider")
 		ids := make([]string, 0, len(fake.records))
 		for id := range fake.records {
@@ -80,10 +89,14 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			if provider != "" && record.provider != provider {
 				continue
 			}
+			listedState := record.listedState
+			if listedState == "" {
+				listedState = "up"
+			}
 			row := map[string]any{
 				"id": record.id, "name": record.name, "display_name": nil, "provider": record.provider,
 				"organisation_id": "11111111-1111-4111-8111-111111111111", "system": false, "available": true,
-				"state": "up", "created_at": "2026-10-17T10:00:00+00:00", "updated_at": "2026-10-17T10:00:00+00:00",
+				"state": listedState, "created_at": "2026-10-17T10:00:00+00:00", "updated_at": "2026-10-17T10:00:00+00:00",
 			}
 			if record.provider == "ssh-key" {
 				row["ssh_public_key"] = record.publicKey
@@ -169,6 +182,10 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			_ = json.Unmarshal(raw, &tailscale)
 			record.settings["tailscale"] = tailscale
 		}
+		// The listing changes during the apply, so an Update that wrote the
+		// fresh listing over the planned values would fail with
+		// "inconsistent result after apply".
+		record.listedState = "reconciling"
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true})
 	})
 	fake.handle("DELETE /api/v1/org/credentials/{id}", func(writer http.ResponseWriter, request *http.Request) {
