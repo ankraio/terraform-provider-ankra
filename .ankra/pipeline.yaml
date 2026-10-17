@@ -94,9 +94,15 @@ stages:
       mkdir -p "${GOTMPDIR}"
       PATH="/workspace/.ci-tools:${PATH}"
       export PATH
-      test -z "$(gofmt -l .)"
+      # Only the repository's own Go: the module cache lives in the workspace too.
+      test -z "$(gofmt -l main.go internal tools)"
       go build ./...
-      TF_ACC=1 go test -cover -timeout 30m ./internal/...
+      # Ankra Pipelines sets ANKRA_ORGANISATION_ID for every step, and the
+      # provider reads the same name as its organisation_id. The tests talk to
+      # a fake platform and must not inherit the run's organisation or any
+      # other provider setting from the environment.
+      env -u ANKRA_ORGANISATION_ID -u ANKRA_PROJECT_ID -u ANKRA_TOKEN -u ANKRA_BASE_URL \
+        TF_ACC=1 go test -cover -timeout 30m ./internal/...
     cache:
       - key: "go-${{ hashFiles('go.sum') }}"
         paths:
