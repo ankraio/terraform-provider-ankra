@@ -12,6 +12,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -56,9 +57,10 @@ func (variableResource *organisationVariableResource) Schema(_ context.Context, 
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"name": schema.StringAttribute{
-				MarkdownDescription: "Variable name. Changing it replaces the variable.",
+				MarkdownDescription: "Variable name. Changing it replaces the variable. Names the platform reserves for its own settings (`llm_provider`, `ai_default_agents_*` and the like) are refused.",
 				Required:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:          []validator.String{organisationVariableNameValidator{}},
 			},
 			"value": schema.StringAttribute{
 				MarkdownDescription: "Variable value. For a secret variable the platform never returns the value, so a change made outside Terraform is not detected.",
@@ -122,6 +124,10 @@ func (variableResource *organisationVariableResource) Read(ctx context.Context, 
 	}
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read organisation variable", err.Error())
+		return
+	}
+	if readTargetChanged(state.ID, variable.ID) {
+		response.State.RemoveResource(ctx)
 		return
 	}
 

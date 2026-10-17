@@ -5,10 +5,14 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
 	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -21,6 +25,7 @@ const (
 	tokenEnvironmentVariable          = "ANKRA_TOKEN"
 	baseURLEnvironmentVariable        = "ANKRA_BASE_URL"
 	organisationIDEnvironmentVariable = "ANKRA_ORGANISATION_ID"
+	projectIDEnvironmentVariable      = "ANKRA_PROJECT_ID"
 )
 
 // Ensure ankraProvider satisfies the provider.Provider interface.
@@ -34,6 +39,7 @@ type ankraProviderModel struct {
 	Token          types.String `tfsdk:"token"`
 	BaseURL        types.String `tfsdk:"base_url"`
 	OrganisationID types.String `tfsdk:"organisation_id"`
+	ProjectID      types.String `tfsdk:"project_id"`
 }
 
 // New returns a function that constructs the Ankra provider for the given
@@ -63,8 +69,13 @@ func (providerInstance *ankraProvider) Schema(_ context.Context, _ provider.Sche
 				Optional:            true,
 			},
 			"organisation_id": schema.StringAttribute{
-				MarkdownDescription: "Organisation to act in, when the token's user belongs to more than one. Sent as the `" + client.OrganisationHeader + "` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.",
+				MarkdownDescription: "ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `" + client.OrganisationHeader + "` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.",
 				Optional:            true,
+			},
+			"project_id": schema.StringAttribute{
+				MarkdownDescription: "ID (UUID) of the project to act in, for organisations that use projects. Sent as the `" + client.ProjectHeader + "` header. May also be set with the `ANKRA_PROJECT_ID` environment variable. " +
+					"Set it whenever the organisation has projects: without it the platform scopes every request to the project the token's user last selected in the portal, so switching project there would change what Terraform sees.",
+				Optional: true,
 			},
 		},
 	}
@@ -87,6 +98,12 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 		baseURL = strings.TrimSpace(config.BaseURL.ValueString())
 	}
 
+	organisationID, organisationKnown := scopeIdentifier(config.OrganisationID, organisationIDEnvironmentVariable, "organisation_id", &response.Diagnostics)
+	projectID, projectKnown := scopeIdentifier(config.ProjectID, projectIDEnvironmentVariable, "project_id", &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+
 	// No provider token is not an error here. The deprecated per-resource
 	// ankra_token still supplies one, and a 0.1.x configuration sets only that
 	// (no provider block at all), so failing at configure time breaks every
@@ -94,17 +111,42 @@ func (providerInstance *ankraProvider) Configure(ctx context.Context, request pr
 	// "Missing API token" when no token reaches them, and never send a request
 	// without one. A token still unknown at configure time resolves before
 	// apply the same way.
-	organisationID := strings.TrimSpace(os.Getenv(organisationIDEnvironmentVariable))
-	if !config.OrganisationID.IsNull() && !config.OrganisationID.IsUnknown() {
-		organisationID = strings.TrimSpace(config.OrganisationID.ValueString())
-	}
-
 	userAgent := "terraform-provider-ankra/" + providerInstance.version
 	apiClient := client.NewClient(baseURL, token, userAgent)
 	apiClient.OrganisationID = organisationID
+	apiClient.ProjectID = projectID
+	switch {
+	case !organisationKnown:
+		apiClient.UnresolvedScope = "organisation_id"
+	case !projectKnown:
+		apiClient.UnresolvedScope = "project_id"
+	}
 
 	response.ResourceData = apiClient
 	response.DataSourceData = apiClient
+}
+
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// scopeIdentifier resolves an organisation or project override from the
+// configuration, falling back to its environment variable. It reports false
+// when the configured value is not known yet: the caller must then refuse to
+// send requests, because leaving the header off silently scopes them to a
+// different organisation or project. The platform accepts only IDs here, so a
+// slug is rejected at configure time instead of failing every request.
+func scopeIdentifier(configured types.String, environmentVariable, attributeName string, diagnostics *diag.Diagnostics) (string, bool) {
+	if configured.IsUnknown() {
+		return "", false
+	}
+	value := strings.TrimSpace(os.Getenv(environmentVariable))
+	if !configured.IsNull() {
+		value = strings.TrimSpace(configured.ValueString())
+	}
+	if value != "" && !uuidPattern.MatchString(value) {
+		diagnostics.AddAttributeError(path.Root(attributeName), "Invalid "+attributeName,
+			fmt.Sprintf("%q is not an ID. Set the %s UUID (`ankra org list -o json`), not a name or slug.", value, strings.TrimSuffix(attributeName, "_id")))
+	}
+	return value, true
 }
 
 func (providerInstance *ankraProvider) Resources(_ context.Context) []func() resource.Resource {

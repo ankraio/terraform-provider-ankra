@@ -46,14 +46,26 @@ const maxResponseBodySize = 32 << 20
 // the header the CLI's global --org flag sends.
 const OrganisationHeader = "X-Ankra-Organisation-Id"
 
+// ProjectHeader scopes a request to one project inside the organisation.
+// Without it the platform falls back to the project the user last selected in
+// the portal, which would move Terraform's view whenever that selection
+// changes.
+const ProjectHeader = "X-Ankra-Project-Id"
+
 // Client talks to the Ankra platform REST API.
 type Client struct {
 	BaseURL        string
 	Token          string
 	UserAgent      string
 	OrganisationID string
-	MaxRetries     int
-	HTTPClient     *http.Client
+	ProjectID      string
+	// UnresolvedScope, when set, names a scope argument (organisation_id or
+	// project_id) whose value is not known yet. Every request is refused rather
+	// than sent without it, because an absent header silently means a
+	// different organisation or project.
+	UnresolvedScope string
+	MaxRetries      int
+	HTTPClient      *http.Client
 }
 
 // NewClient returns a Client. An empty baseURL falls back to DefaultBaseURL.
@@ -96,6 +108,10 @@ func IsNotFound(err error) bool {
 // status codes (beyond 2xx) that should not be treated as errors. Retryable
 // failures are repeated with exponential backoff.
 func (client *Client) doRequest(ctx context.Context, method, path string, requestBody any, responseTarget any, acceptableStatuses ...int) error {
+	if client.UnresolvedScope != "" {
+		return fmt.Errorf("%s is not known until apply; refusing to call %s %s without it", client.UnresolvedScope, method, path)
+	}
+
 	var encodedBody []byte
 	if requestBody != nil {
 		encoded, err := json.Marshal(requestBody)
@@ -167,6 +183,9 @@ func (client *Client) attempt(ctx context.Context, method, path string, encodedB
 	}
 	if client.OrganisationID != "" {
 		request.Header.Set(OrganisationHeader, client.OrganisationID)
+	}
+	if client.ProjectID != "" {
+		request.Header.Set(ProjectHeader, client.ProjectID)
 	}
 
 	tflog.Debug(ctx, "ankra API request", map[string]any{"method": method, "path": path})

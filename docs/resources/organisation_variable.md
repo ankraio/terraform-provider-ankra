@@ -36,7 +36,7 @@ variable "registry_password" {
 
 ### Required
 
-- `name` (String) Variable name. Changing it replaces the variable.
+- `name` (String) Variable name. Changing it replaces the variable. Names the platform reserves for its own settings (`llm_provider`, `ai_default_agents_*` and the like) are refused.
 - `value` (String, Sensitive) Variable value. For a secret variable the platform never returns the value, so a change made outside Terraform is not detected.
 
 ### Optional

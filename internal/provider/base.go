@@ -32,14 +32,32 @@ func (holder *configuredClient) Configure(_ context.Context, request resource.Co
 	holder.client = clientFromProviderData(request.ProviderData, &response.Diagnostics)
 }
 
-// requireClient returns the configured client, or records "Missing API token"
-// and returns nil so the caller sends no request.
+// requireClient returns the configured client, or records why there is none
+// and returns nil so the caller sends no request: no token, or an
+// organisation_id / project_id that is not known until apply.
 func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *client.Client {
 	if holder.client == nil || holder.client.Token == "" {
 		diagnostics.AddError("Missing API token", providerTokenDetail)
 		return nil
 	}
+	if holder.client.UnresolvedScope != "" {
+		diagnostics.AddError("Provider "+holder.client.UnresolvedScope+" is not known",
+			"The provider's "+holder.client.UnresolvedScope+" depends on a value that is only known after apply. "+
+				"Requests are not sent without it, because they would act in a different organisation or project. "+
+				"Set it from a known value, or apply the resource it depends on first (-target).")
+		return nil
+	}
 	return holder.client
+}
+
+// readTargetChanged reports whether the object found for a resource is a
+// different one from the object in state: the same name now resolves to
+// another ID, as happens when the request scope moved (another project) or
+// the original was deleted and something else took its name. Read must then
+// treat the original as gone rather than adopt the other object, or the next
+// apply would overwrite it and destroy would delete it.
+func readTargetChanged(stateID types.String, foundID string) bool {
+	return !stateID.IsNull() && !stateID.IsUnknown() && stateID.ValueString() != "" && stateID.ValueString() != foundID
 }
 
 // configuredDataSourceClient is configuredClient for data sources, whose
