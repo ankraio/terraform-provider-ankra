@@ -86,6 +86,63 @@ type Addon struct {
 	Configuration          *AddonConfiguration `json:"configuration,omitempty"`
 	Parents                *[]Parent           `json:"parents,omitempty"`
 	JobConfiguration       *JobConfiguration   `json:"job_configuration,omitempty"`
+	// Settings omitted keeps the addon's stored settings; present, every
+	// member it leaves out takes the platform default.
+	Settings *AddonSettings `json:"settings,omitempty"`
+}
+
+// AddonSettings is how the platform syncs an addon (the AddonSettings
+// object). Nil members are left out of the request.
+type AddonSettings struct {
+	SyncPolicy                  *AddonSyncPolicy        `json:"sync_policy,omitempty"`
+	SyncWindow                  *AddonSyncWindow        `json:"sync_window,omitempty"`
+	IgnoreDifferences           []AddonIgnoreDifference `json:"ignore_differences,omitempty"`
+	RetryPolicy                 *AddonRetryPolicy       `json:"retry_policy,omitempty"`
+	RevisionHistoryLimit        *int64                  `json:"revision_history_limit,omitempty"`
+	StrictHealthCheck           *bool                   `json:"strict_health_check,omitempty"`
+	RollbackOnFailure           *bool                   `json:"rollback_on_failure,omitempty"`
+	HelmWaitTimeoutSeconds      *int64                  `json:"helm_wait_timeout_seconds,omitempty"`
+	KeepFailedResourcesForDebug *bool                   `json:"keep_failed_resources_for_debug,omitempty"`
+}
+
+// AddonSyncPolicy is the addon's automated sync behaviour.
+type AddonSyncPolicy struct {
+	Automated   *bool     `json:"automated,omitempty"`
+	AutoPrune   *bool     `json:"auto_prune,omitempty"`
+	SelfHeal    *bool     `json:"self_heal,omitempty"`
+	SyncOptions *[]string `json:"sync_options,omitempty"`
+}
+
+// AddonSyncWindow restricts when the addon syncs.
+type AddonSyncWindow struct {
+	Enabled  *bool   `json:"enabled,omitempty"`
+	Schedule *string `json:"schedule,omitempty"`
+	Duration *string `json:"duration,omitempty"`
+	Timezone *string `json:"timezone,omitempty"`
+}
+
+// AddonRetryPolicy is how a failed sync is retried.
+type AddonRetryPolicy struct {
+	Limit   *int64             `json:"limit,omitempty"`
+	Backoff *AddonRetryBackoff `json:"backoff,omitempty"`
+}
+
+// AddonRetryBackoff is the backoff between sync retries.
+type AddonRetryBackoff struct {
+	Duration    *string `json:"duration,omitempty"`
+	Factor      *int64  `json:"factor,omitempty"`
+	MaxDuration *string `json:"max_duration,omitempty"`
+}
+
+// AddonIgnoreDifference is one difference the sync ignores.
+type AddonIgnoreDifference struct {
+	Group                 *string  `json:"group,omitempty"`
+	Kind                  *string  `json:"kind,omitempty"`
+	Name                  *string  `json:"name,omitempty"`
+	Namespace             *string  `json:"namespace,omitempty"`
+	JSONPointers          []string `json:"json_pointers,omitempty"`
+	JQPathExpressions     []string `json:"jq_path_expressions,omitempty"`
+	ManagedFieldsManagers []string `json:"managed_fields_managers,omitempty"`
 }
 
 // Stack groups manifests and addons applied to a cluster.

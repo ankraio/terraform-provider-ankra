@@ -37,6 +37,19 @@ resource "ankra_cluster" "example" {
         create_job_timeout = 600
         update_job_timeout = 600
       })
+
+      # How the platform syncs the addon. Leave the block out to keep the
+      # settings made in the portal or with the CLI.
+      settings {
+        revision_history_limit = 5
+        sync_policy {
+          self_heal = true
+        }
+        ignore_differences {
+          kind          = "Deployment"
+          json_pointers = ["/spec/replicas"]
+        }
+      }
     }
   }
 

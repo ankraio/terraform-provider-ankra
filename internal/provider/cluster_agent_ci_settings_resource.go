@@ -28,6 +28,13 @@ var (
 	_ resource.ResourceWithImportState = (*clusterAgentCISettingsResource)(nil)
 )
 
+// The platform defaults destroy restores for the settings added after the
+// first release of this resource (enginekit/agentcisettings).
+const (
+	clusterAgentCIDefaultMaxAdmittingRuns  = 2
+	clusterAgentCIDefaultReservationSizing = "declared"
+)
+
 type clusterAgentCISettingsResource struct {
 	configuredClient
 }
@@ -40,6 +47,9 @@ type clusterAgentCISettingsModel struct {
 	CIRunReservation       types.String `tfsdk:"ci_run_reservation"`
 	CIImagePrepull         types.String `tfsdk:"ci_image_prepull"`
 	CIBuildAppArmorProfile types.String `tfsdk:"ci_build_apparmor_profile"`
+	CIMaxAdmittingRuns     types.Int64  `tfsdk:"ci_max_admitting_runs"`
+	CIReservationSizing    types.String `tfsdk:"ci_reservation_sizing"`
+	CIPlacement            types.Object `tfsdk:"ci_placement"`
 	ApplyState             types.String `tfsdk:"apply_state"`
 }
 
@@ -60,8 +70,7 @@ func (settingsResource *clusterAgentCISettingsResource) Schema(_ context.Context
 		MarkdownDescription: "How a cluster's Ankra agent runs pipeline steps. The counterpart of `ankra cluster agent ci set`. " +
 			"Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. " +
 			"Destroying the resource restores the platform default of each setting the configuration has set; a setting the " +
-			"configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting. " +
-			"The CI placement (`--node-group`, `--node-selector`, `--toleration`) is not managed here.",
+			"configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -97,6 +106,24 @@ func (settingsResource *clusterAgentCISettingsResource) Schema(_ context.Context
 				Computed:            true,
 				PlanModifiers:       keep,
 			},
+			"ci_max_admitting_runs": schema.Int64Attribute{
+				MarkdownDescription: "How many pipeline runs the cluster admits at once while their run reservations are still being " +
+					"scheduled, 1 to 32. It holds runs back only while `ci_run_reservation` is `on` and the agent supports it. " +
+					"The default, 2, reads as automatic: the platform raises it with `ci_worker_count`.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+				Validators:    []validator.Int64{applicationIntegerBetween{minimum: 1, maximum: 32}},
+			},
+			"ci_reservation_sizing": schema.StringAttribute{
+				MarkdownDescription: "What a run reservation is sized from: `declared` (what stages declare, the default) or `measured` " +
+					"(what their recent successful attempts used). It matters only while `ci_run_reservation` is `shadow` or `on`.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: keep,
+				Validators:    []validator.String{clusterSettingsOneOf("declared", "measured")},
+			},
+			"ci_placement": clusterAgentCIPlacementAttribute(),
 			"apply_state": schema.StringAttribute{
 				MarkdownDescription: "How the last write reached the agent: `applied`, `pending_upgrade` or `agent_offline`. The values are stored in every case.",
 				Computed:            true,
@@ -113,7 +140,10 @@ func (settingsResource *clusterAgentCISettingsResource) Create(ctx context.Conte
 	var plan, config clusterAgentCISettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
-	if !settingsResource.write(ctx, &plan, clusterAgentCISettingsUpdateFrom(config), &response.Diagnostics) {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if !settingsResource.write(ctx, &plan, clusterAgentCISettingsUpdateFrom(ctx, config, &response.Diagnostics), &response.Diagnostics) {
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
@@ -124,7 +154,10 @@ func (settingsResource *clusterAgentCISettingsResource) Update(ctx context.Conte
 	var plan, config clusterAgentCISettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
-	if !settingsResource.write(ctx, &plan, clusterAgentCISettingsUpdateFrom(config), &response.Diagnostics) {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if !settingsResource.write(ctx, &plan, clusterAgentCISettingsUpdateFrom(ctx, config, &response.Diagnostics), &response.Diagnostics) {
 		return
 	}
 	previous, diagnostics := request.Private.GetKey(ctx, clusterAgentCISettingsConfiguredKey)
@@ -138,13 +171,21 @@ func (settingsResource *clusterAgentCISettingsResource) write(ctx context.Contex
 	if apiClient == nil || diagnostics.HasError() {
 		return false
 	}
-	settings, err := apiClient.UpdateClusterAgentCISettings(ctx, plan.ClusterID.ValueString(), update)
+	var settings *client.ClusterAgentCISettings
+	var err error
+	if update.IsEmpty() {
+		// The platform refuses a write naming nothing; with nothing
+		// configured the resource only reports.
+		settings, err = apiClient.GetClusterAgentCISettings(ctx, plan.ClusterID.ValueString())
+	} else {
+		settings, err = apiClient.UpdateClusterAgentCISettings(ctx, plan.ClusterID.ValueString(), update)
+	}
 	if err != nil {
 		diagnostics.AddError("Unable to set cluster agent CI settings", clusterSettingsErrorText(err, plan.ClusterID.ValueString()))
 		return false
 	}
-	applyClusterAgentCISettings(plan, settings)
-	return true
+	applyClusterAgentCISettings(ctx, plan, settings, diagnostics)
+	return !diagnostics.HasError()
 }
 
 func (settingsResource *clusterAgentCISettingsResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -165,7 +206,7 @@ func (settingsResource *clusterAgentCISettingsResource) Read(ctx context.Context
 		response.Diagnostics.AddError("Unable to read cluster agent CI settings", err.Error())
 		return
 	}
-	applyClusterAgentCISettings(&state, settings)
+	applyClusterAgentCISettings(ctx, &state, settings, &response.Diagnostics)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 }
 
@@ -195,9 +236,24 @@ func (settingsResource *clusterAgentCISettingsResource) Delete(ctx context.Conte
 			configured[name] = true
 		}
 	}
+	defaults := clusterAgentCISettingsDefaults(configured)
+	if defaults.IsEmpty() {
+		return
+	}
+	_, err := apiClient.UpdateClusterAgentCISettings(ctx, state.ClusterID.ValueString(), defaults)
+	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
+		response.Diagnostics.AddError("Unable to restore cluster agent CI settings", deleteError.Error())
+	}
+}
+
+// clusterAgentCISettingsDefaults is the write that restores the platform
+// default of every named setting.
+func clusterAgentCISettingsDefaults(configured map[string]bool) client.ClusterAgentCISettingsUpdate {
 	zero := int64(0)
 	empty := ""
 	off := "off"
+	admitting := int64(clusterAgentCIDefaultMaxAdmittingRuns)
+	sizing := clusterAgentCIDefaultReservationSizing
 	defaults := client.ClusterAgentCISettingsUpdate{}
 	if configured["ci_worker_count"] {
 		defaults.CIWorkerCount = &zero
@@ -214,13 +270,16 @@ func (settingsResource *clusterAgentCISettingsResource) Delete(ctx context.Conte
 	if configured["ci_build_apparmor_profile"] {
 		defaults.CIBuildAppArmorProfile = &empty
 	}
-	if defaults == (client.ClusterAgentCISettingsUpdate{}) {
-		return
+	if configured["ci_max_admitting_runs"] {
+		defaults.CIMaxAdmittingRuns = &admitting
 	}
-	_, err := apiClient.UpdateClusterAgentCISettings(ctx, state.ClusterID.ValueString(), defaults)
-	if deleteError := clusterSettingsDeleteError(err, state.ClusterID.ValueString()); deleteError != nil {
-		response.Diagnostics.AddError("Unable to restore cluster agent CI settings", deleteError.Error())
+	if configured["ci_reservation_sizing"] {
+		defaults.CIReservationSizing = &sizing
 	}
+	if configured["ci_placement"] {
+		defaults.ClearPlacement = true
+	}
+	return defaults
 }
 
 // clusterAgentCISettingsConfigured lists the settings the configuration
@@ -241,6 +300,9 @@ func clusterAgentCISettingsConfigured(config clusterAgentCISettingsModel, previo
 		"ci_run_reservation":        config.CIRunReservation,
 		"ci_image_prepull":          config.CIImagePrepull,
 		"ci_build_apparmor_profile": config.CIBuildAppArmorProfile,
+		"ci_max_admitting_runs":     config.CIMaxAdmittingRuns,
+		"ci_reservation_sizing":     config.CIReservationSizing,
+		"ci_placement":              config.CIPlacement,
 	} {
 		if !value.IsNull() {
 			set[name] = true
@@ -260,23 +322,33 @@ func (settingsResource *clusterAgentCISettingsResource) ImportState(ctx context.
 	clusterSettingsImportClusterID(ctx, request, response)
 }
 
-func clusterAgentCISettingsUpdateFrom(plan clusterAgentCISettingsModel) client.ClusterAgentCISettingsUpdate {
+func clusterAgentCISettingsUpdateFrom(ctx context.Context, config clusterAgentCISettingsModel, diagnostics *diag.Diagnostics) client.ClusterAgentCISettingsUpdate {
 	return client.ClusterAgentCISettingsUpdate{
-		CIWorkerCount:          int64Pointer(plan.CIWorkerCount),
-		CIStorageClass:         stringPointer(plan.CIStorageClass),
-		CIRunReservation:       stringPointer(plan.CIRunReservation),
-		CIImagePrepull:         stringPointer(plan.CIImagePrepull),
-		CIBuildAppArmorProfile: stringPointer(plan.CIBuildAppArmorProfile),
+		CIWorkerCount:          int64Pointer(config.CIWorkerCount),
+		CIStorageClass:         stringPointer(config.CIStorageClass),
+		CIRunReservation:       stringPointer(config.CIRunReservation),
+		CIImagePrepull:         stringPointer(config.CIImagePrepull),
+		CIBuildAppArmorProfile: stringPointer(config.CIBuildAppArmorProfile),
+		CIMaxAdmittingRuns:     int64Pointer(config.CIMaxAdmittingRuns),
+		CIReservationSizing:    stringPointer(config.CIReservationSizing),
+		CIPlacement:            clusterAgentCIPlacementFromObject(ctx, config.CIPlacement, diagnostics),
 	}
 }
 
-func applyClusterAgentCISettings(model *clusterAgentCISettingsModel, settings *client.ClusterAgentCISettings) {
+func applyClusterAgentCISettings(ctx context.Context, model *clusterAgentCISettingsModel, settings *client.ClusterAgentCISettings, diagnostics *diag.Diagnostics) {
 	model.ID = model.ClusterID
 	model.CIWorkerCount = types.Int64Value(settings.CIWorkerCount)
 	model.CIStorageClass = types.StringValue(settings.CIStorageClass)
 	model.CIRunReservation = types.StringValue(clusterSettingsValueOr(settings.CIRunReservation, "off"))
 	model.CIImagePrepull = types.StringValue(clusterSettingsValueOr(settings.CIImagePrepull, "off"))
 	model.CIBuildAppArmorProfile = types.StringValue(clusterSettingsValueOr(settings.CIBuildAppArmorProfile, ""))
+	admitting := int64(clusterAgentCIDefaultMaxAdmittingRuns)
+	if settings.CIMaxAdmittingRuns != nil {
+		admitting = *settings.CIMaxAdmittingRuns
+	}
+	model.CIMaxAdmittingRuns = types.Int64Value(admitting)
+	model.CIReservationSizing = types.StringValue(clusterSettingsValueOr(settings.CIReservationSizing, clusterAgentCIDefaultReservationSizing))
+	model.CIPlacement = clusterAgentCIPlacementState(ctx, model.CIPlacement, settings.CIPlacement, diagnostics)
 	model.ApplyState = types.StringValue(settings.ApplyState)
 }
 

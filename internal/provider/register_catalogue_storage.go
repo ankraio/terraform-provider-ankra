@@ -16,6 +16,7 @@ func catalogueAndStorageResources() []func() resource.Resource {
 		NewStackProfileShareResource,
 		NewStackProfileLogoResource,
 		NewBackupVaultResource,
+		NewStackBackupProtectionResource,
 		NewObjectStorageBucketResource,
 		NewRegistryProjectResource,
 		NewRegistryRobotResource,
