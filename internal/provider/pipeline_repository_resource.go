@@ -175,6 +175,7 @@ func (repositoryResource *pipelineRepositoryResource) Create(ctx context.Context
 	}
 	pipelineRepositoryToModel(repository, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, repositoryResource.client, response.Private)...)
 }
 
 func (repositoryResource *pipelineRepositoryResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -188,7 +189,7 @@ func (repositoryResource *pipelineRepositoryResource) Read(ctx context.Context, 
 		return
 	}
 	repository, err := apiClient.GetPipelineRepository(ctx, state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, repositoryResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -197,6 +198,7 @@ func (repositoryResource *pipelineRepositoryResource) Read(ctx context.Context, 
 	}
 	pipelineRepositoryToModel(repository, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, repositoryResource.client, response.Private)...)
 }
 
 func (repositoryResource *pipelineRepositoryResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {

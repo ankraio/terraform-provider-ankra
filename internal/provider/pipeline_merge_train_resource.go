@@ -133,6 +133,7 @@ func (trainResource *pipelineMergeTrainResource) Create(ctx context.Context, req
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, trainResource.client, response.Private)...)
 }
 
 func (trainResource *pipelineMergeTrainResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -146,7 +147,7 @@ func (trainResource *pipelineMergeTrainResource) Read(ctx context.Context, reque
 		return
 	}
 	settings, err := apiClient.GetPipelineMergeTrainSettings(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID))
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, trainResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -156,6 +157,7 @@ func (trainResource *pipelineMergeTrainResource) Read(ctx context.Context, reque
 	state.Enabled = types.BoolValue(settings.Enabled)
 	state.MaxCars = types.Int64Value(settings.MaxCars)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, trainResource.client, response.Private)...)
 }
 
 func (trainResource *pipelineMergeTrainResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -186,9 +188,10 @@ func (trainResource *pipelineMergeTrainResource) Delete(ctx context.Context, req
 	}
 	_, err := apiClient.SetPipelineMergeTrainSettings(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID),
 		client.PipelineMergeTrainSettingsUpdate{Enabled: false})
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to turn merge train off", err.Error())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to turn merge train off", err.Error())
 }
 
 // ImportState imports by `application/<application_id>` or

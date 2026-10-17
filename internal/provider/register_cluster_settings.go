@@ -10,9 +10,25 @@ import (
 
 // clusterSettingResources are settings and attachments on an existing cluster.
 func clusterSettingResources() []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewClusterAccessGrantResource,
+		NewClusterSSHKeysResource,
+		NewClusterCustomDNSZoneResource,
+		NewClusterPowerScheduleResource,
+		NewClusterAgentAutoUpgradeResource,
+		NewClusterAgentCISettingsResource,
+		NewClusterLogShippingResource,
+		NewClusterMeshResource,
+		NewClusterMeshMemberResource,
+	}
 }
 
 func clusterSettingDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewClusterDataSource,
+		NewClusterAccessGrantsDataSource,
+		NewClusterCustomDNSZonesDataSource,
+		NewClusterPowerSchedulesDataSource,
+		NewClusterMeshesDataSource,
+	}
 }

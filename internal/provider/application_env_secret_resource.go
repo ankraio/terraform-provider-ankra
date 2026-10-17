@@ -153,6 +153,7 @@ func (secretResource *applicationEnvSecretResource) Create(ctx context.Context, 
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, secretResource.client, response.Private)...)
 }
 
 func (secretResource *applicationEnvSecretResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -166,7 +167,7 @@ func (secretResource *applicationEnvSecretResource) Read(ctx context.Context, re
 		return
 	}
 	secret, err := apiClient.GetApplicationEnvSecret(ctx, state.ApplicationID.ValueString(), state.Key.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, secretResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -180,6 +181,7 @@ func (secretResource *applicationEnvSecretResource) Read(ctx context.Context, re
 	state.ID = types.StringValue(state.ApplicationID.ValueString() + "/" + secret.Key)
 	state.Status = types.StringValue(secret.Status)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, secretResource.client, response.Private)...)
 }
 
 func (secretResource *applicationEnvSecretResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -212,9 +214,11 @@ func (secretResource *applicationEnvSecretResource) Delete(ctx context.Context, 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeleteApplicationEnvSecret(ctx, state.ApplicationID.ValueString(), state.Key.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete application environment secret", err.Error())
+	err := apiClient.DeleteApplicationEnvSecret(ctx, state.ApplicationID.ValueString(), state.Key.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete application environment secret", err.Error())
 }
 
 // ImportState imports by `<application_id>/<key>`. The value cannot be read

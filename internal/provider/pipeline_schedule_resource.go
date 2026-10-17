@@ -162,6 +162,7 @@ func (scheduleResource *pipelineScheduleResource) Create(ctx context.Context, re
 	}
 	pipelineScheduleToModel(schedule, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, scheduleResource.client, response.Private)...)
 }
 
 func (scheduleResource *pipelineScheduleResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -175,7 +176,7 @@ func (scheduleResource *pipelineScheduleResource) Read(ctx context.Context, requ
 		return
 	}
 	schedule, err := apiClient.GetPipelineSchedule(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID), state.ID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, scheduleResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -184,6 +185,7 @@ func (scheduleResource *pipelineScheduleResource) Read(ctx context.Context, requ
 	}
 	pipelineScheduleToModel(schedule, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, scheduleResource.client, response.Private)...)
 }
 
 func (scheduleResource *pipelineScheduleResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -226,9 +228,11 @@ func (scheduleResource *pipelineScheduleResource) Delete(ctx context.Context, re
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DeletePipelineSchedule(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID), state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete pipeline schedule", err.Error())
+	err := apiClient.DeletePipelineSchedule(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID), state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete pipeline schedule", err.Error())
 }
 
 // ImportState imports by `application/<application_id>/<schedule_id>` or

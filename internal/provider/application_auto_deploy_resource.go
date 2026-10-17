@@ -89,6 +89,7 @@ func (autoDeployResource *applicationAutoDeployResource) Create(ctx context.Cont
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, autoDeployResource.client, response.Private)...)
 }
 
 func (autoDeployResource *applicationAutoDeployResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -102,7 +103,7 @@ func (autoDeployResource *applicationAutoDeployResource) Read(ctx context.Contex
 		return
 	}
 	autoDeploy, err := apiClient.GetApplicationAutoDeploy(ctx, state.ApplicationID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, autoDeployResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -112,6 +113,7 @@ func (autoDeployResource *applicationAutoDeployResource) Read(ctx context.Contex
 	state.Enabled = types.BoolValue(autoDeploy.Enabled)
 	state.Branch = types.StringValue(autoDeploy.Branch)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, autoDeployResource.client, response.Private)...)
 }
 
 func (autoDeployResource *applicationAutoDeployResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {

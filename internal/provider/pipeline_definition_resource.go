@@ -144,6 +144,7 @@ func (definitionResource *pipelineDefinitionResource) Create(ctx context.Context
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, definitionResource.client, response.Private)...)
 }
 
 func (definitionResource *pipelineDefinitionResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -157,7 +158,7 @@ func (definitionResource *pipelineDefinitionResource) Read(ctx context.Context, 
 		return
 	}
 	definition, err := apiClient.GetPipelineDefinition(ctx, pipelineSelectorFrom(state.ApplicationID, state.RepositoryID))
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, definitionResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -169,6 +170,7 @@ func (definitionResource *pipelineDefinitionResource) Read(ctx context.Context, 
 	}
 	pipelineDefinitionToModel(definition, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, definitionResource.client, response.Private)...)
 }
 
 func (definitionResource *pipelineDefinitionResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {

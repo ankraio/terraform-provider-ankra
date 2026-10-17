@@ -277,13 +277,14 @@ func (client *Client) UpdatePipelineSchedule(ctx context.Context, selector Pipel
 	return &schedule, nil
 }
 
-// DeletePipelineSchedule removes a schedule. One already gone is not an error.
+// DeletePipelineSchedule removes a schedule. One the caller cannot see is a
+// NotFound APIError.
 func (client *Client) DeletePipelineSchedule(ctx context.Context, selector PipelineSelector, scheduleID string) error {
 	base, err := selector.basePath()
 	if err != nil {
 		return err
 	}
-	return client.doRequest(ctx, http.MethodDelete, base+"/pipeline/schedules/"+url.PathEscape(scheduleID), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, base+"/pipeline/schedules/"+url.PathEscape(scheduleID), nil, nil)
 }
 
 // PipelineMergeTrainSettings is a repository's merge train switch and how

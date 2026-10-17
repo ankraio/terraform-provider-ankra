@@ -190,6 +190,7 @@ func (deploymentResource *applicationDeploymentResource) Create(ctx context.Cont
 		}
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, deploymentResource.client, response.Private)...)
 }
 
 func (deploymentResource *applicationDeploymentResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -210,7 +211,7 @@ func (deploymentResource *applicationDeploymentResource) Read(ctx context.Contex
 	} else {
 		installation, err = apiClient.GetApplicationInstallation(ctx, state.ApplicationID.ValueString(), state.ID.ValueString())
 	}
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, deploymentResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -223,6 +224,7 @@ func (deploymentResource *applicationDeploymentResource) Read(ctx context.Contex
 	}
 	applicationDeploymentToModel(installation, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, deploymentResource.client, response.Private)...)
 }
 
 func (deploymentResource *applicationDeploymentResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -260,9 +262,11 @@ func (deploymentResource *applicationDeploymentResource) Delete(ctx context.Cont
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.RemoveApplicationDeployment(ctx, state.ApplicationID.ValueString(), state.ClusterID.ValueString(), state.Namespace.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to remove application deployment", err.Error())
+	err := apiClient.RemoveApplicationDeployment(ctx, state.ApplicationID.ValueString(), state.ClusterID.ValueString(), state.Namespace.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to remove application deployment", err.Error())
 }
 
 // ImportState imports by `<application_id>/<cluster_id>/<namespace>`. Deploy

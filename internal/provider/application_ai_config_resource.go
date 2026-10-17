@@ -292,6 +292,7 @@ func (configResource *applicationAIConfigResource) Create(ctx context.Context, r
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, configResource.client, response.Private)...)
 }
 
 func (configResource *applicationAIConfigResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -305,7 +306,7 @@ func (configResource *applicationAIConfigResource) Read(ctx context.Context, req
 		return
 	}
 	configuration, err := apiClient.GetApplicationAIConfig(ctx, state.ApplicationID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, configResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -331,6 +332,7 @@ func (configResource *applicationAIConfigResource) Read(ctx context.Context, req
 	state.Lanes = lanes
 	state.RepoFullName = types.StringValue(configuration.Binding.RepoFullName)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, configResource.client, response.Private)...)
 }
 
 func (configResource *applicationAIConfigResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -366,9 +368,10 @@ func (configResource *applicationAIConfigResource) Delete(ctx context.Context, r
 	}
 	sort.Slice(update.Lanes, func(left, right int) bool { return update.Lanes[left].Lane < update.Lanes[right].Lane })
 	_, err := apiClient.UpdateApplicationAIConfig(ctx, state.ApplicationID.ValueString(), update)
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to reset application AI configuration", err.Error())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to reset application AI configuration", err.Error())
 }
 
 // ImportState imports by application id. Every lane the application overrides

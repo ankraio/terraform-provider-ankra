@@ -238,33 +238,34 @@ func applicationImageRegistryFromView(view *client.ApplicationImageRegistryView,
 	}
 }
 
-// readApplication refreshes model from the platform. It reports false when the
-// application is gone.
-func readApplication(ctx context.Context, apiClient *client.Client, model *applicationModel, diagnostics *diag.Diagnostics) bool {
+// readApplication refreshes model from the platform. It returns the
+// NotFound error when the platform cannot see the application, and records
+// every other failure in diagnostics.
+func readApplication(ctx context.Context, apiClient *client.Client, model *applicationModel, diagnostics *diag.Diagnostics) error {
 	applicationID := model.ID.ValueString()
 	application, err := apiClient.GetApplication(ctx, applicationID)
 	if client.IsNotFound(err) {
-		return false
+		return err
 	}
 	if err != nil {
 		diagnostics.AddError("Unable to read application", err.Error())
-		return true
+		return nil
 	}
 	credential, err := apiClient.GetApplicationRepositoryCredential(ctx, applicationID)
 	if client.IsNotFound(err) {
-		return false
+		return err
 	}
 	if err != nil {
 		diagnostics.AddError("Unable to read application repository credential", err.Error())
-		return true
+		return nil
 	}
 	registry, err := apiClient.GetApplicationImageRegistry(ctx, applicationID)
 	if client.IsNotFound(err) {
-		return false
+		return err
 	}
 	if err != nil {
 		diagnostics.AddError("Unable to read application image registry", err.Error())
-		return true
+		return nil
 	}
 
 	model.ID = types.StringValue(application.ID)
@@ -276,7 +277,7 @@ func readApplication(ctx context.Context, apiClient *client.Client, model *appli
 	model.ImageRegistry = applicationImageRegistryFromView(registry, model.ImageRegistry)
 	model.State = types.StringValue(application.State)
 	model.ContainerImageURL = types.StringPointerValue(application.ContainerImageURL)
-	return true
+	return nil
 }
 
 func (applicationResource *applicationResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
@@ -309,13 +310,15 @@ func (applicationResource *applicationResource) Create(ctx context.Context, requ
 
 	plan.ID = types.StringValue(applicationID)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), applicationID)...)
-	if !readApplication(ctx, apiClient, &plan, &response.Diagnostics) {
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+	if readApplication(ctx, apiClient, &plan, &response.Diagnostics) != nil {
 		response.Diagnostics.AddError("Unable to read application", "The application "+applicationID+" was created but could not be read back.")
 	}
 	if response.Diagnostics.HasError() {
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, applicationResource.client, response.Private)...)
 }
 
 func (applicationResource *applicationResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -329,14 +332,14 @@ func (applicationResource *applicationResource) Read(ctx context.Context, reques
 		return
 	}
 
-	if !readApplication(ctx, apiClient, &state, &response.Diagnostics) {
-		response.State.RemoveResource(ctx)
+	if err := readApplication(ctx, apiClient, &state, &response.Diagnostics); removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if response.Diagnostics.HasError() {
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, applicationResource.client, response.Private)...)
 }
 
 func (applicationResource *applicationResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -370,7 +373,7 @@ func (applicationResource *applicationResource) Update(ctx context.Context, requ
 	}
 
 	plan.ID = state.ID
-	if !readApplication(ctx, apiClient, &plan, &response.Diagnostics) {
+	if readApplication(ctx, apiClient, &plan, &response.Diagnostics) != nil {
 		response.Diagnostics.AddError("Unable to read application", "The application "+applicationID+" disappeared during the update.")
 	}
 	if response.Diagnostics.HasError() {
@@ -390,9 +393,11 @@ func (applicationResource *applicationResource) Delete(ctx context.Context, requ
 		return
 	}
 
-	if err := apiClient.DeleteApplication(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete application", err.Error())
+	err := apiClient.DeleteApplication(ctx, state.ID.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete application", err.Error())
 }
 
 // ImportState imports by application id. `image_registry.project_public` is

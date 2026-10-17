@@ -109,6 +109,7 @@ func (settingsResource *applicationSettingsResource) Create(ctx context.Context,
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, settingsResource.client, response.Private)...)
 }
 
 func (settingsResource *applicationSettingsResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -128,6 +129,7 @@ func (settingsResource *applicationSettingsResource) Read(ctx context.Context, r
 	}
 	applicationSettingsToModel(settings, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, settingsResource.client, response.Private)...)
 }
 
 func (settingsResource *applicationSettingsResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {

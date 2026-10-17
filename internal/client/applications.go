@@ -185,17 +185,25 @@ func (client *Client) ListApplications(ctx context.Context, search string) ([]Ap
 }
 
 // DeleteApplication deletes an application and tears down every deployment of
-// it. The platform answers an unknown id with a 200 reporting failure; that,
-// like a 404, means it is already gone.
+// it. The platform answers an id it cannot see, whether deleted or outside the
+// caller's project, with a 200 reporting failure; that is returned as a
+// NotFound APIError, so the caller can tell "gone" from "out of scope".
 func (client *Client) DeleteApplication(ctx context.Context, applicationID string) error {
+	path := applicationPath(applicationID, "")
 	var response applicationDeleteResponse
-	if err := client.doRequest(ctx, http.MethodDelete, applicationPath(applicationID, ""), nil, &response, http.StatusNotFound); err != nil {
+	if err := client.doRequest(ctx, http.MethodDelete, path, nil, &response); err != nil {
 		return err
 	}
-	if !response.Success && response.Message != "" && !strings.Contains(strings.ToLower(response.Message), "not found") {
-		return errors.New(response.Message)
+	if response.Success {
+		return nil
 	}
-	return nil
+	if strings.Contains(strings.ToLower(response.Message), "not found") {
+		return &APIError{Method: http.MethodDelete, Path: path, StatusCode: http.StatusNotFound, Body: response.Message}
+	}
+	if response.Message == "" {
+		return errors.New("the platform reported the application was not deleted")
+	}
+	return errors.New(response.Message)
 }
 
 // GetApplicationRepositoryCredential reads the GitHub credential binding.
@@ -346,10 +354,10 @@ func (client *Client) SetApplicationEnvSecret(ctx context.Context, applicationID
 	return &secret, nil
 }
 
-// DeleteApplicationEnvSecret removes one key. A key already gone is not an
-// error.
+// DeleteApplicationEnvSecret removes one key. A key or application the caller
+// cannot see is a NotFound APIError.
 func (client *Client) DeleteApplicationEnvSecret(ctx context.Context, applicationID string, key string) error {
-	return client.doRequest(ctx, http.MethodDelete, applicationPath(applicationID, "/env-secrets/"+url.PathEscape(key)), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, applicationPath(applicationID, "/env-secrets/"+url.PathEscape(key)), nil, nil)
 }
 
 // ApplicationInstallation is one deployment of an application: a cluster and
@@ -462,12 +470,13 @@ func IsApplicationNotReady(err error) bool {
 }
 
 // RemoveApplicationDeployment takes the application off one cluster and
-// namespace, leaving its other deployments standing. A deployment that is
-// gone, already being removed, or never existed is not an error.
+// namespace, leaving its other deployments standing. A deployment already being
+// removed, or not deployed there, is not an error; an application or cluster
+// the caller cannot see is a NotFound APIError.
 func (client *Client) RemoveApplicationDeployment(ctx context.Context, applicationID string, clusterID string, namespace string) error {
 	body := map[string]string{"cluster_id": clusterID, "namespace": namespace}
 	err := client.doRequest(ctx, http.MethodPost, applicationPath(applicationID, "/deployments/remove"), body, nil,
-		http.StatusNotFound, http.StatusConflict)
+		http.StatusConflict)
 	var apiError *APIError
 	if errors.As(err, &apiError) && apiError.StatusCode == http.StatusUnprocessableEntity &&
 		strings.Contains(apiError.Body, applicationNotDeployedMessage) {

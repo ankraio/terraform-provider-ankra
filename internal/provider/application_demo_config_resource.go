@@ -237,6 +237,7 @@ func (demoResource *applicationDemoConfigResource) Create(ctx context.Context, r
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, demoResource.client, response.Private)...)
 }
 
 func (demoResource *applicationDemoConfigResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -250,7 +251,7 @@ func (demoResource *applicationDemoConfigResource) Read(ctx context.Context, req
 		return
 	}
 	configuration, err := apiClient.GetApplicationDemoConfiguration(ctx, state.ApplicationID.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, demoResource.client, response) {
 		return
 	}
 	if err != nil {
@@ -259,6 +260,7 @@ func (demoResource *applicationDemoConfigResource) Read(ctx context.Context, req
 	}
 	applicationDemoToModel(configuration, &state)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, demoResource.client, response.Private)...)
 }
 
 func (demoResource *applicationDemoConfigResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -291,9 +293,10 @@ func (demoResource *applicationDemoConfigResource) Delete(ctx context.Context, r
 		Env:                []client.ApplicationDemoEnvironmentVariable{},
 		DatabaseExtensions: []string{},
 	})
-	if err != nil && !client.IsNotFound(err) {
-		response.Diagnostics.AddError("Unable to restore application demo configuration", err.Error())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to restore application demo configuration", err.Error())
 }
 
 // ImportState imports by application id. The minted password is never read
