@@ -47,6 +47,10 @@ This folder demonstrates how to use the local Ankra Terraform provider for devel
 3. **Run Terraform:**
  [https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf](https://github.com/ankraio/terraform-provider-ankra/blob/main/test/external/main.tf)
 
+## Releasing
+
+Merging to `main` is the release. Ankra Pipelines (`.ankra/pipeline.yaml`) runs the tests, lint and docs check on every pull request and push. On a push to `main`, when the top section of `CHANGELOG.md` is a dated version (`## 0.3.0 (2026-10-17)`) that has no GitHub release yet, `hack/release.sh` builds, signs and publishes it with GoReleaser, and the Terraform Registry picks it up. To cut a release, open a pull request that replaces `(Unreleased)` with the date. Nobody pushes a tag; a release that failed part-way is repeated with `ankra pipeline run --ref main`, which publishes only a version that is still missing.
+
 ## Notes
 - The provider is configured for local development using dev_overrides in `.terraformrc`.
 - All debug output will be shown in the terminal for troubleshooting.

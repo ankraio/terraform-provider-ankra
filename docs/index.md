@@ -25,7 +25,7 @@ terraform {
 
 # The token can also be supplied via the ANKRA_TOKEN environment variable,
 # base_url via ANKRA_BASE_URL, and organisation_id (to act in an organisation
-# other than the one the token is bound to) via ANKRA_ORGANISATION_ID.
+# other than the one the token is bound to) via ANKRA_ORG (the CLI's variable for --org).
 provider "ankra" {
   token = var.ankra_token
 }
@@ -42,7 +42,7 @@ variable "ankra_token" {
 ### Optional
 
 - `base_url` (String) Base URL of the Ankra platform API. May also be set with the `ANKRA_BASE_URL` environment variable. Defaults to `https://platform.ankra.app`.
-- `organisation_id` (String) ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `X-Ankra-Organisation-Id` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.
+- `organisation_id` (String) ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `X-Ankra-Organisation-Id` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORG` environment variable, the variable the CLI reads for the same override (an ID here, not a slug). Defaults to the organisation the token is bound to.
 - `project_id` (String) ID (UUID) of the project to act in, for organisations that use projects. Sent as the `X-Ankra-Project-Id` header. May also be set with the `ANKRA_PROJECT_ID` environment variable. Set it whenever the organisation has projects: without it the platform scopes every request to the project the token's user last selected in the portal, so switching project there would change what Terraform sees.
 - `token` (String, Sensitive) Ankra API token. May also be set with the `ANKRA_TOKEN` environment variable.
 

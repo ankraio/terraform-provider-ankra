@@ -45,6 +45,10 @@ signs:
       # if you are using this in a GitHub action or some other automated pipeline, you 
       # need to pass the batch flag to indicate its not interactive.
       - "--batch"
+      - "--pinentry-mode"
+      - "loopback"
+      - "--passphrase-file"
+      - "{{ .Env.GPG_PASSPHRASE_FILE }}" # set by hack/release.sh in the Ankra pipeline
       - "--local-user"
       - "{{ .Env.GPG_FINGERPRINT }}" # set this environment variable for your signing key
       - "--output"
@@ -52,6 +56,8 @@ signs:
       - "--detach-sign"
       - "${artifact}"
 release:
+  # The release creates its tag on the commit the pipeline built; nobody pushes one.
+  target_commitish: '{{ .Commit }}'
   extra_files:
     - glob: 'terraform-registry-manifest.json'
       name_template: '{{ .ProjectName }}_{{ .Version }}_manifest.json'

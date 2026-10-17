@@ -1,0 +1,185 @@
+# Copyright (c) HashiCorp, Inc.
+# SPDX-License-Identifier: MPL-2.0
+
+# terraform-provider-ankra on Ankra Pipelines.
+#
+# Every push and pull request: build, the acceptance tests against the fake
+# platform (TF_ACC=1), golangci-lint, and a check that `make generate` leaves
+# the committed docs unchanged. A push to main is also the release: when the
+# CHANGELOG's top section is a dated version that has no GitHub release yet,
+# hack/release.sh builds, signs and publishes it with GoReleaser, and the
+# Terraform Registry picks it up from GitHub. Nobody pushes a tag; a release
+# that failed half-way is repeated with 'ankra pipeline run --ref main', which
+# publishes only a version that is still missing.
+#
+# The release stage reads three files: the run's git credential (a GitHub App
+# token that can create the release) and the signing key and its passphrase,
+# from the secret organisation variables terraform_provider_gpg_private_key
+# and terraform_provider_gpg_passphrase. `credentials`, `secrets` and
+# `permissions` are protected sections: the release publishes only once an
+# administrator has approved this definition.
+apiVersion: ankra.io/v1
+kind: Pipeline
+metadata:
+  name: "terraform-provider-ankra"
+on:
+  push:
+    branches:
+      - "main"
+  pull_request:
+    branches:
+      - "main"
+    fork_policy: "read_only"
+  manual: {}
+concurrency:
+  group: "terraform-provider-ankra-${{ ankra.ref }}"
+  cancel_in_progress: true
+workspace:
+  size: "10Gi"
+  access: "rwo"
+defaults:
+  image: "golang:1.24.5"
+  timeout: "30m"
+  network: "egress-https"
+  # Steps run unprivileged with a read-only root file system, so every cache
+  # and scratch directory is in the shared workspace.
+  env:
+    GOFLAGS: "-buildvcs=false"
+    GOTOOLCHAIN: "local"
+    GOMAXPROCS: "2"
+    GOPATH: "/workspace/.ci-cache/go"
+    GOCACHE: "/workspace/.ci-cache/go-build"
+    GOTMPDIR: "/workspace/.ci-tmp"
+    GOLANGCI_LINT_CACHE: "/workspace/.ci-cache/golangci-lint"
+    XDG_CONFIG_HOME: "/workspace/.ci-tmp/config"
+    TF_CLI_CONFIG_FILE: "/workspace/.ci-tmp/terraformrc"
+    TF_PLUGIN_CACHE_DIR: "/workspace/.ci-cache/terraform-plugins"
+permissions:
+  contents: "write"
+credentials:
+  - name: "github-app-ankraio"
+    from: "git"
+    as: "repo_git"
+secrets:
+  - name: "gpg_private_key"
+    from: "org_variable"
+    key: "terraform_provider_gpg_private_key"
+  - name: "gpg_passphrase"
+    from: "org_variable"
+    key: "terraform_provider_gpg_passphrase"
+stages:
+  - name: "checkout"
+    kind: "checkout"
+
+  # The acceptance tests and docs generation drive a real Terraform CLI. The
+  # official image's binary is static, so it runs in the Go image too.
+  - name: "terraform"
+    kind: "run"
+    image: "hashicorp/terraform:1.12.2"
+    needs:
+      - "checkout"
+    run: |-
+      set -eu
+      mkdir -p /workspace/.ci-tools /workspace/.ci-tmp
+      cp "$(command -v terraform)" /workspace/.ci-tools/terraform
+      : > /workspace/.ci-tmp/terraformrc
+      /workspace/.ci-tools/terraform version
+
+  - name: "test"
+    kind: "run"
+    needs:
+      - "terraform"
+    run: |-
+      set -eu
+      mkdir -p "${GOTMPDIR}"
+      PATH="/workspace/.ci-tools:${PATH}"
+      export PATH
+      # Only the repository's own Go: the module cache lives in the workspace too.
+      test -z "$(gofmt -l main.go internal tools)"
+      go build ./...
+      # Ankra Pipelines sets ANKRA_ORGANISATION_ID for every step, and the
+      # provider reads the same name as its organisation_id. The tests talk to
+      # a fake platform and must not inherit the run's organisation or any
+      # other provider setting from the environment.
+      env -u ANKRA_ORGANISATION_ID -u ANKRA_PROJECT_ID -u ANKRA_TOKEN -u ANKRA_BASE_URL \
+        TF_ACC=1 go test -cover -timeout 30m ./internal/...
+    cache:
+      - key: "go-${{ hashFiles('go.sum') }}"
+        paths:
+          - "/workspace/.ci-cache/go"
+          - "/workspace/.ci-cache/go-build"
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+
+  - name: "lint"
+    kind: "run"
+    image: "golangci/golangci-lint:v2.15.0"
+    needs:
+      - "checkout"
+    run: |-
+      mkdir -p "${GOTMPDIR}"
+      golangci-lint run ./...
+    cache:
+      - key: "go-lint-${{ hashFiles('go.sum') }}"
+        paths:
+          - "/workspace/.ci-cache/go"
+          - "/workspace/.ci-cache/go-build"
+          - "/workspace/.ci-cache/golangci-lint"
+    resources:
+      cpu: "2"
+      memory: "4Gi"
+
+  # The generated docs and formatted examples are committed; a change that
+  # needs them regenerated fails here instead of drifting.
+  - name: "generate"
+    kind: "run"
+    needs:
+      - "terraform"
+    run: |-
+      set -eu
+      mkdir -p "${GOTMPDIR}"
+      PATH="/workspace/.ci-tools:${PATH}"
+      export PATH
+      GIT_CONFIG_COUNT=1
+      GIT_CONFIG_KEY_0=safe.directory
+      GIT_CONFIG_VALUE_0='*'
+      export GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+      make generate
+      git diff --compact-summary --exit-code -- docs examples || {
+        echo "generate: run 'make generate' and commit the result" >&2
+        exit 1
+      }
+    cache:
+      - key: "go-tools-${{ hashFiles('tools/go.sum') }}"
+        paths:
+          - "/workspace/.ci-cache/go"
+          - "/workspace/.ci-cache/go-build"
+
+  - name: "release"
+    kind: "run"
+    needs:
+      - "test"
+      - "lint"
+      - "generate"
+    when:
+      branches:
+        - "main"
+      events:
+        - "push"
+        - "manual"
+    secrets:
+      - "gpg_private_key"
+      - "gpg_passphrase"
+    run: |-
+      set -eu
+      mkdir -p "${GOTMPDIR}"
+      ./hack/release.sh
+    cache:
+      - key: "go-release-${{ hashFiles('go.sum') }}"
+        paths:
+          - "/workspace/.ci-cache/go"
+          - "/workspace/.ci-cache/go-build"
+    resources:
+      cpu: "2"
+      memory: "4Gi"
