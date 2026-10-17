@@ -41,13 +41,19 @@ const maxRetryDelay = 30 * time.Second
 // misbehaving endpoint cannot exhaust memory inside a Terraform run.
 const maxResponseBodySize = 32 << 20
 
+// OrganisationHeader scopes a request to one organisation the token's user
+// belongs to, without changing the organisation the token is bound to. It is
+// the header the CLI's global --org flag sends.
+const OrganisationHeader = "X-Ankra-Organisation-Id"
+
 // Client talks to the Ankra platform REST API.
 type Client struct {
-	BaseURL    string
-	Token      string
-	UserAgent  string
-	MaxRetries int
-	HTTPClient *http.Client
+	BaseURL        string
+	Token          string
+	UserAgent      string
+	OrganisationID string
+	MaxRetries     int
+	HTTPClient     *http.Client
 }
 
 // NewClient returns a Client. An empty baseURL falls back to DefaultBaseURL.
@@ -158,6 +164,9 @@ func (client *Client) attempt(ctx context.Context, method, path string, encodedB
 	request.Header.Set("Accept", "application/json")
 	if client.UserAgent != "" {
 		request.Header.Set("User-Agent", client.UserAgent)
+	}
+	if client.OrganisationID != "" {
+		request.Header.Set(OrganisationHeader, client.OrganisationID)
 	}
 
 	tflog.Debug(ctx, "ankra API request", map[string]any{"method": method, "path": path})

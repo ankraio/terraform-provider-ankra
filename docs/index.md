@@ -1,7 +1,7 @@
 ---
 page_title: "ankra Provider"
 description: |-
-  The Ankra provider manages clusters on the Ankra platform.
+  The Ankra provider manages clusters and the organisation resources around them on the Ankra platform.
 ---
 
 # ankra Provider
@@ -24,7 +24,8 @@ terraform {
 }
 
 # The token can also be supplied via the ANKRA_TOKEN environment variable,
-# and base_url via ANKRA_BASE_URL.
+# base_url via ANKRA_BASE_URL, and organisation_id (to act in an organisation
+# other than the one the token is bound to) via ANKRA_ORGANISATION_ID.
 provider "ankra" {
   token = var.ankra_token
 }
@@ -41,6 +42,7 @@ variable "ankra_token" {
 ### Optional
 
 - `base_url` (String) Base URL of the Ankra platform API. May also be set with the `ANKRA_BASE_URL` environment variable. Defaults to `https://platform.ankra.app`.
+- `organisation_id` (String) Organisation to act in, when the token's user belongs to more than one. Sent as the `X-Ankra-Organisation-Id` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.
 - `token` (String, Sensitive) Ankra API token. May also be set with the `ANKRA_TOKEN` environment variable.
 
 ## Running the Helm command remotely

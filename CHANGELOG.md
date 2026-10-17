@@ -1,3 +1,11 @@
+## 0.3.0 (Unreleased)
+
+FEATURES:
+
+* provider: New `organisation_id` argument (or `ANKRA_ORGANISATION_ID`) acts in an organisation other than the one the token is bound to, the same override as the CLI's `--org` flag.
+* **New Resource:** `ankra_organisation_variable` - an organisation variable, including secret variables (`is_secret`). Removing `description` from the configuration clears it on the platform.
+* **New Data Source:** `ankra_organisation_variables` - the organisation's variables; secret values are null.
+
 ## 0.2.1 (2026-10-01)
 
 BUG FIXES:

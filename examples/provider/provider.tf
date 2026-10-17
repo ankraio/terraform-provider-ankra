@@ -7,7 +7,8 @@ terraform {
 }
 
 # The token can also be supplied via the ANKRA_TOKEN environment variable,
-# and base_url via ANKRA_BASE_URL.
+# base_url via ANKRA_BASE_URL, and organisation_id (to act in an organisation
+# other than the one the token is bound to) via ANKRA_ORGANISATION_ID.
 provider "ankra" {
   token = var.ankra_token
 }
