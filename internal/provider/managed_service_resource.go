@@ -118,10 +118,14 @@ func (service *managedServiceResource) Schema(ctx context.Context, _ resource.Sc
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A managed service set up from a service package on a cluster, the counterpart of `ankra services setup` and " +
 			"`ankra services retire`. Setting it up reviews the plan and confirms it straight away (the platform's review is valid " +
-			"for ten minutes), then waits until the service is serving.\n\n" +
+			"for ten minutes), then waits until the service is serving. A failed install fails the apply; a wait that runs out " +
+			"(`timeouts.create`) only warns, and the service is kept in state while its install goes on.\n\n" +
 			"A managed service cannot be changed in place: changing any set-up input replaces it, which retires the old service " +
 			"first. **Retiring a service deletes its data** (its stack, namespace, volumes and secrets). Destroy, and so any " +
 			"replacement, therefore refuses unless `allow_data_loss_on_destroy` is `true`; set it, apply, then destroy.\n\n" +
+			"The inputs are read back, so one changed outside Terraform (for example a service moved to another package version " +
+			"with the CLI) also plans a replacement, which the guard refuses. Update the configuration to the service's current " +
+			"value (`ankra_services` shows it) to keep the service, or allow the data loss to replace it.\n\n" +
 			"The platform does not return `consumer_ids`, `parameters` or `secret_references`, so they are kept as configured and " +
 			"are null after an import. Consumers connected later, outside Terraform, show in `connected_consumer_ids` and are " +
 			"disconnected when the service is retired.",
@@ -240,52 +244,73 @@ func (service *managedServiceResource) Create(ctx context.Context, request resou
 			err.Error()+"\n\nA 409 means the name is taken, the cluster has no placement policy, or region and data_boundary differ from it.")
 		return
 	}
-	if _, err := apiClient.ConfirmManagedService(ctx, review.ID, review.Digest); err != nil {
+	// The service's id is the review's id. A confirm whose answer was lost may
+	// still have started the install, so a failed confirm is followed by a
+	// read: a service that exists is adopted rather than orphaned.
+	_, confirmError := apiClient.ConfirmManagedService(ctx, review.ID, review.Digest)
+	instance, err := apiClient.GetManagedService(ctx, review.ID)
+	if confirmError != nil && err != nil {
 		response.Diagnostics.AddError("Unable to confirm managed service",
-			err.Error()+"\n\nThe review was not confirmed, so nothing was set up. A 409 means the review changed or expired; apply again.")
+			confirmError.Error()+"\n\nThe review was not confirmed, so nothing was set up. A 409 means the review changed or expired; apply again.")
 		return
 	}
 
 	plan.ID = types.StringValue(review.ID)
-	instance, err := apiClient.GetManagedService(ctx, review.ID)
 	if err != nil {
+		// The service exists; only the read failed. Keep it untainted, so the
+		// next refresh fills in what is missing instead of planning a
+		// replacement that would retire it.
 		plan.applyComputedUnknown()
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
-		response.Diagnostics.AddError("Unable to read the managed service after setting it up", err.Error())
+		response.Diagnostics.AddWarning("Managed service set up but not read back",
+			"Service "+review.ID+" was set up, but reading it back failed: "+err.Error()+". The next plan reads its state.")
 		return
 	}
+	var waitError error
+	isInstallFailed := false
 	if plan.WaitUntilReady.ValueBool() {
 		waitContext, cancel := context.WithTimeout(ctx, createTimeout)
 		defer cancel()
-		instance, err = managedServiceWaitUntilReady(waitContext, apiClient, instance)
+		instance, isInstallFailed, waitError = managedServiceWaitUntilReady(waitContext, apiClient, instance)
 	}
 	plan.applyAPI(instance)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
-	if err != nil {
-		response.Diagnostics.AddError("Managed service did not become ready", err.Error())
+	switch {
+	case isInstallFailed:
+		response.Diagnostics.AddError("Managed service install failed", waitError.Error())
+	case waitError != nil:
+		// A slow install is not a failure: keeping the resource untainted
+		// stops the next plan from retiring a service that is still coming up.
+		response.Diagnostics.AddWarning("Managed service not ready yet", waitError.Error())
 	}
 }
 
 // managedServiceWaitUntilReady polls until the install settles. It returns
-// the last instance read, so state records it even when the wait fails.
-func managedServiceWaitUntilReady(ctx context.Context, apiClient *client.Client, instance *client.ManagedService) (*client.ManagedService, error) {
+// the last instance read, so state records it even when the wait ends early,
+// and reports whether the install itself failed, as opposed to the wait
+// running out or a read failing.
+func managedServiceWaitUntilReady(ctx context.Context, apiClient *client.Client, instance *client.ManagedService) (*client.ManagedService, bool, error) {
 	for {
 		switch instance.State {
 		case client.ManagedServiceStateServing, client.ManagedServiceStateDeployed:
-			return instance, nil
+			return instance, false, nil
 		case client.ManagedServiceStateFailed:
-			return instance, fmt.Errorf("the install of service %s failed (deployment state %q). Destroying it retires it, which needs allow_data_loss_on_destroy", instance.ID, instance.DeploymentState)
+			return instance, true, fmt.Errorf("the install of service %s failed (deployment state %q). Terraform marks it tainted, "+
+				"so the next apply replaces it, which retires it and deletes its data. To retire it, run `terraform untaint` on it, "+
+				"set allow_data_loss_on_destroy = true and apply, then apply again. To keep it, run `terraform untaint` on it",
+				instance.ID, instance.DeploymentState)
 		}
 		select {
 		case <-ctx.Done():
-			return instance, fmt.Errorf("service %s is still %q; the install goes on, and the next plan reads its outcome", instance.ID, instance.State)
+			return instance, false, fmt.Errorf("service %s was still %q when the create timeout ran out. It is kept in state; "+
+				"the install goes on, and `terraform refresh` or the next plan shows its state", instance.ID, instance.State)
 		case <-time.After(managedServicePollInterval):
 		}
 		next, err := apiClient.GetManagedService(ctx, instance.ID)
 		if err != nil {
-			return instance, err
+			return instance, false, fmt.Errorf("service %s was set up, but reading its progress failed: %w", instance.ID, err)
 		}
 		instance = next
 	}

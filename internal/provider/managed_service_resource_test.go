@@ -40,6 +40,13 @@ type managedServiceFake struct {
 	reviewCount        int
 	isApplicationsOff  bool
 	retirementRequests int
+	// isStillDeploying keeps a new install deploying, for the wait timeout.
+	isStillDeploying bool
+	// isConfirmAnswerLost confirms the review but answers 502, as when the
+	// answer is lost on the way back.
+	isConfirmAnswerLost bool
+	// isConfirmRefused refuses the confirm with nothing set up.
+	isConfirmRefused bool
 }
 
 func newManagedServiceFake(t *testing.T) *managedServiceFake {
@@ -100,7 +107,7 @@ func newManagedServiceFake(t *testing.T) *managedServiceFake {
 		var body map[string]string
 		decodeJSON(t, request, &body)
 		fake.confirmedDigests = append(fake.confirmedDigests, body["digest"])
-		if body["digest"] != review["digest"] {
+		if body["digest"] != review["digest"] || fake.isConfirmRefused {
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Service review has changed"})
 			return
 		}
@@ -124,6 +131,10 @@ func newManagedServiceFake(t *testing.T) *managedServiceFake {
 		}
 		review["execution_id"] = "bbbbbbbb-0000-4000-8000-000000000001"
 		review["confirmed_at"] = "2026-10-18T09:00:00Z"
+		if fake.isConfirmAnswerLost {
+			writeJSON(t, writer, http.StatusBadGateway, map[string]any{"detail": "upstream connection reset"})
+			return
+		}
 		writeJSON(t, writer, http.StatusOK, review)
 	})
 	gated("GET /api/v1/org/service-admission/instances/{instance_id}", func(writer http.ResponseWriter, request *http.Request) {
@@ -137,7 +148,7 @@ func newManagedServiceFake(t *testing.T) *managedServiceFake {
 			answer[key] = value
 		}
 		writeJSON(t, writer, http.StatusOK, answer)
-		if instance["state"] == "deploying" {
+		if instance["state"] == "deploying" && !fake.isStillDeploying {
 			instance["state"] = fake.installOutcome
 			instance["readiness"] = "ready"
 		}
@@ -390,7 +401,7 @@ func TestAccManagedServiceFailures(t *testing.T) {
 		resource.Test(t, resource.TestCase{
 			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 			Steps: []resource.TestStep{
-				{Config: managedServiceConfig(fake, true), ExpectError: regexp.MustCompile("install of service .* failed")},
+				{Config: managedServiceConfig(fake, true), ExpectError: regexp.MustCompile("Managed service install failed")},
 			},
 		})
 	})
@@ -422,5 +433,89 @@ func TestAccManagedServiceFailures(t *testing.T) {
 				{Config: managedServiceConfig(fake, true), ExpectError: regexp.MustCompile("Managed services not available")},
 			},
 		})
+	})
+	t.Run("refused confirm", func(t *testing.T) {
+		fake := newManagedServiceFake(t)
+		fake.isConfirmRefused = true
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: managedServiceConfig(fake, true), ExpectError: regexp.MustCompile("Unable to confirm managed service")},
+			},
+		})
+		if len(fake.instances) != 0 {
+			t.Errorf("a refused confirm left a service: %v", fake.instances)
+		}
+	})
+}
+
+// A wait that runs out only warns: the resource stays untainted, so the next
+// plan neither replaces nor retires a service that is still coming up.
+func TestAccManagedServiceSlowInstallIsKept(t *testing.T) {
+	fake := newManagedServiceFake(t)
+	fake.isStillDeploying = true
+	withTimeout := func(allowDataLoss bool) string {
+		return strings.Replace(managedServiceConfig(fake, allowDataLoss), fmt.Sprintf("= %t\n}\n", allowDataLoss), fmt.Sprintf("= %t\n\n  timeouts {\n    create = \"50ms\"\n  }\n}\n", allowDataLoss), 1)
+	}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: withTimeout(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_managed_service.orders", "state", "deploying"),
+					func(state *terraform.State) error {
+						if state.RootModule().Resources["ankra_managed_service.orders"].Primary.Tainted {
+							return fmt.Errorf("a slow install tainted the service")
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// The install finishes: refresh reads it, and nothing is replaced.
+				PreConfig: func() {
+					fake.isStillDeploying = false
+					fake.instances["aaaaaaaa-0000-4000-8000-000000000001"]["state"] = "serving"
+				},
+				Config: withTimeout(false),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_managed_service.orders", "state", "serving"),
+					func(_ *terraform.State) error {
+						if fake.reviewCount != 1 || fake.retirementRequests != 0 {
+							return fmt.Errorf("a slow install was replaced: %d reviews, %d retirements", fake.reviewCount, fake.retirementRequests)
+						}
+						return nil
+					},
+				),
+			},
+			{Config: withTimeout(true)},
+		},
+	})
+}
+
+// A confirm that reached the platform but whose answer was lost adopts the
+// service instead of orphaning it.
+func TestAccManagedServiceLostConfirmAnswerIsAdopted(t *testing.T) {
+	fake := newManagedServiceFake(t)
+	fake.isConfirmAnswerLost = true
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: managedServiceConfig(fake, true),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_managed_service.orders", "id", "aaaaaaaa-0000-4000-8000-000000000001"),
+					resource.TestCheckResourceAttr("ankra_managed_service.orders", "state", "serving"),
+					func(_ *terraform.State) error {
+						if fake.reviewCount != 1 {
+							return fmt.Errorf("the lost answer led to a second setup")
+						}
+						return nil
+					},
+				),
+			},
+		},
 	})
 }

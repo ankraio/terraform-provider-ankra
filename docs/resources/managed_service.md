@@ -3,16 +3,19 @@
 page_title: "ankra_managed_service Resource - ankra"
 subcategory: ""
 description: |-
-  A managed service set up from a service package on a cluster, the counterpart of ankra services setup and ankra services retire. Setting it up reviews the plan and confirms it straight away (the platform's review is valid for ten minutes), then waits until the service is serving.
+  A managed service set up from a service package on a cluster, the counterpart of ankra services setup and ankra services retire. Setting it up reviews the plan and confirms it straight away (the platform's review is valid for ten minutes), then waits until the service is serving. A failed install fails the apply; a wait that runs out (timeouts.create) only warns, and the service is kept in state while its install goes on.
   A managed service cannot be changed in place: changing any set-up input replaces it, which retires the old service first. Retiring a service deletes its data (its stack, namespace, volumes and secrets). Destroy, and so any replacement, therefore refuses unless allow_data_loss_on_destroy is true; set it, apply, then destroy.
+  The inputs are read back, so one changed outside Terraform (for example a service moved to another package version with the CLI) also plans a replacement, which the guard refuses. Update the configuration to the service's current value (ankra_services shows it) to keep the service, or allow the data loss to replace it.
   The platform does not return consumer_ids, parameters or secret_references, so they are kept as configured and are null after an import. Consumers connected later, outside Terraform, show in connected_consumer_ids and are disconnected when the service is retired.
 ---
 
 # ankra_managed_service (Resource)
 
-A managed service set up from a service package on a cluster, the counterpart of `ankra services setup` and `ankra services retire`. Setting it up reviews the plan and confirms it straight away (the platform's review is valid for ten minutes), then waits until the service is serving.
+A managed service set up from a service package on a cluster, the counterpart of `ankra services setup` and `ankra services retire`. Setting it up reviews the plan and confirms it straight away (the platform's review is valid for ten minutes), then waits until the service is serving. A failed install fails the apply; a wait that runs out (`timeouts.create`) only warns, and the service is kept in state while its install goes on.
 
 A managed service cannot be changed in place: changing any set-up input replaces it, which retires the old service first. **Retiring a service deletes its data** (its stack, namespace, volumes and secrets). Destroy, and so any replacement, therefore refuses unless `allow_data_loss_on_destroy` is `true`; set it, apply, then destroy.
+
+The inputs are read back, so one changed outside Terraform (for example a service moved to another package version with the CLI) also plans a replacement, which the guard refuses. Update the configuration to the service's current value (`ankra_services` shows it) to keep the service, or allow the data loss to replace it.
 
 The platform does not return `consumer_ids`, `parameters` or `secret_references`, so they are kept as configured and are null after an import. Consumers connected later, outside Terraform, show in `connected_consumer_ids` and are disconnected when the service is retired.
 

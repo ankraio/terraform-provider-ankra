@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/url"
 )
@@ -171,7 +172,7 @@ func walkCursor[Item any](ctx context.Context, client *Client, path string, quer
 		}
 		query.Set("after", *response.NextCursor)
 	}
-	return items, nil
+	return nil, fmt.Errorf("listing %s stopped after %d pages without reaching the end; narrow it with a filter", path, maxServicePages)
 }
 
 // ListServicePackages returns every service package version the
