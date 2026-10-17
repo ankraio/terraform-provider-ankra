@@ -13,7 +13,7 @@
 # Inputs (files under /run/agent-secrets, delivered by Ankra Pipelines):
 #   repo_git          the run's git credential, one line of JSON with a token
 #   gpg_private_key   the provider signing key, ASCII-armoured
-#   gpg_passphrase    its passphrase
+#   gpg_passphrase    its passphrase, only when the key has one
 set -eu
 
 secrets=/run/agent-secrets
@@ -55,12 +55,19 @@ GNUPGHOME="${scratch}/gnupg"
 export GNUPGHOME
 mkdir -m 700 "${GNUPGHOME}"
 printf 'allow-loopback-pinentry\n' > "${GNUPGHOME}/gpg-agent.conf"
-gpg --batch --pinentry-mode loopback --passphrase-file "${secrets}/gpg_passphrase" \
+# The provider key has no passphrase, so no passphrase secret is bound (an
+# empty one cannot be). GoReleaser's signing arguments still name a file, so an
+# empty one stands in when none is delivered.
+GPG_PASSPHRASE_FILE="${secrets}/gpg_passphrase"
+if [ ! -f "${GPG_PASSPHRASE_FILE}" ]; then
+  GPG_PASSPHRASE_FILE="${scratch}/empty-passphrase"
+  : > "${GPG_PASSPHRASE_FILE}"
+fi
+export GPG_PASSPHRASE_FILE
+gpg --batch --pinentry-mode loopback --passphrase-file "${GPG_PASSPHRASE_FILE}" \
   --import "${secrets}/gpg_private_key"
 GPG_FINGERPRINT="$(gpg --batch --list-secret-keys --with-colons | awk -F: '/^fpr:/ { print $10; exit }')"
 export GPG_FINGERPRINT
-GPG_PASSPHRASE_FILE="${secrets}/gpg_passphrase"
-export GPG_PASSPHRASE_FILE
 
 # The workspace belongs to another user, so git refuses it without this.
 GIT_CONFIG_COUNT=1
