@@ -50,9 +50,10 @@ func (definitionResource *pipelineDefinitionResource) Metadata(_ context.Context
 func pipelineSelectorAttributes(subject string) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"application_id": schema.StringAttribute{
-			MarkdownDescription: "Application whose linked repository " + subject + ". " + pipelineSelectorDescription + " Changing it replaces the resource.",
-			Optional:            true,
-			PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+			MarkdownDescription: "Application whose linked repository " + subject + ". " + pipelineSelectorDescription + " The application must already be connected to Ankra Pipelines, which happens when its setup pull request is merged; until then the platform answers 404, so apply this in a second phase after a new `ankra_application`." +
+				" Changing it replaces the resource.",
+			Optional:      true,
+			PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
 		},
 		"repository_id": schema.StringAttribute{
 			MarkdownDescription: "Connected repository that " + subject + ". " + pipelineSelectorDescription + " Changing it replaces the resource.",
@@ -88,9 +89,14 @@ func (definitionResource *pipelineDefinitionResource) Schema(_ context.Context, 
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The definition of record of a repository's Ankra pipeline, stored from a spec rather than read from the committed " +
 			"`.ankra/pipeline.yaml`. The counterpart of `ankra pipeline definition put` and `ankra application pipeline definition put`. " +
-			"The platform stores a canonical render of the spec, so drift is detected by `spec_hash`. A later push of the committed " +
-			"file records a new definition, which Terraform then shows as drift. The platform cannot delete a definition: " +
-			"destroying this resource only removes it from Terraform state.",
+			"\n\n**Use it only for a repository without a committed `.ankra/pipeline.yaml`.** Every push of a committed file records a " +
+			"new definition of record, which Terraform reads as drift and the next apply puts back, so pushes and applies alternate " +
+			"which pipeline runs. Commit the file or manage it here, not both.\n\n" +
+			"**Protected sections still need an administrator.** A definition whose protected (authority) sections changed runs on the " +
+			"default branch with the last approved authority until an administrator approves it with " +
+			"`ankra pipeline definitions approve`; Terraform does not approve it.\n\n" +
+			"The platform stores a canonical render of the spec, so drift is detected by `spec_hash`. The platform cannot delete " +
+			"a definition: destroying this resource only removes it from Terraform state.",
 		Attributes: attributes,
 	}
 }

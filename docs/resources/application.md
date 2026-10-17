@@ -3,16 +3,28 @@
 page_title: "ankra_application Resource - ankra"
 subcategory: ""
 description: |-
-  An application: a Git repository Ankra builds, packages and deploys. The counterpart of ankra application add and ankra application delete, plus ankra application credential set and ankra application registry set|clear, which change an existing application in place. Destroying it deletes the application and tears down every deployment of it on every cluster. Deploy it to a cluster with ankra_application_deployment.
+  An application: a Git repository Ankra builds, packages and deploys. The counterpart of ankra application add and ankra application delete, plus ankra application credential set and ankra application registry set|clear, which change an existing application in place.
+  Creating it changes the repository. Ankra analyses the repository and opens a setup pull request on it (a Dockerfile, a chart and .ankra/pipeline.yaml). The application cannot be deployed until that pull request is merged and the first build has published an image. With ankra_application_settings.auto_merge_setup_pull_requests on, Ankra merges it unattended once its checks pass.
+  Two phases. Because of that, an ankra_application_deployment of a new application, and an ankra_pipeline_definition, ankra_pipeline_schedule or ankra_pipeline_merge_train that addresses it by application_id, cannot succeed in the same apply that creates it. The deployment waits (see its timeouts); for the others, apply the application first, merge the setup pull request, then apply the rest.
+  Destroying or replacing it is destructive. Destroy deletes the application, tears down every deployment of it on every cluster, deletes its environment secret values, revokes its registry robot and unlinks its pipeline repository. Changing name, app_repo_owner, app_repo_name or app_repo_branch replaces it, which does all of that and opens a new setup pull request. Protect it with lifecycle { prevent_destroy = true }.
 ---
 
 # ankra_application (Resource)
 
-An application: a Git repository Ankra builds, packages and deploys. The counterpart of `ankra application add` and `ankra application delete`, plus `ankra application credential set` and `ankra application registry set|clear`, which change an existing application in place. Destroying it deletes the application and tears down every deployment of it on every cluster. Deploy it to a cluster with `ankra_application_deployment`.
+An application: a Git repository Ankra builds, packages and deploys. The counterpart of `ankra application add` and `ankra application delete`, plus `ankra application credential set` and `ankra application registry set|clear`, which change an existing application in place.
+
+**Creating it changes the repository.** Ankra analyses the repository and opens a setup pull request on it (a Dockerfile, a chart and `.ankra/pipeline.yaml`). The application cannot be deployed until that pull request is merged and the first build has published an image. With `ankra_application_settings.auto_merge_setup_pull_requests` on, Ankra merges it unattended once its checks pass.
+
+**Two phases.** Because of that, an `ankra_application_deployment` of a new application, and an `ankra_pipeline_definition`, `ankra_pipeline_schedule` or `ankra_pipeline_merge_train` that addresses it by `application_id`, cannot succeed in the same apply that creates it. The deployment waits (see its `timeouts`); for the others, apply the application first, merge the setup pull request, then apply the rest.
+
+**Destroying or replacing it is destructive.** Destroy deletes the application, tears down every deployment of it on every cluster, deletes its environment secret values, revokes its registry robot and unlinks its pipeline repository. Changing `name`, `app_repo_owner`, `app_repo_name` or `app_repo_branch` replaces it, which does all of that and opens a new setup pull request. Protect it with `lifecycle { prevent_destroy = true }`.
 
 ## Example Usage
 
 ```terraform
+# Creating the application opens a setup pull request on acme/web. Deploy it
+# (ankra_application_deployment) once that pull request is merged and the first
+# build has published an image.
 resource "ankra_application" "web" {
   name                     = "web"
   app_repo_credential_name = "github-main"
@@ -25,6 +37,11 @@ resource "ankra_application" "web" {
     url                   = "oci://harbor.acme.dev/apps"
     credential_name       = "harbor-push"
     admin_credential_name = "harbor-admin"
+  }
+
+  # Destroying or replacing the application tears down every deployment of it.
+  lifecycle {
+    prevent_destroy = true
   }
 }
 ```
@@ -61,7 +78,7 @@ Optional:
 
 - `admin_credential_name` (String) Registry credential with project administrator rights, which lets Ankra mint the application's own push robot.
 - `api_url` (String) Registry management API base, `http://` or `https://`.
-- `component_repositories` (Map of String) Repository inside the project for a component, keyed by component name.
+- `component_repositories` (Map of String) Repository inside the project for a component, keyed by component name. Names and repositories are lower-case, as the platform stores them.
 - `credential_name` (String) Registry credential of the organisation that authenticates to it.
 - `flat_repositories` (Boolean) Publish monorepo components as `<project>/<component>` instead of `<project>/<app>/<component>`. Defaults to `false`.
 - `manage_actions_secrets` (Boolean) Whether Ankra writes `credential_name` into the repository's Actions secrets. Needs `credential_name`. Defaults to `false`.

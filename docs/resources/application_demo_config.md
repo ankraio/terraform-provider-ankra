@@ -50,7 +50,7 @@ output "demo_password" {
 
 ### Read-Only
 
-- `generated_password` (String, Sensitive) Password the platform minted when this resource turned protection on. It is only revealed once; it stays null when protection was already on, and `ankra application demo config rotate-password` replaces it.
+- `generated_password` (String, Sensitive) Password the platform minted when this resource turned protection on. It is only revealed once; it stays null when protection was already on, and `ankra application demo config rotate-password` replaces it. It is held in Terraform state in plain text (marked sensitive): protect the state, or leave `protected` to the CLI.
 - `protected_username` (String) Login a protected demo accepts.
 
 <a id="nestedatt--env"></a>

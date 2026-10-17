@@ -6,7 +6,10 @@ package provider
 import (
 	"context"
 	"sort"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -23,19 +26,28 @@ var (
 	_ resource.ResourceWithImportState = (*applicationDeploymentResource)(nil)
 )
 
+// applicationDeployDefaultTimeout bounds how long a create waits for the
+// application's setup to finish before it gives up.
+const applicationDeployDefaultTimeout = 30 * time.Minute
+
+// applicationDeployRetryInterval is how long a create waits between deploys
+// refused because setup has not finished. Tests shorten it.
+var applicationDeployRetryInterval = 15 * time.Second
+
 type applicationDeploymentResource struct {
 	configuredClient
 }
 
 type applicationDeploymentModel struct {
-	ID            types.String `tfsdk:"id"`
-	ApplicationID types.String `tfsdk:"application_id"`
-	ClusterID     types.String `tfsdk:"cluster_id"`
-	Namespace     types.String `tfsdk:"namespace"`
-	DeployMode    types.String `tfsdk:"deploy_mode"`
-	Inputs        types.Map    `tfsdk:"inputs"`
-	StackName     types.String `tfsdk:"stack_name"`
-	Status        types.String `tfsdk:"status"`
+	ID            types.String   `tfsdk:"id"`
+	ApplicationID types.String   `tfsdk:"application_id"`
+	ClusterID     types.String   `tfsdk:"cluster_id"`
+	Namespace     types.String   `tfsdk:"namespace"`
+	DeployMode    types.String   `tfsdk:"deploy_mode"`
+	Inputs        types.Map      `tfsdk:"inputs"`
+	StackName     types.String   `tfsdk:"stack_name"`
+	Status        types.String   `tfsdk:"status"`
+	Timeouts      timeouts.Value `tfsdk:"timeouts"`
 }
 
 // NewApplicationDeploymentResource returns the ankra_application_deployment
@@ -49,12 +61,19 @@ func (deploymentResource *applicationDeploymentResource) Metadata(_ context.Cont
 	response.TypeName = request.ProviderTypeName + "_application_deployment"
 }
 
-func (deploymentResource *applicationDeploymentResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+func (deploymentResource *applicationDeploymentResource) Schema(ctx context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "An application deployed to one cluster and namespace, which the platform keeps running and moves onto new builds " +
 			"when push-to-deploy is on. The counterpart of `ankra application deploy`; destroying it is `ankra application remove`, " +
 			"which takes the application off this cluster and namespace only. The deploy and the removal are accepted and then run " +
-			"asynchronously; `status` reports progress.",
+			"asynchronously; `status` reports progress.\n\n" +
+			"**A new application deploys in a second phase.** The platform refuses a deploy until the application's setup pull " +
+			"request is merged and its first build has published an image. Create keeps retrying while the platform reports exactly " +
+			"that, for up to the `create` timeout (30 minutes by default), so an `ankra_application` and its deployment can share " +
+			"one apply when someone merges the setup pull request in that window, or when `auto_merge_setup_pull_requests` is on. " +
+			"Otherwise apply the application first and the deployment once the setup pull request is merged.\n\n" +
+			"**Import.** The platform does not report deploy `inputs`, so they import as unset. When the configuration sets " +
+			"`inputs`, the first apply after an import redeploys with them.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the deployment (the platform's installation id).",
@@ -103,6 +122,9 @@ func (deploymentResource *applicationDeploymentResource) Schema(_ context.Contex
 				Computed:            true,
 			},
 		},
+		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true}),
+		},
 	}
 }
 
@@ -144,9 +166,28 @@ func (deploymentResource *applicationDeploymentResource) Create(ctx context.Cont
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := deploymentResource.deploy(ctx, &plan, applicationStringMap(ctx, plan.Inputs, &response.Diagnostics), nil); err != nil {
-		response.Diagnostics.AddError("Unable to deploy application", err.Error())
+	createTimeout, timeoutDiagnostics := plan.Timeouts.Create(ctx, applicationDeployDefaultTimeout)
+	response.Diagnostics.Append(timeoutDiagnostics...)
+	inputs := applicationStringMap(ctx, plan.Inputs, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
 		return
+	}
+	deadline := time.Now().Add(createTimeout)
+	for {
+		err := deploymentResource.deploy(ctx, &plan, inputs, nil)
+		if err == nil {
+			break
+		}
+		if !client.IsApplicationNotReady(err) || time.Now().Add(applicationDeployRetryInterval).After(deadline) {
+			response.Diagnostics.AddError("Unable to deploy application", err.Error())
+			return
+		}
+		select {
+		case <-ctx.Done():
+			response.Diagnostics.AddError("Unable to deploy application", ctx.Err().Error())
+			return
+		case <-time.After(applicationDeployRetryInterval):
+		}
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
@@ -225,21 +266,15 @@ func (deploymentResource *applicationDeploymentResource) Delete(ctx context.Cont
 }
 
 // ImportState imports by `<application_id>/<cluster_id>/<namespace>`. Deploy
-// inputs are not reported by the platform and import as unset.
+// inputs are not reported by the platform and import as unset, so the first
+// apply after an import redeploys when the configuration sets them.
 func (deploymentResource *applicationDeploymentResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	parts, err := applicationSplitImportID(request.ID, "application_id", "cluster_id", "namespace")
 	if err != nil {
 		response.Diagnostics.AddError("Invalid import id", err.Error())
 		return
 	}
-	response.Diagnostics.Append(response.State.Set(ctx, &applicationDeploymentModel{
-		ID:            types.StringNull(),
-		ApplicationID: types.StringValue(parts[0]),
-		ClusterID:     types.StringValue(parts[1]),
-		Namespace:     types.StringValue(parts[2]),
-		DeployMode:    types.StringNull(),
-		Inputs:        types.MapNull(types.StringType),
-		StackName:     types.StringNull(),
-		Status:        types.StringNull(),
-	})...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("application_id"), parts[0])...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("cluster_id"), parts[1])...)
+	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("namespace"), parts[2])...)
 }

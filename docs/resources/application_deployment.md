@@ -4,15 +4,25 @@ page_title: "ankra_application_deployment Resource - ankra"
 subcategory: ""
 description: |-
   An application deployed to one cluster and namespace, which the platform keeps running and moves onto new builds when push-to-deploy is on. The counterpart of ankra application deploy; destroying it is ankra application remove, which takes the application off this cluster and namespace only. The deploy and the removal are accepted and then run asynchronously; status reports progress.
+  A new application deploys in a second phase. The platform refuses a deploy until the application's setup pull request is merged and its first build has published an image. Create keeps retrying while the platform reports exactly that, for up to the create timeout (30 minutes by default), so an ankra_application and its deployment can share one apply when someone merges the setup pull request in that window, or when auto_merge_setup_pull_requests is on. Otherwise apply the application first and the deployment once the setup pull request is merged.
+  Import. The platform does not report deploy inputs, so they import as unset. When the configuration sets inputs, the first apply after an import redeploys with them.
 ---
 
 # ankra_application_deployment (Resource)
 
 An application deployed to one cluster and namespace, which the platform keeps running and moves onto new builds when push-to-deploy is on. The counterpart of `ankra application deploy`; destroying it is `ankra application remove`, which takes the application off this cluster and namespace only. The deploy and the removal are accepted and then run asynchronously; `status` reports progress.
 
+**A new application deploys in a second phase.** The platform refuses a deploy until the application's setup pull request is merged and its first build has published an image. Create keeps retrying while the platform reports exactly that, for up to the `create` timeout (30 minutes by default), so an `ankra_application` and its deployment can share one apply when someone merges the setup pull request in that window, or when `auto_merge_setup_pull_requests` is on. Otherwise apply the application first and the deployment once the setup pull request is merged.
+
+**Import.** The platform does not report deploy `inputs`, so they import as unset. When the configuration sets `inputs`, the first apply after an import redeploys with them.
+
 ## Example Usage
 
 ```terraform
+# The platform refuses a deploy until the application's setup pull request is
+# merged and its first build has published an image. Create retries for up to
+# the create timeout; with a new application, merge the setup pull request in
+# that window or apply the deployment in a second run.
 resource "ankra_application_deployment" "production" {
   application_id = ankra_application.web.id
   cluster_id     = "9d2f6a3b-7c1e-4f0a-b5d8-2e4c6a8b0f13"
@@ -21,6 +31,10 @@ resource "ankra_application_deployment" "production" {
 
   inputs = {
     ingress_host = "web.acme.dev"
+  }
+
+  timeouts {
+    create = "45m"
   }
 }
 ```
@@ -38,12 +52,20 @@ resource "ankra_application_deployment" "production" {
 - `deploy_mode` (String) `quick` or `high_availability`. Defaults to `quick`. Changing it redeploys in place.
 - `inputs` (Map of String) Deploy options the application declares, such as `ingress_host`, by name. Changing them redeploys in place; an option removed here returns to the application's default. The platform does not report the options back, so a change made outside Terraform is not detected.
 - `namespace` (String) Namespace to deploy into. Defaults to one the platform derives from the application name. Changing it replaces the deployment.
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 
 ### Read-Only
 
 - `id` (String) Identifier of the deployment (the platform's installation id).
 - `stack_name` (String) Stack the deployment runs as on the cluster.
 - `status` (String) Deployment status as the platform last observed it.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `create` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
 
 ## Import
 

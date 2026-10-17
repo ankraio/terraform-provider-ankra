@@ -6,20 +6,24 @@ package provider
 import (
 	"context"
 
+	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 var (
-	_ resource.Resource                = (*applicationEnvSecretResource)(nil)
-	_ resource.ResourceWithConfigure   = (*applicationEnvSecretResource)(nil)
-	_ resource.ResourceWithImportState = (*applicationEnvSecretResource)(nil)
+	_ resource.Resource                   = (*applicationEnvSecretResource)(nil)
+	_ resource.ResourceWithConfigure      = (*applicationEnvSecretResource)(nil)
+	_ resource.ResourceWithImportState    = (*applicationEnvSecretResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*applicationEnvSecretResource)(nil)
 )
 
 type applicationEnvSecretResource struct {
@@ -27,11 +31,13 @@ type applicationEnvSecretResource struct {
 }
 
 type applicationEnvSecretModel struct {
-	ID            types.String `tfsdk:"id"`
-	ApplicationID types.String `tfsdk:"application_id"`
-	Key           types.String `tfsdk:"key"`
-	Value         types.String `tfsdk:"value"`
-	Status        types.String `tfsdk:"status"`
+	ID             types.String `tfsdk:"id"`
+	ApplicationID  types.String `tfsdk:"application_id"`
+	Key            types.String `tfsdk:"key"`
+	Value          types.String `tfsdk:"value"`
+	ValueWO        types.String `tfsdk:"value_wo"`
+	ValueWOVersion types.Int64  `tfsdk:"value_wo_version"`
+	Status         types.String `tfsdk:"status"`
 }
 
 // NewApplicationEnvSecretResource returns the ankra_application_env_secret
@@ -67,10 +73,23 @@ func (secretResource *applicationEnvSecretResource) Schema(_ context.Context, _ 
 				Validators:          []validator.String{applicationEnvSecretKeyValidator{}},
 			},
 			"value": schema.StringAttribute{
-				MarkdownDescription: "Secret value. The platform never returns it, so a value changed outside Terraform is not detected; " +
-					"a value deleted from the secret store outside Terraform is, and plans the secret again.",
-				Required:  true,
+				MarkdownDescription: "Secret value. It is stored in Terraform state in plain text (marked sensitive); on Terraform 1.11 or later " +
+					"prefer `value_wo`, which never reaches state. The platform never returns the value, so a value changed outside " +
+					"Terraform is not detected; a value deleted from the secret store outside Terraform is, and plans the secret again. " +
+					"Set exactly one of `value` and `value_wo`.",
+				Optional:  true,
 				Sensitive: true,
+			},
+			"value_wo": schema.StringAttribute{
+				MarkdownDescription: "Secret value as a write-only attribute (Terraform 1.11 or later): it is sent to the platform and never stored " +
+					"in plan or state. Terraform cannot see a change to it, so bump `value_wo_version` to write a new value.",
+				Optional:  true,
+				Sensitive: true,
+				WriteOnly: true,
+			},
+			"value_wo_version": schema.Int64Attribute{
+				MarkdownDescription: "Version of `value_wo`. Changing it writes `value_wo` again. Required with `value_wo`.",
+				Optional:            true,
 			},
 			"status": schema.StringAttribute{
 				MarkdownDescription: "`set` while the secret store holds the value.",
@@ -80,8 +99,34 @@ func (secretResource *applicationEnvSecretResource) Schema(_ context.Context, _ 
 	}
 }
 
-func (secretResource *applicationEnvSecretResource) write(ctx context.Context, plan *applicationEnvSecretModel) error {
-	secret, err := secretResource.client.SetApplicationEnvSecret(ctx, plan.ApplicationID.ValueString(), plan.Key.ValueString(), plan.Value.ValueString())
+func (secretResource *applicationEnvSecretResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	var config applicationEnvSecretModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
+	if response.Diagnostics.HasError() || config.Value.IsUnknown() || config.ValueWO.IsUnknown() {
+		return
+	}
+	if config.Value.IsNull() == config.ValueWO.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("value"), "Invalid secret value", "Set exactly one of value and value_wo.")
+	}
+	if !config.ValueWO.IsNull() && config.ValueWOVersion.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("value_wo_version"), "Missing value_wo_version",
+			"value_wo is never stored, so Terraform needs value_wo_version to know when to write it again.")
+	}
+}
+
+// configuredValue is the value to write: value, or the write-only value_wo,
+// which only the configuration carries.
+func (secretResource *applicationEnvSecretResource) configuredValue(ctx context.Context, plan applicationEnvSecretModel, config tfsdk.Config, diagnostics *diag.Diagnostics) string {
+	if !plan.Value.IsNull() {
+		return plan.Value.ValueString()
+	}
+	var writeOnly types.String
+	diagnostics.Append(config.GetAttribute(ctx, path.Root("value_wo"), &writeOnly)...)
+	return writeOnly.ValueString()
+}
+
+func (secretResource *applicationEnvSecretResource) write(ctx context.Context, plan *applicationEnvSecretModel, value string) error {
+	secret, err := secretResource.client.SetApplicationEnvSecret(ctx, plan.ApplicationID.ValueString(), plan.Key.ValueString(), value)
 	if err != nil {
 		return err
 	}
@@ -99,7 +144,11 @@ func (secretResource *applicationEnvSecretResource) Create(ctx context.Context, 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := secretResource.write(ctx, &plan); err != nil {
+	value := secretResource.configuredValue(ctx, plan, request.Config, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if err := secretResource.write(ctx, &plan, value); err != nil {
 		response.Diagnostics.AddError("Unable to set application environment secret", err.Error())
 		return
 	}
@@ -142,7 +191,11 @@ func (secretResource *applicationEnvSecretResource) Update(ctx context.Context, 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := secretResource.write(ctx, &plan); err != nil {
+	value := secretResource.configuredValue(ctx, plan, request.Config, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if err := secretResource.write(ctx, &plan, value); err != nil {
 		response.Diagnostics.AddError("Unable to update application environment secret", err.Error())
 		return
 	}

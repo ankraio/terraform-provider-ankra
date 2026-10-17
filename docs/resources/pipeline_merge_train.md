@@ -3,12 +3,12 @@
 page_title: "ankra_pipeline_merge_train Resource - ankra"
 subcategory: ""
 description: |-
-  A repository's merge train setting: whether approved pull requests are tested together on top of each other and merged in order. The counterpart of ankra pipeline train enable and disable; queueing a pull request (ankra pipeline train add|remove) is an operation, not configuration. Destroying it turns the train off.
+  A repository's merge train setting: whether approved pull requests are tested together on top of each other and merged in order. The counterpart of ankra pipeline train enable and disable; it is available on GitHub repositories only, which the plan checks for a repository_id that already exists; queueing a pull request (ankra pipeline train add|remove) is an operation, not configuration. Destroying it turns the train off.
 ---
 
 # ankra_pipeline_merge_train (Resource)
 
-A repository's merge train setting: whether approved pull requests are tested together on top of each other and merged in order. The counterpart of `ankra pipeline train enable` and `disable`; queueing a pull request (`ankra pipeline train add|remove`) is an operation, not configuration. Destroying it turns the train off.
+A repository's merge train setting: whether approved pull requests are tested together on top of each other and merged in order. The counterpart of `ankra pipeline train enable` and `disable`; it is available on GitHub repositories only, which the plan checks for a `repository_id` that already exists; queueing a pull request (`ankra pipeline train add|remove`) is an operation, not configuration. Destroying it turns the train off.
 
 ## Example Usage
 
@@ -29,7 +29,7 @@ resource "ankra_pipeline_merge_train" "platform" {
 
 ### Optional
 
-- `application_id` (String) Application whose linked repository the merge train belongs to. Set exactly one of `application_id` and `repository_id`. Changing it replaces the resource.
+- `application_id` (String) Application whose linked repository the merge train belongs to. Set exactly one of `application_id` and `repository_id`. The application must already be connected to Ankra Pipelines, which happens when its setup pull request is merged; until then the platform answers 404, so apply this in a second phase after a new `ankra_application`. Changing it replaces the resource.
 - `max_cars` (Number) How many pull requests the train tests at once, 1 to 8. Unset keeps the platform's value.
 - `repository_id` (String) Connected repository that the merge train belongs to. Set exactly one of `application_id` and `repository_id`. Changing it replaces the resource.
 

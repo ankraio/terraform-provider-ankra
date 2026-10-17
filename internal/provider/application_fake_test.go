@@ -53,6 +53,12 @@ type applicationFake struct {
 	schedules         map[string]map[string]map[string]any
 	trains            map[string]map[string]any
 	bodies            map[string][]map[string]json.RawMessage
+	// deployRefusals is how many more deploys answer the platform's 409 for
+	// an application whose setup pull request is not merged yet.
+	deployRefusals int
+	// disconnectRefusals is how many more disconnects answer the platform's
+	// 409 for a repository with a live pipeline run.
+	disconnectRefusals int
 	// routeMutex serialises every route of the fake: Terraform applies
 	// independent resources in parallel, and the routes share the maps above.
 	routeMutex sync.Mutex
@@ -601,6 +607,12 @@ func (fake *applicationFake) registerApplicationDeploymentRoutes() {
 			return
 		}
 		body := fake.record("deploy", request)
+		if fake.deployRefusals > 0 {
+			fake.deployRefusals--
+			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Application setup is not complete yet. Merge the setup pull request and wait for the " +
+				"first build to publish an image before deploying."})
+			return
+		}
 		clusterID := rawString(body["cluster_id"])
 		if clusterID == "" {
 			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "cluster_id is required"})
@@ -808,6 +820,11 @@ func (fake *applicationFake) registerPipelineRoutes() {
 			fake.notFound(writer, "Pipeline repository not found")
 			return
 		}
+		if fake.disconnectRefusals > 0 {
+			fake.disconnectRefusals--
+			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "This repository has a pipeline run that is queued or running"})
+			return
+		}
 		delete(fake.repositories, repositoryID)
 		writer.WriteHeader(http.StatusNoContent)
 	})
@@ -885,7 +902,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 		}
 		scheduleID := fake.nextID("schedule")
 		schedule := map[string]any{
-			"id": scheduleID, "repository_id": repositoryID, "cron": strings.Join(strings.Fields(rawString(body["cron"])), " "),
+			"id": scheduleID, "repository_id": repositoryID, "cron": fakeStoredCron(rawString(body["cron"])),
 			"timezone": timezone, "ref": rawString(body["ref"]), "inputs": inputs, "enabled": enabled,
 			"next_fire_at": "2026-10-18T00:00:00Z", "last_fired_at": nil, "last_run_id": nil,
 			"created_at": "2026-10-17T00:00:00Z", "updated_at": "2026-10-17T00:00:00Z",
@@ -911,7 +928,7 @@ func (fake *applicationFake) registerScopedPipelineRoutes(prefix string) {
 			var value any
 			_ = json.Unmarshal(raw, &value)
 			if key == "cron" {
-				value = strings.Join(strings.Fields(rawString(raw)), " ")
+				value = fakeStoredCron(rawString(raw))
 			}
 			schedule[key] = value
 		}
@@ -966,4 +983,19 @@ func (fake *applicationFake) trainSettings(repositoryID string) map[string]any {
 		return settings
 	}
 	return map[string]any{"enabled": false, "max_cars": float64(1)}
+}
+
+// fakeStoredCron is what cischedule.Parse stores: lower-cased, the @daily
+// family expanded, fields single-spaced.
+func fakeStoredCron(expression string) string {
+	normalised := strings.ToLower(strings.TrimSpace(expression))
+	switch normalised {
+	case "@daily", "@midnight":
+		normalised = "0 0 * * *"
+	case "@hourly":
+		normalised = "0 * * * *"
+	case "@weekly":
+		normalised = "0 0 * * 0"
+	}
+	return strings.Join(strings.Fields(normalised), " ")
 }

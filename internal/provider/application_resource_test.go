@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
 func TestAccApplicationLifecycle(t *testing.T) {
@@ -352,6 +354,70 @@ resource "ankra_application_env_secret" "database" {
 	})
 }
 
+func TestAccApplicationEnvSecretWriteOnlyValue(t *testing.T) {
+	fake := newApplicationFake(t)
+	fake.applications["app-1"] = map[string]any{"id": "app-1", "name": "web"}
+
+	config := func(value string, version int) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_application_env_secret" "token" {
+  application_id   = "app-1"
+  key              = "API_TOKEN"
+  value_wo         = %q
+  value_wo_version = %d
+}
+`, value, version)
+	}
+
+	resource.Test(t, resource.TestCase{
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_11_0)},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config("first", 1),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckNoResourceAttr("ankra_application_env_secret.token", "value"),
+					resource.TestCheckNoResourceAttr("ankra_application_env_secret.token", "value_wo"),
+					func(_ *terraform.State) error {
+						if value := fake.envSecrets["app-1"]["API_TOKEN"]; value != "first" {
+							return fmt.Errorf("stored value %q", value)
+						}
+						return nil
+					},
+				),
+			},
+			{
+				// A new value alone is invisible to Terraform; the version bump writes it.
+				Config: config("second", 2),
+				Check: func(_ *terraform.State) error {
+					if value := fake.envSecrets["app-1"]["API_TOKEN"]; value != "second" {
+						return fmt.Errorf("the version bump did not write the new value: %q", value)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+func TestAccApplicationEnvSecretNeedsExactlyOneValue(t *testing.T) {
+	fake := newApplicationFake(t)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_application_env_secret" "none" {
+  application_id = "app-1"
+  key            = "API_TOKEN"
+}
+`,
+				ExpectError: regexp.MustCompile("Set exactly one of value and value_wo"),
+			},
+		},
+	})
+}
+
 func TestAccApplicationEnvSecretRejectsInvalidKey(t *testing.T) {
 	fake := newApplicationFake(t)
 	resource.Test(t, resource.TestCase{
@@ -374,9 +440,48 @@ resource "ankra_application_env_secret" "bad" {
 	}
 }
 
-func TestAccApplicationDeploymentLifecycle(t *testing.T) {
+// shortenApplicationDeployRetries makes the deployment's not-ready retries
+// fast for the length of a test.
+func shortenApplicationDeployRetries(t *testing.T) {
+	previous := applicationDeployRetryInterval
+	applicationDeployRetryInterval = 50 * time.Millisecond
+	t.Cleanup(func() { applicationDeployRetryInterval = previous })
+}
+
+func TestAccApplicationDeploymentGivesUpWhenSetupNeverCompletes(t *testing.T) {
+	shortenApplicationDeployRetries(t)
 	fake := newApplicationFake(t)
 	fake.applications["app-1"] = map[string]any{"id": "app-1", "name": "web"}
+	fake.deployRefusals = 1000
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_application_deployment" "production" {
+  application_id = "app-1"
+  cluster_id     = "cluster-1"
+  timeouts {
+    create = "1s"
+  }
+}
+`,
+				ExpectError: regexp.MustCompile("setup is not complete"),
+			},
+		},
+	})
+	if fake.deployRefusals == 1000 || fake.deployRefusals < 900 {
+		t.Errorf("expected a handful of retries within the timeout, %d deploys were refused", 1000-fake.deployRefusals)
+	}
+}
+
+func TestAccApplicationDeploymentLifecycle(t *testing.T) {
+	shortenApplicationDeployRetries(t)
+	fake := newApplicationFake(t)
+	fake.applications["app-1"] = map[string]any{"id": "app-1", "name": "web"}
+	// The setup pull request merges while the first apply waits.
+	fake.deployRefusals = 2
 
 	withHost := fake.providerBlock() + `
 resource "ankra_application_deployment" "production" {
@@ -406,6 +511,12 @@ resource "ankra_application_deployment" "production" {
 				Config: withHost,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("ankra_application_deployment.production", "id"),
+					func(_ *terraform.State) error {
+						if fake.deployRefusals != 0 {
+							return fmt.Errorf("create did not wait out the not-ready refusals")
+						}
+						return nil
+					},
 					resource.TestCheckResourceAttr("ankra_application_deployment.production", "namespace", "web"),
 					resource.TestCheckResourceAttr("ankra_application_deployment.production", "deploy_mode", "quick"),
 					resource.TestCheckResourceAttr("ankra_application_deployment.production", "stack_name", "web-stack"),

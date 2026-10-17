@@ -3,12 +3,21 @@
 page_title: "ankra_pipeline_definition Resource - ankra"
 subcategory: ""
 description: |-
-  The definition of record of a repository's Ankra pipeline, stored from a spec rather than read from the committed .ankra/pipeline.yaml. The counterpart of ankra pipeline definition put and ankra application pipeline definition put. The platform stores a canonical render of the spec, so drift is detected by spec_hash. A later push of the committed file records a new definition, which Terraform then shows as drift. The platform cannot delete a definition: destroying this resource only removes it from Terraform state.
+  The definition of record of a repository's Ankra pipeline, stored from a spec rather than read from the committed .ankra/pipeline.yaml. The counterpart of ankra pipeline definition put and ankra application pipeline definition put.
+  Use it only for a repository without a committed .ankra/pipeline.yaml. Every push of a committed file records a new definition of record, which Terraform reads as drift and the next apply puts back, so pushes and applies alternate which pipeline runs. Commit the file or manage it here, not both.
+  Protected sections still need an administrator. A definition whose protected (authority) sections changed runs on the default branch with the last approved authority until an administrator approves it with ankra pipeline definitions approve; Terraform does not approve it.
+  The platform stores a canonical render of the spec, so drift is detected by spec_hash. The platform cannot delete a definition: destroying this resource only removes it from Terraform state.
 ---
 
 # ankra_pipeline_definition (Resource)
 
-The definition of record of a repository's Ankra pipeline, stored from a spec rather than read from the committed `.ankra/pipeline.yaml`. The counterpart of `ankra pipeline definition put` and `ankra application pipeline definition put`. The platform stores a canonical render of the spec, so drift is detected by `spec_hash`. A later push of the committed file records a new definition, which Terraform then shows as drift. The platform cannot delete a definition: destroying this resource only removes it from Terraform state.
+The definition of record of a repository's Ankra pipeline, stored from a spec rather than read from the committed `.ankra/pipeline.yaml`. The counterpart of `ankra pipeline definition put` and `ankra application pipeline definition put`. 
+
+**Use it only for a repository without a committed `.ankra/pipeline.yaml`.** Every push of a committed file records a new definition of record, which Terraform reads as drift and the next apply puts back, so pushes and applies alternate which pipeline runs. Commit the file or manage it here, not both.
+
+**Protected sections still need an administrator.** A definition whose protected (authority) sections changed runs on the default branch with the last approved authority until an administrator approves it with `ankra pipeline definitions approve`; Terraform does not approve it.
+
+The platform stores a canonical render of the spec, so drift is detected by `spec_hash`. The platform cannot delete a definition: destroying this resource only removes it from Terraform state.
 
 ## Example Usage
 
@@ -28,7 +37,7 @@ resource "ankra_pipeline_definition" "platform" {
 
 ### Optional
 
-- `application_id` (String) Application whose linked repository the definition belongs to. Set exactly one of `application_id` and `repository_id`. Changing it replaces the resource.
+- `application_id` (String) Application whose linked repository the definition belongs to. Set exactly one of `application_id` and `repository_id`. The application must already be connected to Ankra Pipelines, which happens when its setup pull request is merged; until then the platform answers 404, so apply this in a second phase after a new `ankra_application`. Changing it replaces the resource.
 - `repository_id` (String) Connected repository that the definition belongs to. Set exactly one of `application_id` and `repository_id`. Changing it replaces the resource.
 
 ### Read-Only

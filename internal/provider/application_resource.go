@@ -15,16 +15,39 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
 var (
-	_ resource.Resource                = (*applicationResource)(nil)
-	_ resource.ResourceWithConfigure   = (*applicationResource)(nil)
-	_ resource.ResourceWithImportState = (*applicationResource)(nil)
+	_ resource.Resource                   = (*applicationResource)(nil)
+	_ resource.ResourceWithConfigure      = (*applicationResource)(nil)
+	_ resource.ResourceWithImportState    = (*applicationResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*applicationResource)(nil)
 )
+
+// ValidateConfig refuses at plan time a registry declaration the platform
+// would refuse at apply: managing Actions secrets needs the credential to
+// write.
+func (applicationResource *applicationResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	var registryObject types.Object
+	response.Diagnostics.Append(request.Config.GetAttribute(ctx, path.Root("image_registry"), &registryObject)...)
+	if response.Diagnostics.HasError() || registryObject.IsNull() || registryObject.IsUnknown() {
+		return
+	}
+	var registry applicationImageRegistryModel
+	response.Diagnostics.Append(registryObject.As(ctx, &registry, basetypes.ObjectAsOptions{})...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if registry.ManageActionsSecrets.ValueBool() && registry.CredentialName.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("image_registry").AtName("credential_name"), "Missing credential_name",
+			"manage_actions_secrets needs credential_name: it is the credential Ankra writes into the repository's Actions secrets.")
+	}
+}
 
 type applicationResource struct {
 	configuredClient
@@ -69,7 +92,7 @@ func (applicationResource *applicationResource) Metadata(_ context.Context, requ
 
 func (applicationResource *applicationResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	optionalText := func(description string) schema.StringAttribute {
-		return schema.StringAttribute{MarkdownDescription: description, Optional: true}
+		return schema.StringAttribute{MarkdownDescription: description, Optional: true, Validators: []validator.String{applicationTrimmedValidator{}}}
 	}
 	defaultFalse := func(description string) schema.BoolAttribute {
 		return schema.BoolAttribute{
@@ -82,9 +105,19 @@ func (applicationResource *applicationResource) Schema(_ context.Context, _ reso
 	response.Schema = schema.Schema{
 		MarkdownDescription: "An application: a Git repository Ankra builds, packages and deploys. " +
 			"The counterpart of `ankra application add` and `ankra application delete`, plus `ankra application credential set` " +
-			"and `ankra application registry set|clear`, which change an existing application in place. " +
-			"Destroying it deletes the application and tears down every deployment of it on every cluster. " +
-			"Deploy it to a cluster with `ankra_application_deployment`.",
+			"and `ankra application registry set|clear`, which change an existing application in place.\n\n" +
+			"**Creating it changes the repository.** Ankra analyses the repository and opens a setup pull request on it " +
+			"(a Dockerfile, a chart and `.ankra/pipeline.yaml`). The application cannot be deployed until that pull request is merged " +
+			"and the first build has published an image. With `ankra_application_settings.auto_merge_setup_pull_requests` on, " +
+			"Ankra merges it unattended once its checks pass.\n\n" +
+			"**Two phases.** Because of that, an `ankra_application_deployment` of a new application, and an " +
+			"`ankra_pipeline_definition`, `ankra_pipeline_schedule` or `ankra_pipeline_merge_train` that addresses it by " +
+			"`application_id`, cannot succeed in the same apply that creates it. The deployment waits (see its `timeouts`); " +
+			"for the others, apply the application first, merge the setup pull request, then apply the rest.\n\n" +
+			"**Destroying or replacing it is destructive.** Destroy deletes the application, tears down every deployment of it on " +
+			"every cluster, deletes its environment secret values, revokes its registry robot and unlinks its pipeline repository. " +
+			"Changing `name`, `app_repo_owner`, `app_repo_name` or `app_repo_branch` replaces it, which does all of that and opens " +
+			"a new setup pull request. Protect it with `lifecycle { prevent_destroy = true }`.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the application.",
@@ -125,9 +158,14 @@ func (applicationResource *applicationResource) Schema(_ context.Context, _ reso
 					"url": schema.StringAttribute{
 						MarkdownDescription: "Registry project as `oci://<host>/<project>`.",
 						Required:            true,
+						Validators:          []validator.String{applicationRegistryURLValidator{}},
 					},
-					"credential_name":        optionalText("Registry credential of the organisation that authenticates to it."),
-					"api_url":                optionalText("Registry management API base, `http://` or `https://`."),
+					"credential_name": optionalText("Registry credential of the organisation that authenticates to it."),
+					"api_url": schema.StringAttribute{
+						MarkdownDescription: "Registry management API base, `http://` or `https://`.",
+						Optional:            true,
+						Validators:          []validator.String{applicationHTTPURLValidator{}},
+					},
 					"pull_secret_name":       optionalText("Name of the dockerconfigjson Secret the generated manifests reference."),
 					"username_secret_name":   optionalText("Repository Actions secret the build logs in with."),
 					"password_secret_name":   optionalText("Repository Actions secret holding the registry password."),
@@ -137,9 +175,10 @@ func (applicationResource *applicationResource) Schema(_ context.Context, _ reso
 					"project_public": defaultFalse("Ask for the project to be public when Ankra creates it. " +
 						"The platform does not report it back, so a change made outside Terraform is not detected."),
 					"component_repositories": schema.MapAttribute{
-						MarkdownDescription: "Repository inside the project for a component, keyed by component name.",
+						MarkdownDescription: "Repository inside the project for a component, keyed by component name. Names and repositories are lower-case, as the platform stores them.",
 						Optional:            true,
 						ElementType:         types.StringType,
+						Validators:          []validator.Map{applicationComponentRepositoriesValidator{}},
 					},
 				},
 			},

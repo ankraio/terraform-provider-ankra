@@ -115,7 +115,7 @@ func (demoResource *applicationDemoConfigResource) Schema(_ context.Context, _ r
 			},
 			"generated_password": schema.StringAttribute{
 				MarkdownDescription: "Password the platform minted when this resource turned protection on. It is only revealed once; " +
-					"it stays null when protection was already on, and `ankra application demo config rotate-password` replaces it.",
+					"it stays null when protection was already on, and `ankra application demo config rotate-password` replaces it. It is held in Terraform state in plain text (marked sensitive): protect the state, or leave `protected` to the CLI.",
 				Computed:      true,
 				Sensitive:     true,
 				PlanModifiers: []planmodifier.String{applicationDemoPasswordModifier{}},

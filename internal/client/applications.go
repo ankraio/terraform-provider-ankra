@@ -434,6 +434,33 @@ func (client *Client) DeployApplication(ctx context.Context, applicationID strin
 	return &result, nil
 }
 
+// applicationNotReadyMessages are the platform's 409 sentences for a deploy
+// refused only because setup has not finished: the setup pull request is not
+// merged, no build has published an image, or the installation changed under
+// the deploy. Each clears on its own, so a caller may wait and retry.
+var applicationNotReadyMessages = []string{
+	"setup is not complete",
+	"No image has been published",
+	"no generated manifest to deploy",
+	"changed while this deploy was being saved",
+}
+
+// IsApplicationNotReady reports whether err is a deploy refused only until the
+// application's setup completes. A deployment being removed is not one of
+// them: that needs the removal to finish, not the application.
+func IsApplicationNotReady(err error) bool {
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusConflict {
+		return false
+	}
+	for _, message := range applicationNotReadyMessages {
+		if strings.Contains(apiError.Body, message) {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoveApplicationDeployment takes the application off one cluster and
 // namespace, leaving its other deployments standing. A deployment that is
 // gone, already being removed, or never existed is not an error.

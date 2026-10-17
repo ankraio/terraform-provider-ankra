@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
@@ -22,6 +23,9 @@ func (fake *applicationFake) repositoryNamed(name string) (string, map[string]an
 }
 
 func TestAccPipelineRepositoryLifecycle(t *testing.T) {
+	previous := pipelineRepositoryRetryInterval
+	pipelineRepositoryRetryInterval = 50 * time.Millisecond
+	t.Cleanup(func() { pipelineRepositoryRetryInterval = previous })
 	fake := newApplicationFake(t)
 
 	pinned := fake.providerBlock() + `
@@ -73,7 +77,9 @@ resource "ankra_pipeline_repository" "platform" {
 				),
 			},
 			{
-				Config: unpinned,
+				// A run is live on the docs repository: destroy waits it out.
+				PreConfig: func() { fake.disconnectRefusals = 2 },
+				Config:    unpinned,
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckNoResourceAttr("ankra_pipeline_repository.platform", "cluster_id"),
 					resource.TestCheckResourceAttr("ankra_pipeline_repository.platform", "workspaces_only", "true"),
@@ -81,6 +87,9 @@ resource "ankra_pipeline_repository" "platform" {
 						body := fake.lastBody("update repository")
 						if string(body["cluster_id"]) != "null" || string(body["workspaces_only"]) != "true" {
 							return fmt.Errorf("update body %v; want an explicit null cluster and workspaces_only", body)
+						}
+						if fake.disconnectRefusals != 0 {
+							return fmt.Errorf("destroy did not retry the live-run refusals")
 						}
 						if _, docs := fake.repositoryNamed("docs"); docs != nil {
 							return fmt.Errorf("a removed repository is still connected")
@@ -150,7 +159,7 @@ resource "ankra_pipeline_definition" "platform" {
 
 resource "ankra_pipeline_schedule" "nightly" {
   application_id = "app-1"
-  cron           = "0  3 * * *"
+  cron           = "@daily"
   inputs = {
     suite = "full"
   }
@@ -174,7 +183,7 @@ resource "ankra_pipeline_definition" "platform" {
 
 resource "ankra_pipeline_schedule" "nightly" {
   application_id = "app-1"
-  cron           = "0 4 * * *"
+  cron           = "0  4 * * MON"
   timezone       = "Europe/Oslo"
   ref            = "release"
   enabled        = false
@@ -194,7 +203,15 @@ resource "ankra_pipeline_merge_train" "platform" {
 				Check: resource.ComposeAggregateTestCheckFunc(
 					resource.TestCheckResourceAttrSet("ankra_pipeline_definition.platform", "spec_hash"),
 					resource.TestCheckResourceAttr("ankra_pipeline_definition.platform", "source", "generated"),
-					resource.TestCheckResourceAttr("ankra_pipeline_schedule.nightly", "cron", "0  3 * * *"),
+					resource.TestCheckResourceAttr("ankra_pipeline_schedule.nightly", "cron", "@daily"),
+					func(_ *terraform.State) error {
+						for _, schedule := range fake.schedules["repository-app"] {
+							if schedule["cron"] != "0 0 * * *" {
+								return fmt.Errorf("the fake stored %v, not the expanded macro", schedule["cron"])
+							}
+						}
+						return nil
+					},
 					resource.TestCheckResourceAttr("ankra_pipeline_schedule.nightly", "timezone", "UTC"),
 					resource.TestCheckResourceAttr("ankra_pipeline_schedule.nightly", "enabled", "true"),
 					resource.TestCheckResourceAttr("ankra_pipeline_merge_train.platform", "max_cars", "3"),
@@ -238,6 +255,9 @@ resource "ankra_pipeline_merge_train" "platform" {
 					return "application/app-1/" + state.RootModule().Resources["ankra_pipeline_schedule.nightly"].Primary.ID, nil
 				},
 				ImportStateVerify: true,
+				// The platform stores "0 4 * * mon"; the configuration spells it
+				// "0  4 * * MON", which is the same schedule.
+				ImportStateVerifyIgnore: []string{"cron"},
 			},
 			{
 				ResourceName:                         "ankra_pipeline_definition.platform",
@@ -298,6 +318,29 @@ resource "ankra_pipeline_merge_train" "platform" {
 	})
 }
 
+func TestAccPipelineMergeTrainRefusesNonGitHubAtPlan(t *testing.T) {
+	fake := newApplicationFake(t)
+	fake.repositories["repository-gitlab"] = map[string]any{"id": "repository-gitlab", "provider": "gitlab", "owner": "acme", "name": "docs"}
+
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_pipeline_merge_train" "docs" {
+  repository_id = "repository-gitlab"
+  enabled       = true
+}
+`,
+				ExpectError: regexp.MustCompile("GitHub repositories only"),
+			},
+		},
+	})
+	if fake.bodies["set merge train"] != nil {
+		t.Errorf("the merge train was written for a GitLab repository")
+	}
+}
+
 func TestAccPipelineSelectorValidation(t *testing.T) {
 	fake := newApplicationFake(t)
 	resource.Test(t, resource.TestCase{
@@ -322,6 +365,25 @@ resource "ankra_pipeline_merge_train" "too_many" {
 }
 `,
 				ExpectError: regexp.MustCompile("Value out of range"),
+			},
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_pipeline_schedule" "bad" {
+  repository_id = "repository-1"
+  cron          = "0 25 * * *"
+}
+`,
+				ExpectError: regexp.MustCompile("Invalid cron expression"),
+			},
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_pipeline_schedule" "bad" {
+  repository_id = "repository-1"
+  cron          = "@daily"
+  timezone      = "Mars/Olympus"
+}
+`,
+				ExpectError: regexp.MustCompile("Invalid timezone"),
 			},
 		},
 	})

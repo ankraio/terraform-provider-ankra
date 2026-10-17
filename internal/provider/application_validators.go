@@ -6,9 +6,11 @@ package provider
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 // applicationEnvSecretKeyMaxLength mirrors the platform's bound on an env
@@ -103,5 +105,111 @@ func (between applicationIntegerBetween) ValidateInt64(ctx context.Context, requ
 	if value < between.minimum || value > between.maximum {
 		response.Diagnostics.AddAttributeError(request.Path, "Value out of range",
 			fmt.Sprintf("%d is not accepted: %s.", value, between.Description(ctx)))
+	}
+}
+
+// applicationRegistryURLValidator requires an image registry url of the form
+// oci://<host>/<project>[/<prefix>], the form the platform stores and resolves
+// (enginekit/appregistry ParseRegistryURL). Anything else reads back as no
+// registry at all.
+type applicationRegistryURLValidator struct{}
+
+func (applicationRegistryURLValidator) Description(_ context.Context) string {
+	return "url must be oci://<host>/<project>, with no surrounding whitespace"
+}
+
+func (urlValidator applicationRegistryURLValidator) MarkdownDescription(ctx context.Context) string {
+	return urlValidator.Description(ctx)
+}
+
+func (urlValidator applicationRegistryURLValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	parsed, parseError := url.Parse(value)
+	if value != strings.TrimSpace(value) || parseError != nil || parsed.Scheme != "oci" || parsed.Host == "" ||
+		strings.Trim(parsed.Path, "/") == "" {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid registry url",
+			fmt.Sprintf("%q is not accepted: %s, as in oci://registry.example.com/my-project.", value, urlValidator.Description(ctx)))
+	}
+}
+
+// applicationHTTPURLValidator requires an http:// or https:// url, which the
+// platform demands of a registry api_url.
+type applicationHTTPURLValidator struct{}
+
+func (applicationHTTPURLValidator) Description(_ context.Context) string {
+	return "value must start with http:// or https://"
+}
+
+func (urlValidator applicationHTTPURLValidator) MarkdownDescription(ctx context.Context) string {
+	return urlValidator.Description(ctx)
+}
+
+func (urlValidator applicationHTTPURLValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	hasScheme := strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+	if !hasScheme || value != strings.TrimSpace(value) {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid url",
+			fmt.Sprintf("%q is not accepted: %s.", value, urlValidator.Description(ctx)))
+	}
+}
+
+// applicationTrimmedValidator refuses surrounding whitespace, which the
+// platform trims away on store and would then read back as a change.
+type applicationTrimmedValidator struct{}
+
+func (applicationTrimmedValidator) Description(_ context.Context) string {
+	return "value must not start or end with whitespace"
+}
+
+func (trimmedValidator applicationTrimmedValidator) MarkdownDescription(ctx context.Context) string {
+	return trimmedValidator.Description(ctx)
+}
+
+func (trimmedValidator applicationTrimmedValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	if value := request.ConfigValue.ValueString(); value != strings.TrimSpace(value) {
+		response.Diagnostics.AddAttributeError(request.Path, "Surrounding whitespace",
+			fmt.Sprintf("%q is not accepted: %s.", value, trimmedValidator.Description(ctx)))
+	}
+}
+
+// applicationComponentRepositoriesValidator accepts only the form the
+// platform stores (enginekit/appregistry NormaliseComponentRepositories):
+// lower-case, trimmed keys and values, and values without leading or
+// trailing slashes. Any other entry would read back changed or dropped.
+type applicationComponentRepositoriesValidator struct{}
+
+func (applicationComponentRepositoriesValidator) Description(_ context.Context) string {
+	return "component names and repositories must be non-empty, lower-case and without surrounding whitespace, and repositories must not start or end with /"
+}
+
+func (mapValidator applicationComponentRepositoriesValidator) MarkdownDescription(ctx context.Context) string {
+	return mapValidator.Description(ctx)
+}
+
+func (mapValidator applicationComponentRepositoriesValidator) ValidateMap(ctx context.Context, request validator.MapRequest, response *validator.MapResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	for componentName, element := range request.ConfigValue.Elements() {
+		repository, isString := element.(types.String)
+		if !isString || repository.IsUnknown() || repository.IsNull() {
+			continue
+		}
+		value := repository.ValueString()
+		normalisedValue := strings.ToLower(strings.Trim(strings.TrimSpace(value), "/"))
+		if componentName == "" || componentName != strings.ToLower(strings.TrimSpace(componentName)) ||
+			normalisedValue == "" || value != normalisedValue {
+			response.Diagnostics.AddAttributeError(request.Path.AtMapKey(componentName), "Invalid component repository",
+				fmt.Sprintf("%q = %q is not accepted: %s.", componentName, value, mapValidator.Description(ctx)))
+		}
 	}
 }

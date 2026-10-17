@@ -13,8 +13,11 @@ A cron schedule that starts a repository's Ankra pipeline. The counterpart of `a
 ## Example Usage
 
 ```terraform
+# An application is connected to Ankra Pipelines once its setup pull request
+# is merged. Apply a schedule that addresses it by application_id after that,
+# in a second run, or address a connected repository by repository_id.
 resource "ankra_pipeline_schedule" "nightly" {
-  application_id = ankra_application.web.id
+  application_id = "5b0c4a9e-2f43-4b8e-9a51-1f0d8e7c2a10"
   cron           = "0 3 * * *"
   timezone       = "Europe/Oslo"
 
@@ -29,11 +32,11 @@ resource "ankra_pipeline_schedule" "nightly" {
 
 ### Required
 
-- `cron` (String) Five-field cron expression.
+- `cron` (String) Five-field cron expression, or a macro such as `@daily`. The platform stores it lower-cased with macros expanded; an expression that stores the same is not a change.
 
 ### Optional
 
-- `application_id` (String) Application whose linked repository the schedule runs. Set exactly one of `application_id` and `repository_id`. Changing it replaces the resource.
+- `application_id` (String) Application whose linked repository the schedule runs. Set exactly one of `application_id` and `repository_id`. The application must already be connected to Ankra Pipelines, which happens when its setup pull request is merged; until then the platform answers 404, so apply this in a second phase after a new `ankra_application`. Changing it replaces the resource.
 - `enabled` (Boolean) Whether the schedule fires. Defaults to `true`.
 - `inputs` (Map of String) Pipeline inputs the scheduled run starts with.
 - `ref` (String) Branch or tag the scheduled run checks out. Unset runs the default branch.

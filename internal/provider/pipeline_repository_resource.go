@@ -5,7 +5,11 @@ package provider
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -29,20 +33,29 @@ var (
 // be connected from (enginekit/pipelinerun).
 var pipelineRepositoryProviders = []string{"github", "gitlab", "bitbucket_cloud"}
 
+// pipelineRepositoryDefaultDeleteTimeout bounds how long destroy waits for a
+// live run to settle.
+const pipelineRepositoryDefaultDeleteTimeout = 10 * time.Minute
+
+// pipelineRepositoryRetryInterval is how long destroy waits between
+// disconnects refused for a live run. Tests shorten it.
+var pipelineRepositoryRetryInterval = 10 * time.Second
+
 type pipelineRepositoryResource struct {
 	configuredClient
 }
 
 type pipelineRepositoryModel struct {
-	ID             types.String `tfsdk:"id"`
-	Provider       types.String `tfsdk:"provider_name"`
-	Owner          types.String `tfsdk:"owner"`
-	Name           types.String `tfsdk:"name"`
-	CredentialName types.String `tfsdk:"credential_name"`
-	DefaultBranch  types.String `tfsdk:"default_branch"`
-	ApplicationID  types.String `tfsdk:"application_id"`
-	ClusterID      types.String `tfsdk:"cluster_id"`
-	WorkspacesOnly types.Bool   `tfsdk:"workspaces_only"`
+	ID             types.String   `tfsdk:"id"`
+	Provider       types.String   `tfsdk:"provider_name"`
+	Owner          types.String   `tfsdk:"owner"`
+	Name           types.String   `tfsdk:"name"`
+	CredentialName types.String   `tfsdk:"credential_name"`
+	DefaultBranch  types.String   `tfsdk:"default_branch"`
+	ApplicationID  types.String   `tfsdk:"application_id"`
+	ClusterID      types.String   `tfsdk:"cluster_id"`
+	WorkspacesOnly types.Bool     `tfsdk:"workspaces_only"`
+	Timeouts       timeouts.Value `tfsdk:"timeouts"`
 }
 
 // NewPipelineRepositoryResource returns the ankra_pipeline_repository
@@ -56,12 +69,17 @@ func (repositoryResource *pipelineRepositoryResource) Metadata(_ context.Context
 	response.TypeName = request.ProviderTypeName + "_pipeline_repository"
 }
 
-func (repositoryResource *pipelineRepositoryResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+func (repositoryResource *pipelineRepositoryResource) Schema(ctx context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	replace := []planmodifier.String{stringplanmodifier.RequiresReplace()}
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A Git repository connected to Ankra Pipelines, so pushes, pull requests and tags run its committed " +
 			"`.ankra/pipeline.yaml`; it needs no application. The counterpart of `ankra pipeline repositories connect` and `disconnect`, " +
-			"with `set-cluster` and `set-mode` changing it in place. Disconnecting is refused while a run is queued or running.",
+			"with `set-cluster` and `set-mode` changing it in place.\n\n" +
+			"**Destroy waits for live runs.** The platform refuses to disconnect a repository while a pipeline run is queued or running; " +
+			"destroy retries until the run settles, for up to the `delete` timeout (10 minutes by default).\n\n" +
+			"**Linked applications.** Deleting the application `application_id` names unlinks the repository on the platform, " +
+			"which then reads back with no application and plans a replacement. Remove `application_id` from the configuration " +
+			"(or destroy this resource) together with the application.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the connected repository.",
@@ -111,6 +129,9 @@ func (repositoryResource *pipelineRepositoryResource) Schema(_ context.Context, 
 				Computed:            true,
 				Default:             booldefault.StaticBool(false),
 			},
+		},
+		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Delete: true}),
 		},
 	}
 }
@@ -211,9 +232,35 @@ func (repositoryResource *pipelineRepositoryResource) Delete(ctx context.Context
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if err := apiClient.DisconnectPipelineRepository(ctx, state.ID.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to disconnect pipeline repository", err.Error())
+	deleteTimeout, timeoutDiagnostics := state.Timeouts.Delete(ctx, pipelineRepositoryDefaultDeleteTimeout)
+	response.Diagnostics.Append(timeoutDiagnostics...)
+	if response.Diagnostics.HasError() {
+		return
 	}
+	deadline := time.Now().Add(deleteTimeout)
+	for {
+		err := apiClient.DisconnectPipelineRepository(ctx, state.ID.ValueString())
+		if err == nil {
+			return
+		}
+		if !pipelineRepositoryHasLiveRun(err) || time.Now().Add(pipelineRepositoryRetryInterval).After(deadline) {
+			response.Diagnostics.AddError("Unable to disconnect pipeline repository", err.Error())
+			return
+		}
+		select {
+		case <-ctx.Done():
+			response.Diagnostics.AddError("Unable to disconnect pipeline repository", ctx.Err().Error())
+			return
+		case <-time.After(pipelineRepositoryRetryInterval):
+		}
+	}
+}
+
+// pipelineRepositoryHasLiveRun reports the platform's 409 for disconnecting a
+// repository whose pipeline run is still queued or running.
+func pipelineRepositoryHasLiveRun(err error) bool {
+	var apiError *client.APIError
+	return errors.As(err, &apiError) && apiError.StatusCode == http.StatusConflict
 }
 
 // ImportState imports by repository id.

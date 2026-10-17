@@ -5,7 +5,9 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
@@ -21,11 +23,16 @@ var (
 	_ resource.ResourceWithConfigure      = (*pipelineMergeTrainResource)(nil)
 	_ resource.ResourceWithImportState    = (*pipelineMergeTrainResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*pipelineMergeTrainResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*pipelineMergeTrainResource)(nil)
 )
 
 // pipelineMergeTrainMaxCars mirrors the platform's cap (enginekit/mergetrain
 // MaxCarsLimit).
 const pipelineMergeTrainMaxCars = 8
+
+// pipelineMergeTrainProvider is the only source-code provider the platform
+// runs a merge train on.
+const pipelineMergeTrainProvider = "github"
 
 type pipelineMergeTrainResource struct {
 	configuredClient
@@ -63,7 +70,7 @@ func (trainResource *pipelineMergeTrainResource) Schema(_ context.Context, _ res
 	}
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A repository's merge train setting: whether approved pull requests are tested together on top of each other " +
-			"and merged in order. The counterpart of `ankra pipeline train enable` and `disable`; queueing a pull request " +
+			"and merged in order. The counterpart of `ankra pipeline train enable` and `disable`; it is available on GitHub repositories only, which the plan checks for a `repository_id` that already exists; queueing a pull request " +
 			"(`ankra pipeline train add|remove`) is an operation, not configuration. Destroying it turns the train off.",
 		Attributes: attributes,
 	}
@@ -76,6 +83,29 @@ func (trainResource *pipelineMergeTrainResource) ValidateConfig(ctx context.Cont
 		return
 	}
 	pipelineValidateSelector(model.ApplicationID, model.RepositoryID, &response.Diagnostics)
+}
+
+// ModifyPlan refuses at plan time to turn the train on for a repository the
+// platform cannot run one on: the merge train is GitHub-only. It can only
+// check a repository addressed by repository_id that already exists; the
+// platform refuses the rest at apply.
+func (trainResource *pipelineMergeTrainResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.Plan.Raw.IsNull() || trainResource.client == nil || trainResource.client.Token == "" {
+		return
+	}
+	var plan pipelineMergeTrainModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() || !plan.Enabled.ValueBool() || plan.RepositoryID.IsNull() || plan.RepositoryID.IsUnknown() {
+		return
+	}
+	repository, err := trainResource.client.GetPipelineRepository(ctx, plan.RepositoryID.ValueString())
+	if err != nil {
+		return
+	}
+	if repository.Provider != pipelineMergeTrainProvider {
+		response.Diagnostics.AddAttributeError(path.Root("enabled"), "Merge train not supported",
+			fmt.Sprintf("The merge train supports GitHub repositories only; repository %s is on %s.", repository.ID, repository.Provider))
+	}
 }
 
 func (trainResource *pipelineMergeTrainResource) write(ctx context.Context, plan *pipelineMergeTrainModel) error {

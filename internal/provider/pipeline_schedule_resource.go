@@ -5,7 +5,6 @@ package provider
 
 import (
 	"context"
-	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -15,6 +14,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -62,14 +62,17 @@ func (scheduleResource *pipelineScheduleResource) Schema(_ context.Context, _ re
 		PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 	}
 	attributes["cron"] = schema.StringAttribute{
-		MarkdownDescription: "Five-field cron expression.",
-		Required:            true,
+		MarkdownDescription: "Five-field cron expression, or a macro such as `@daily`. The platform stores it lower-cased with macros expanded; " +
+			"an expression that stores the same is not a change.",
+		Required:   true,
+		Validators: []validator.String{pipelineCronValidator{}},
 	}
 	attributes["timezone"] = schema.StringAttribute{
 		MarkdownDescription: "IANA timezone the expression is read in. Defaults to `UTC`.",
 		Optional:            true,
 		Computed:            true,
 		Default:             stringdefault.StaticString("UTC"),
+		Validators:          []validator.String{pipelineTimezoneValidator{}},
 	}
 	attributes["ref"] = schema.StringAttribute{
 		MarkdownDescription: "Branch or tag the scheduled run checks out. Unset runs the default branch.",
@@ -106,10 +109,10 @@ func (scheduleResource *pipelineScheduleResource) ValidateConfig(ctx context.Con
 	pipelineValidateSelector(model.ApplicationID, model.RepositoryID, &response.Diagnostics)
 }
 
-// pipelineCronEquivalent reports whether two cron expressions differ only in
-// whitespace, which the platform normalises away.
+// pipelineCronEquivalent reports whether two cron expressions store the same,
+// after the platform lower-cases, expands macros and single-spaces them.
 func pipelineCronEquivalent(left string, right string) bool {
-	return strings.Join(strings.Fields(left), " ") == strings.Join(strings.Fields(right), " ")
+	return pipelineCanonicalCron(left) == pipelineCanonicalCron(right)
 }
 
 func pipelineScheduleToModel(schedule *client.PipelineSchedule, model *pipelineScheduleModel) {
