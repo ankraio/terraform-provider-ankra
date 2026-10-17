@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -24,6 +25,7 @@ var (
 	_ resource.Resource                = (*objectStorageBucketResource)(nil)
 	_ resource.ResourceWithConfigure   = (*objectStorageBucketResource)(nil)
 	_ resource.ResourceWithImportState = (*objectStorageBucketResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*objectStorageBucketResource)(nil)
 )
 
 type objectStorageBucketResource struct {
@@ -64,8 +66,10 @@ func (bucketResource *objectStorageBucketResource) Schema(_ context.Context, _ r
 		MarkdownDescription: "An object-storage bucket Ankra creates on one of the organisation's provider credentials, for " +
 			"applications and add-ons to use. The counterpart of `ankra bucket create` and `ankra bucket delete`. Terraform " +
 			"waits for the bucket to be ready.\n\n" +
-			"The platform has no update for a bucket, so changing any setting replaces it. Destroying it only stops Ankra " +
-			"managing the bucket unless `destroy_provider_resources` is set. Buckets are scoped to the provider's project.",
+			"The platform has no update for a bucket, so changing any setting (even `name`) replaces it. Destroying it only " +
+			"stops Ankra managing the bucket unless `destroy_provider_resources` is set. **With `destroy_provider_resources = " +
+			"true` a replacement empties and deletes the bucket and everything in it**, so Terraform refuses to plan a " +
+			"replacement while state holds `true`: set it to `false` and apply first. Buckets are scoped to the provider's project.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the bucket.",
@@ -109,8 +113,9 @@ func (bucketResource *objectStorageBucketResource) Schema(_ context.Context, _ r
 				PlanModifiers:       []planmodifier.String{catalogueReplaceUnlessImported()},
 			},
 			"destroy_provider_resources": schema.BoolAttribute{
-				MarkdownDescription: "On destroy, also empty and delete the bucket on the provider, with everything in it. " +
-					"Defaults to `false`. A bucket destroyed while still provisioning is always torn down.",
+				MarkdownDescription: "On destroy **or replacement**, also empty and delete the bucket on the provider, with " +
+					"everything in it. Defaults to `false`. While it is `true` in state, Terraform refuses to plan a replacement. " +
+					"A bucket destroyed while still provisioning is always torn down.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),
@@ -144,6 +149,30 @@ func (bucketResource *objectStorageBucketResource) Schema(_ context.Context, _ r
 				PlanModifiers:       computedString,
 			},
 		},
+	}
+}
+
+// ModifyPlan refuses a replacement while destroy_provider_resources is true:
+// it would empty and delete the bucket.
+func (bucketResource *objectStorageBucketResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state objectStorageBucketModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() || !state.DestroyProviderResources.ValueBool() {
+		return
+	}
+	isReplaced := catalogueWriteOnlyChanged(plan.AccessKeyID, state.AccessKeyID) ||
+		catalogueWriteOnlyChanged(plan.SecretAccessKey, state.SecretAccessKey) ||
+		catalogueAnyChanged([]attr.Value{plan.Name, plan.CredentialID, plan.Region, plan.Bucket},
+			[]attr.Value{state.Name, state.CredentialID, state.Region, state.Bucket})
+	if isReplaced {
+		response.Diagnostics.AddAttributeError(path.Root("destroy_provider_resources"), "Replacement would delete the bucket",
+			"This change replaces the bucket, and destroy_provider_resources is true in state, so the replacement would "+
+				"empty and delete it with everything in it. Set destroy_provider_resources = false and apply first, then "+
+				"make this change.")
 	}
 }
 

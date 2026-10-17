@@ -54,6 +54,10 @@ var (
 		maximum:     63,
 		forbidden:   []string{".."},
 	}
+	catalogueLowerCaseUUIDValidator = catalogueStringValidator{
+		description: "an application ID is a lower-case UUID, as the platform reports it",
+		pattern:     regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`),
+	}
 	catalogueRobotScopeValidator = catalogueStringValidator{
 		description: "scope is push or pull",
 		allowed:     []string{"push", "pull"},
@@ -128,4 +132,29 @@ func (catalogueValidator catalogueStringValidator) accepts(value string) bool {
 		}
 	}
 	return false
+}
+
+// catalogueRobotDescriptionValidator mirrors the platform's robot
+// description rules: at most 200 characters, and trimmed. A description with
+// surrounding whitespace would read back trimmed and replace the robot on
+// every apply.
+type catalogueRobotDescriptionValidator struct{}
+
+func (catalogueRobotDescriptionValidator) Description(_ context.Context) string {
+	return "description is at most 200 characters with no leading or trailing whitespace"
+}
+
+func (descriptionValidator catalogueRobotDescriptionValidator) MarkdownDescription(ctx context.Context) string {
+	return descriptionValidator.Description(ctx)
+}
+
+func (descriptionValidator catalogueRobotDescriptionValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	if strings.TrimSpace(value) != value || len([]rune(value)) > 200 {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid value",
+			fmt.Sprintf("%q is refused by the platform: %s.", value, descriptionValidator.Description(ctx)))
+	}
 }

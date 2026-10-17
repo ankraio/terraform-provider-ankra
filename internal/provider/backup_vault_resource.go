@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -27,6 +28,7 @@ var (
 	_ resource.ResourceWithConfigure      = (*backupVaultResource)(nil)
 	_ resource.ResourceWithImportState    = (*backupVaultResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*backupVaultResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*backupVaultResource)(nil)
 )
 
 // catalogueProvisioningPollInterval paces the wait for a vault or bucket the
@@ -63,6 +65,23 @@ func catalogueBoolReplaceUnlessImported() planmodifier.Bool {
 		"Changing this value replaces the object, except right after an import.",
 		"Changing this value replaces the object, except right after an import.",
 	)
+}
+
+// catalogueWriteOnlyChanged reports whether a value the platform never
+// returns changes, which replaces the object unless state never knew it.
+func catalogueWriteOnlyChanged(planned, prior types.String) bool {
+	return !prior.IsNull() && !planned.Equal(prior)
+}
+
+// catalogueAnyChanged reports whether any planned value differs from state,
+// counting a value not known until apply as a change.
+func catalogueAnyChanged(planned, prior []attr.Value) bool {
+	for index := range planned {
+		if planned[index].IsUnknown() || !planned[index].Equal(prior[index]) {
+			return true
+		}
+	}
+	return false
 }
 
 // catalogueWaitWhileProvisioning polls read until the object leaves the
@@ -126,10 +145,16 @@ func (vaultResource *backupVaultResource) Schema(_ context.Context, _ resource.S
 			"through. Either registers a bucket the organisation already has (`endpoint`, `bucket` and a key pair: " +
 			"`ankra backup vaults create`) or has Ankra create the bucket on a provider credential (`credential_id` and " +
 			"`region`: `ankra backup vaults provision`, after which Terraform waits for the bucket to be ready).\n\n" +
-			"The platform has no update for a vault, so changing any setting replaces it; the platform refuses to delete a " +
-			"vault that holds the state a stopped cluster needs to start again. Keys are never returned, so a key changed " +
-			"outside Terraform is not detected. Vaults are scoped to the provider's project. Requires the organisation's " +
-			"`backups` feature.",
+			"**Replacing a vault is not harmless.** The platform has no update for a vault, so changing any setting (even " +
+			"`name`) replaces it, and a replacement deletes the old vault the way destroy does:\n\n" +
+			"- with `destroy_provider_resources = true`, the provisioned bucket is emptied and deleted, with every backup in " +
+			"it. Terraform therefore refuses to plan a replacement while state holds `true`: set it to `false` and apply first.\n" +
+			"- a bring-your-own vault loses the migration import dumps it uploaded into your bucket and the keys Ankra " +
+			"stored, and stack backup policies keep pointing at the old vault ID. Terraform therefore refuses to change the " +
+			"keys of a bring-your-own vault; the platform cannot rotate them in place.\n\n" +
+			"The platform refuses to delete a vault that holds the state a stopped cluster needs to start again. Keys are " +
+			"never returned, so a key changed outside Terraform is not detected. Vaults are scoped to the provider's " +
+			"project. Requires the organisation's `backups` feature.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the vault.",
@@ -197,9 +222,10 @@ func (vaultResource *backupVaultResource) Schema(_ context.Context, _ resource.S
 				PlanModifiers:       []planmodifier.String{catalogueReplaceUnlessImported()},
 			},
 			"destroy_provider_resources": schema.BoolAttribute{
-				MarkdownDescription: "On destroy, also empty and delete the bucket Ankra provisioned, with everything in it. Defaults " +
-					"to `false`, which only forgets the vault and leaves the bucket on the provider. Only valid with `credential_id`. " +
-					"A vault destroyed while still provisioning is always torn down.",
+				MarkdownDescription: "On destroy **or replacement**, also empty and delete the bucket Ankra provisioned, with " +
+					"every backup in it. Defaults to `false`, which only forgets the vault and leaves the bucket on the provider. " +
+					"Only valid with `credential_id`. While it is `true` in state, Terraform refuses to plan a replacement. A vault " +
+					"destroyed while still provisioning is always torn down.",
 				Optional: true,
 				Computed: true,
 				Default:  booldefault.StaticBool(false),
@@ -266,6 +292,40 @@ func (vaultResource *backupVaultResource) ValidateConfig(ctx context.Context, re
 	if config.DestroyProviderResources.ValueBool() {
 		response.Diagnostics.AddAttributeError(path.Root("destroy_provider_resources"), "Bucket not provisioned by Ankra",
 			"destroy_provider_resources only applies to a vault Ankra provisioned; the platform refuses it for an existing bucket.")
+	}
+}
+
+// ModifyPlan refuses the replacements that would destroy data: any
+// replacement while destroy_provider_resources is true, and a key change on a
+// bring-your-own vault.
+func (vaultResource *backupVaultResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state backupVaultModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	isKeyChanged := catalogueWriteOnlyChanged(plan.AccessKeyID, state.AccessKeyID) ||
+		catalogueWriteOnlyChanged(plan.SecretAccessKey, state.SecretAccessKey)
+	if isKeyChanged && state.CredentialID.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("access_key_id"), "Keys of a bring-your-own vault cannot change in place",
+			"The platform has no way to update a vault's keys, so Terraform would replace the vault. Replacing a "+
+				"bring-your-own vault deletes the migration import dumps it uploaded into your bucket, drops the keys Ankra "+
+				"stored, and leaves stack backup policies pointing at the old vault ID. Keep the old keys valid and in "+
+				"configuration, or destroy the vault deliberately and create a new one.")
+		return
+	}
+	isReplaced := isKeyChanged || catalogueAnyChanged(
+		[]attr.Value{plan.Name, plan.CredentialID, plan.Provider, plan.Endpoint, plan.Region, plan.Bucket, plan.PathStyle},
+		[]attr.Value{state.Name, state.CredentialID, state.Provider, state.Endpoint, state.Region, state.Bucket, state.PathStyle})
+	if isReplaced && state.DestroyProviderResources.ValueBool() {
+		response.Diagnostics.AddAttributeError(path.Root("destroy_provider_resources"), "Replacement would delete the bucket",
+			"This change replaces the vault, and destroy_provider_resources is true in state, so the replacement would empty "+
+				"and delete the provisioned bucket with every backup in it. Set destroy_provider_resources = false and apply "+
+				"first, then make this change.")
 	}
 }
 

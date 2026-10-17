@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -81,7 +82,11 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 		if channel == "" {
 			channel = "stable"
 		}
-		version := map[string]any{"id": nextIdentifier("vvvvvvvv"), "version": number, "channel": channel, "changelog": body["changelog"],
+		changelog := body["changelog"]
+		if changelog == "" {
+			changelog = nil
+		}
+		version := map[string]any{"id": nextIdentifier("vvvvvvvv"), "version": number, "channel": channel, "changelog": changelog,
 			"created_at": "2026-10-17T00:00:00Z", "deprecation": nil, "spec": map[string]any{}, "parameters": []any{}}
 		fake.versions[profileID] = append(fake.versions[profileID], version)
 		fake.profiles[profileID]["latest_version"] = number
@@ -260,7 +265,8 @@ func newStackProfileFake(t *testing.T) *stackProfileFake {
 			return
 		}
 		_, body := decode(request)
-		slug, _ := body["organisation_slug"].(string)
+		requestedSlug, _ := body["organisation_slug"].(string)
+		slug := strings.ToLower(requestedSlug)
 		organisationID, known := fake.organisations[slug]
 		if !known {
 			notFound(writer, "Organisation not found")
@@ -357,12 +363,12 @@ resource "ankra_stack_profile_version" "second" {
   profile_id        = ankra_stack_profile.platform.id
   source_cluster_id = "c1111111-0000-0000-0000-000000000001"
   stack_name        = "platform"
-  changelog         = "bump cert-manager"
+  changelog         = ""
 }
 
 resource "ankra_stack_profile_share" "partner" {
   profile_id        = ankra_stack_profile.platform.id
-  organisation_slug = "partner-org"
+  organisation_slug = "Partner-Org"
 }
 
 resource "ankra_stack_profile_logo" "logo" {
@@ -474,7 +480,7 @@ resource "ankra_stack_profile_logo" "logo" {
 					return fake.onlyProfileID() + "/2", nil
 				},
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"source_cluster_id", "stack_name", "include_addon_configurations"},
+				ImportStateVerifyIgnore: []string{"source_cluster_id", "stack_name", "include_addon_configurations", "changelog"},
 			},
 			{
 				ResourceName: "ankra_stack_profile_share.partner",
@@ -550,7 +556,8 @@ resource "ankra_stack_profile_version" "second" {
   deprecation       = { reason = "critical_bug" }
 }
 `,
-			ExpectError: regexp.MustCompile(`current version cannot be deprecated`),
+			PlanOnly:    true,
+			ExpectError: regexp.MustCompile(`A new version cannot be deprecated`),
 		}},
 	})
 }

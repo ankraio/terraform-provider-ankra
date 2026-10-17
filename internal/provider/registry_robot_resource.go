@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -96,7 +97,8 @@ func (robotResource *registryRobotResource) Schema(_ context.Context, _ resource
 			},
 			"scope": schema.StringAttribute{
 				MarkdownDescription: "Preset grants: `push` (push and pull) or `pull`. Conflicts with `permissions`. When neither is set the " +
-					"platform mints a push robot; when `permissions` is set the platform reports `custom` here.",
+					"platform mints a push robot. When `permissions` is set the platform reports the preset they amount to " +
+					"(`push` or `pull`), or `custom` when they are neither.",
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()},
@@ -104,16 +106,20 @@ func (robotResource *registryRobotResource) Schema(_ context.Context, _ resource
 			},
 			"permissions": schema.SetAttribute{
 				MarkdownDescription: "The robot's own grants, written `resource:action` (see `ankra registry robots permissions`). " +
-					"Conflicts with `scope`. Grants beyond push and pull need the `credentials.reveal` permission.",
+					"Conflicts with `scope`. Grants beyond push and pull need the `credentials.reveal` permission. The platform " +
+					"normalises the selection (lower case, `repository:pull` added to `repository:push`); a configured set that " +
+					"normalises to what the platform holds is kept as written.",
 				ElementType:   types.StringType,
 				Optional:      true,
 				Computed:      true,
 				PlanModifiers: []planmodifier.Set{setplanmodifier.UseStateForUnknown(), setplanmodifier.RequiresReplace()},
 			},
 			"description": schema.StringAttribute{
-				MarkdownDescription: "Free-text description. Changing it replaces the robot.",
-				Optional:            true,
-				PlanModifiers:       replaceString,
+				MarkdownDescription: "Free-text description, at most 200 characters, without leading or trailing whitespace (the " +
+					"platform trims it). Changing it replaces the robot.",
+				Optional:      true,
+				PlanModifiers: replaceString,
+				Validators:    []validator.String{catalogueRobotDescriptionValidator{}},
 			},
 			"expires_in_days": schema.Int64Attribute{
 				MarkdownDescription: "Days until the registry stops honouring the robot. Unset is a robot that never expires. The platform " +
@@ -220,7 +226,7 @@ func (robotResource *registryRobotResource) ModifyPlan(ctx context.Context, requ
 	var plan, state registryRobotModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
-	if response.Diagnostics.HasError() || plan.RotationTriggers.Equal(state.RotationTriggers) {
+	if response.Diagnostics.HasError() || registryRotationTriggersEqual(plan.RotationTriggers, state.RotationTriggers) {
 		return
 	}
 	plan.Secret = types.StringUnknown()
@@ -309,7 +315,7 @@ func (robotResource *registryRobotResource) Update(ctx context.Context, request 
 		return
 	}
 
-	if !plan.RotationTriggers.Equal(state.RotationTriggers) {
+	if !registryRotationTriggersEqual(plan.RotationTriggers, state.RotationTriggers) {
 		rotated, err := apiClient.RotateRegistryRobotSecret(ctx, state.Name.ValueString())
 		if err != nil {
 			response.Diagnostics.AddError("Unable to rotate registry robot secret", err.Error())
@@ -358,7 +364,9 @@ func registryRobotToState(robot *client.RegistryRobot, state *registryRobotModel
 		state.Project = optionalString(robot.Project)
 	}
 	state.Scope = optionalString(robot.Scope)
-	state.Permissions = registrySetFromStrings(robot.Permissions, diagnostics)
+	if !registryRobotPermissionsMatch(state.Permissions, robot.Permissions) {
+		state.Permissions = registrySetFromStrings(robot.Permissions, diagnostics)
+	}
 	state.Description = optionalString(robot.Description)
 	state.Registry = optionalString(robot.Registry)
 	state.AdminCredentialName = optionalString(robot.AdminCredentialName)
@@ -399,3 +407,55 @@ func registrySetFromStrings(values []string, diagnostics *diag.Diagnostics) type
 	diagnostics.Append(setDiagnostics...)
 	return set
 }
+
+// registryRotationTriggersEqual compares two trigger maps, reading a null map
+// and an empty one as the same: neither asks for a rotation.
+func registryRotationTriggersEqual(left, right types.Map) bool {
+	isLeftEmpty := left.IsNull() || (!left.IsUnknown() && len(left.Elements()) == 0)
+	isRightEmpty := right.IsNull() || (!right.IsUnknown() && len(right.Elements()) == 0)
+	if isLeftEmpty && isRightEmpty {
+		return true
+	}
+	return left.Equal(right)
+}
+
+// registryRobotPermissionsMatch reports whether the configured grants in state
+// normalise to the grants the platform holds. The platform lower-cases and
+// trims each grant, adds repository:pull to a selection holding
+// repository:push, and deduplicates (registry_robot_permissions.go in the
+// organisation usecase), so a configuration written differently still names
+// the same robot and must not plan a replacement.
+func registryRobotPermissionsMatch(configured types.Set, held []string) bool {
+	if configured.IsNull() || configured.IsUnknown() {
+		return false
+	}
+	selected := map[string]bool{}
+	for _, element := range configured.Elements() {
+		text, ok := element.(types.String)
+		if !ok || text.IsNull() || text.IsUnknown() {
+			return false
+		}
+		selected[strings.ToLower(strings.TrimSpace(text.ValueString()))] = true
+	}
+	if selected[registryRobotPermissionPush] {
+		selected[registryRobotPermissionPull] = true
+	}
+	heldSet := map[string]bool{}
+	for _, permission := range held {
+		heldSet[permission] = true
+	}
+	if len(heldSet) != len(selected) {
+		return false
+	}
+	for permission := range selected {
+		if !heldSet[permission] {
+			return false
+		}
+	}
+	return true
+}
+
+const (
+	registryRobotPermissionPull = "repository:pull"
+	registryRobotPermissionPush = "repository:push"
+)

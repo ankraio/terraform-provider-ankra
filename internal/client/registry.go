@@ -227,17 +227,18 @@ func (client *Client) GetRegistryRetention(ctx context.Context) (*RegistryRetent
 }
 
 // SetRegistryRetention saves the policy and rules and answers the stored
-// retention.
-func (client *Client) SetRegistryRetention(ctx context.Context, request RegistryRetentionSet) (*RegistryRetention, error) {
+// retention, and why the registry did not apply it at once when it did not.
+func (client *Client) SetRegistryRetention(ctx context.Context, request RegistryRetentionSet) (*RegistryRetention, *string, error) {
 	if request.Rules == nil {
 		request.Rules = []RegistryRetentionRule{}
 	}
 	var envelope registryRetentionSetEnvelope
 	if err := client.doRequest(ctx, http.MethodPut, registryRetentionPath, request, &envelope); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if envelope.Retention == nil {
-		return client.GetRegistryRetention(ctx)
+		retention, err := client.GetRegistryRetention(ctx)
+		return retention, envelope.HarborApplyError, err
 	}
-	return envelope.Retention, nil
+	return envelope.Retention, envelope.HarborApplyError, nil
 }

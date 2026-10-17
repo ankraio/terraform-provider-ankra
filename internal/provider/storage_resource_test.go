@@ -321,6 +321,49 @@ data "ankra_backup_vaults" "all" {
 	})
 }
 
+// TestAccStorageRefusesDestructiveReplacement pins the data-loss guards: a
+// rename while destroy_provider_resources is true in state, and a key change
+// on a bring-your-own vault, fail at plan instead of deleting a bucket or the
+// vault's import dumps.
+func TestAccStorageRefusesDestructiveReplacement(t *testing.T) {
+	storageFastPolling(t)
+	fake := newStorageFake(t)
+	config := func(vaultName, bucketName, secret string) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_backup_vault" "own" {
+  name              = "production-backups"
+  endpoint          = "https://fsn1.your-objectstorage.com"
+  bucket            = "acme-backups"
+  access_key_id     = "AKIA123"
+  secret_access_key = %q
+}
+
+resource "ankra_backup_vault" "provisioned" {
+  name                       = %q
+  credential_id              = "11111111-0000-0000-0000-000000000001"
+  region                     = "europe-1"
+  destroy_provider_resources = true
+}
+
+resource "ankra_object_storage_bucket" "assets" {
+  name                       = %q
+  credential_id              = "22222222-0000-0000-0000-000000000002"
+  region                     = "fsn1"
+  destroy_provider_resources = true
+}
+`, secret, vaultName, bucketName)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config("offsite", "assets", "s3cret")},
+			{Config: config("offsite-renamed", "assets", "s3cret"), PlanOnly: true, ExpectError: regexp.MustCompile(`Replacement would delete the bucket`)},
+			{Config: config("offsite", "assets-renamed", "s3cret"), PlanOnly: true, ExpectError: regexp.MustCompile(`Replacement would delete the bucket`)},
+			{Config: config("offsite", "assets", "rotated"), PlanOnly: true, ExpectError: regexp.MustCompile(`Keys of a bring-your-own vault cannot change in place`)},
+		},
+	})
+}
+
 // TestAccBackupVaultStaysInItsProject pins project scoping: a vault created
 // in one project is not visible from another, so moving the provider to
 // another project plans a new vault there instead of adopting anything.

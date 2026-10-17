@@ -133,7 +133,7 @@ func newRegistryFake(t *testing.T) *registryFake {
 		scope, permissions := "push", []string{"repository:pull", "repository:push"}
 		switch {
 		case len(body.Permissions) > 0:
-			scope, permissions = "custom", body.Permissions
+			scope, permissions = registryFakeNormalisePermissions(body.Permissions)
 		case body.Scope != nil && *body.Scope == "pull":
 			scope, permissions = "pull", []string{"repository:pull"}
 		}
@@ -361,6 +361,8 @@ func TestAccRegistryRobotRejectsInvalidConfigAtPlan(t *testing.T) {
 		`name = "ok-name"
   scope = "push"
   permissions = ["repository:delete"]`,
+		`name = "ok-name"
+  description = "trailing "`,
 	} {
 		resource.Test(t, resource.TestCase{
 			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
@@ -417,8 +419,8 @@ resource "ankra_registry_retention" "this" {
 					resource.TestCheckResourceAttr("ankra_registry_retention.this", "default_in_force.keep_days", "30"),
 					func(_ *terraform.State) error {
 						body := fake.retentionBodies[0]
-						if _, present := body["expected_version"]; present {
-							return fmt.Errorf("the first save sent an expected_version it never read")
+						if string(body["expected_version"]) != `"version-0"` {
+							return fmt.Errorf("the first save sent expected_version %s, want the version it read before creating", body["expected_version"])
 						}
 						if !strings.Contains(string(body["rules"]), `"ankra-ci/**"`) {
 							return fmt.Errorf("create sent rules %s", body["rules"])
@@ -499,4 +501,93 @@ func (fake *registryFake) serialHandle(pattern string, handler http.HandlerFunc)
 		defer fake.serial.Unlock()
 		handler(writer, request)
 	})
+}
+
+// registryFakeNormalisePermissions mirrors normaliseRegistryRobotPermissions:
+// lower-case and trim each grant, add repository:pull to push, deduplicate,
+// answer in catalogue order, and name the preset the result amounts to.
+func registryFakeNormalisePermissions(requested []string) (string, []string) {
+	catalogue := []string{"repository:pull", "repository:push", "repository:delete", "artifact:read", "artifact:delete", "tag:create", "tag:delete"}
+	selected := map[string]bool{}
+	for _, permission := range requested {
+		selected[strings.ToLower(strings.TrimSpace(permission))] = true
+	}
+	if selected["repository:push"] {
+		selected["repository:pull"] = true
+	}
+	ordered := []string{}
+	for _, permission := range catalogue {
+		if selected[permission] {
+			ordered = append(ordered, permission)
+		}
+	}
+	switch strings.Join(ordered, ",") {
+	case "repository:pull":
+		return "pull", ordered
+	case "repository:pull,repository:push":
+		return "push", ordered
+	}
+	return "custom", ordered
+}
+
+// TestAccRegistryRobotPermissionsConverge pins the platform's normalisation:
+// a grant list written in another case, or without the repository:pull the
+// platform adds to push, must neither fail the apply with an inconsistent
+// result nor plan a replacement (which would revoke the login) afterwards.
+func TestAccRegistryRobotPermissionsConverge(t *testing.T) {
+	fake := newRegistryFake(t)
+	config := fake.providerBlock() + `
+resource "ankra_registry_robot" "ci" {
+  name              = "ci-pusher"
+  permissions       = ["Repository:Push", "artifact:delete"]
+  rotation_triggers = {}
+}
+`
+	withoutTriggers := fake.providerBlock() + `
+resource "ankra_registry_robot" "ci" {
+  name        = "ci-pusher"
+  permissions = ["Repository:Push", "artifact:delete"]
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_registry_robot.ci", "permissions.#", "2"),
+					resource.TestCheckResourceAttr("ankra_registry_robot.ci", "scope", "custom"),
+				),
+			},
+			{
+				// Dropping an empty trigger map is not a rotation.
+				Config: withoutTriggers,
+				Check: func(_ *terraform.State) error {
+					if fake.rotations != 0 || len(fake.robotBodies) != 1 {
+						return fmt.Errorf("got %d rotations and %d creates, want none and one", fake.rotations, len(fake.robotBodies))
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+func TestAccRegistryRetentionRefusesToOverwrite(t *testing.T) {
+	fake := newRegistryFake(t)
+	fake.retention = registryFakeRetention{defaultPolicy: map[string]any{"keep_days": 90, "keep_latest": 20}, version: 3}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: fake.providerBlock() + `
+resource "ankra_registry_retention" "this" {
+  default = { keep_days = 7, keep_latest = 1 }
+}
+`,
+			ExpectError: regexp.MustCompile(`Registry retention already set`),
+		}},
+	})
+	if len(fake.retentionBodies) != 0 || fake.retention.defaultPolicy["keep_days"] != 90 {
+		t.Errorf("create overwrote the organisation's existing retention")
+	}
 }

@@ -66,7 +66,8 @@ func (shareResource *stackProfileShareResource) Schema(_ context.Context, _ reso
 				PlanModifiers:       replaceString,
 			},
 			"organisation_slug": schema.StringAttribute{
-				MarkdownDescription: "Slug of the organisation to share with.",
+				MarkdownDescription: "Slug of the organisation to share with. The platform matches it case-insensitively; " +
+					"state keeps the configured spelling.",
 				Required:            true,
 				PlanModifiers:       replaceString,
 			},
@@ -176,7 +177,7 @@ func stackProfileShareFind(shares []client.StackProfileShare, state stackProfile
 			continue
 		}
 		if state.ID.IsNull() || state.ID.IsUnknown() {
-			if *share.OrganisationSlug == state.OrganisationSlug.ValueString() {
+			if strings.EqualFold(*share.OrganisationSlug, state.OrganisationSlug.ValueString()) {
 				return share
 			}
 			continue
@@ -190,7 +191,7 @@ func stackProfileShareFind(shares []client.StackProfileShare, state stackProfile
 
 func stackProfileShareToState(share *client.StackProfileShare, state *stackProfileShareModel) {
 	state.ID = types.StringValue(share.ID)
-	if share.OrganisationSlug != nil {
+	if share.OrganisationSlug != nil && !strings.EqualFold(*share.OrganisationSlug, state.OrganisationSlug.ValueString()) {
 		state.OrganisationSlug = types.StringValue(*share.OrganisationSlug)
 	}
 	state.OrganisationID = types.StringValue(share.OrganisationID)

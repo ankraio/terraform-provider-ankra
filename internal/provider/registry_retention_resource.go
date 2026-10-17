@@ -7,11 +7,13 @@ import (
 	"context"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -85,7 +87,8 @@ func (retentionResource *registryRetentionResource) Schema(_ context.Context, _ 
 			"storage down itself. One per organisation. The counterpart of `ankra registry storage retention set` and " +
 			"`ankra registry storage retention rule add|remove`.\n\n" +
 			"This resource owns the whole policy and rule list: rules added outside Terraform show as drift and are removed " +
-			"on the next apply. Every save sends the version Terraform last read, so a change someone made in between is " +
+			"on the next apply. Creating it refuses to overwrite a policy or rules the organisation already set; import " +
+			"them instead. Every save sends the version Terraform last read, so a change someone made in between is " +
 			"refused instead of overwritten. Destroying the resource restores the platform default and removes every rule.\n\n" +
 			"Retention deletes images. Two protections hold whatever is set: at least the newest image of every repository " +
 			"is kept, and an organisation-set policy also keeps every image pulled within the last week.",
@@ -113,8 +116,9 @@ func (retentionResource *registryRetentionResource) Schema(_ context.Context, _ 
 							Required: true,
 						},
 						"application_id": schema.StringAttribute{
-							MarkdownDescription: "Application the rule was made for, if any.",
+							MarkdownDescription: "Application the rule was made for, if any: a lower-case UUID.",
 							Optional:            true,
+							Validators:          []validator.String{catalogueLowerCaseUUIDValidator},
 						},
 						"keep_days":   registryRetentionPolicyAttributes(false)["keep_days"],
 						"keep_latest": registryRetentionPolicyAttributes(false)["keep_latest"],
@@ -154,11 +158,23 @@ func (retentionResource *registryRetentionResource) Create(ctx context.Context, 
 		return
 	}
 
-	retention, err := apiClient.SetRegistryRetention(ctx, registryRetentionRequest(&plan, nil))
+	existing, err := apiClient.GetRegistryRetention(ctx)
+	if err != nil {
+		response.Diagnostics.AddError("Unable to read registry retention", err.Error())
+		return
+	}
+	if existing.Source == client.RegistryRetentionSourceOrganisation || len(existing.Rules) > 0 {
+		response.Diagnostics.AddError("Registry retention already set",
+			"The organisation already has its own retention policy or rules, and creating this resource would overwrite "+
+				"them. Import it instead: terraform import <address> "+registryRetentionID)
+		return
+	}
+	retention, harborApplyError, err := apiClient.SetRegistryRetention(ctx, registryRetentionRequest(&plan, stringPointer(types.StringValue(existing.Version))))
 	if err != nil {
 		response.Diagnostics.AddError("Unable to set registry retention", err.Error())
 		return
 	}
+	registryRetentionHarborWarning(harborApplyError, &response.Diagnostics)
 	registryRetentionToState(retention, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
@@ -195,11 +211,12 @@ func (retentionResource *registryRetentionResource) Update(ctx context.Context, 
 		return
 	}
 
-	retention, err := apiClient.SetRegistryRetention(ctx, registryRetentionRequest(&plan, stringPointer(state.Version)))
+	retention, harborApplyError, err := apiClient.SetRegistryRetention(ctx, registryRetentionRequest(&plan, stringPointer(state.Version)))
 	if err != nil {
 		response.Diagnostics.AddError("Unable to set registry retention", err.Error())
 		return
 	}
+	registryRetentionHarborWarning(harborApplyError, &response.Diagnostics)
 	registryRetentionToState(retention, &plan)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
@@ -215,7 +232,7 @@ func (retentionResource *registryRetentionResource) Delete(ctx context.Context, 
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if _, err := apiClient.SetRegistryRetention(ctx, client.RegistryRetentionSet{Rules: []client.RegistryRetentionRule{}}); err != nil {
+	if _, _, err := apiClient.SetRegistryRetention(ctx, client.RegistryRetentionSet{Rules: []client.RegistryRetentionRule{}}); err != nil {
 		response.Diagnostics.AddError("Unable to restore the default registry retention", err.Error())
 	}
 }
@@ -224,6 +241,16 @@ func (retentionResource *registryRetentionResource) Delete(ctx context.Context, 
 // organisation.
 func (retentionResource *registryRetentionResource) ImportState(ctx context.Context, _ resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), registryRetentionID)...)
+}
+
+// registryRetentionHarborWarning surfaces a save the registry did not apply
+// at once: the platform stored it and retries on its next pass.
+func registryRetentionHarborWarning(harborApplyError *string, diagnostics *diag.Diagnostics) {
+	if harborApplyError != nil && *harborApplyError != "" {
+		diagnostics.AddWarning("Registry retention saved but not yet applied",
+			"The platform stored the retention, but the registry did not accept it yet; the platform applies it on its "+
+				"next pass. The registry answered: "+*harborApplyError)
+	}
 }
 
 func registryRetentionRequest(plan *registryRetentionModel, expectedVersion *string) client.RegistryRetentionSet {

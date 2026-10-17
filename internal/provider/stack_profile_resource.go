@@ -67,8 +67,11 @@ func (profileResource *stackProfileResource) Schema(_ context.Context, _ resourc
 			"Publish further versions with `ankra_stack_profile_version`, share the profile with " +
 			"`ankra_stack_profile_share`, and upload a logo with `ankra_stack_profile_logo`. `source_cluster_id`, " +
 			"`stack_name`, `include_addon_configurations` and `changelog` only shape version 1: they are not read back, and " +
-			"changing them replaces the profile, deleting every version. Builder drafts and suggestions are interactive " +
-			"editing sessions and are not managed here.",
+			"changing the first three replaces the profile. Builder drafts and suggestions are interactive editing sessions " +
+			"and are not managed here.\n\n" +
+			"**Replacing or destroying a profile deletes it for everyone**: every version goes, and the profile disappears for " +
+			"every organisation it is shared with and, when `visibility = \"public\"`, from the public catalogue. Deployments " +
+			"already made from it keep running.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the profile.",
@@ -125,13 +128,13 @@ func (profileResource *stackProfileResource) Schema(_ context.Context, _ resourc
 				PlanModifiers:       []planmodifier.Bool{catalogueBoolReplaceUnlessImported()},
 			},
 			"changelog": schema.StringAttribute{
-				MarkdownDescription: "Changelog of version 1.",
-				Optional:            true,
-				PlanModifiers:       createOnly,
+				MarkdownDescription: "Changelog of version 1. Only used when the profile is created; a later change is " +
+					"kept in state and sent nowhere, because a published version is immutable.",
+				Optional: true,
 			},
 			"current_version": schema.Int64Attribute{
 				MarkdownDescription: "The version new deployments get. Publishing a version makes it current; set this to pin " +
-					"another one. The platform refuses a deprecated version.",
+					"another one. The platform refuses a deprecated version, and a new profile only has version 1.",
 				Optional: true,
 				Computed: true,
 			},
@@ -189,7 +192,18 @@ func (profileResource *stackProfileResource) Create(ctx context.Context, request
 	for _, warning := range created.Warnings {
 		response.Diagnostics.AddWarning("Stack profile created with a warning", warning)
 	}
+	requestedVersion := plan.CurrentVersion
 	stackProfileToState(created.Profile, &plan)
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	if response.Diagnostics.HasError() || requestedVersion.IsUnknown() || requestedVersion.IsNull() ||
+		requestedVersion.ValueInt64() == created.Profile.CurrentVersion {
+		return
+	}
+	if err := apiClient.SetStackProfileCurrentVersion(ctx, created.Profile.ID, requestedVersion.ValueInt64()); err != nil {
+		response.Diagnostics.AddError("Unable to set the stack profile's current version", err.Error())
+		return
+	}
+	plan.CurrentVersion = requestedVersion
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 

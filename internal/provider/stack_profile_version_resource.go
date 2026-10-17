@@ -28,6 +28,7 @@ var (
 	_ resource.Resource                = (*stackProfileVersionResource)(nil)
 	_ resource.ResourceWithConfigure   = (*stackProfileVersionResource)(nil)
 	_ resource.ResourceWithImportState = (*stackProfileVersionResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*stackProfileVersionResource)(nil)
 )
 
 type stackProfileVersionResource struct {
@@ -110,13 +111,14 @@ func (versionResource *stackProfileVersionResource) Schema(_ context.Context, _ 
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 			},
 			"changelog": schema.StringAttribute{
-				MarkdownDescription: "What changed in this version.",
-				Optional:            true,
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				MarkdownDescription: "What changed in this version. Only sent when the version is published: a later change " +
+					"is kept in state and does not publish another version, because a published version is immutable.",
+				Optional: true,
 			},
 			"deprecation": schema.SingleNestedAttribute{
 				MarkdownDescription: "Withdraws the version from new deployments. Unset clears it. The platform refuses to " +
-					"deprecate the profile's current version.",
+					"deprecate the profile's current version, which a newly published version always is, so set this only " +
+					"after another version has been made current.",
 				Optional: true,
 				Attributes: map[string]schema.Attribute{
 					"reason": schema.StringAttribute{
@@ -151,6 +153,23 @@ func (versionResource *stackProfileVersionResource) Schema(_ context.Context, _ 
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 		},
+	}
+}
+
+// ModifyPlan refuses a deprecation on a version about to be published: the
+// version becomes current, and the platform refuses to deprecate the current
+// version.
+func (versionResource *stackProfileVersionResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.Plan.Raw.IsNull() || !request.State.Raw.IsNull() {
+		return
+	}
+	var deprecation *stackProfileVersionDeprecationModel
+	response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root("deprecation"), &deprecation)...)
+	if deprecation != nil {
+		response.Diagnostics.AddAttributeError(path.Root("deprecation"), "A new version cannot be deprecated",
+			"Publishing makes this version the profile's current version, and the platform refuses to deprecate the "+
+				"current version. Publish it first, make another version current with the profile's current_version, "+
+				"then add the deprecation.")
 	}
 }
 
@@ -307,9 +326,11 @@ func stackProfileVersionToState(version *client.StackProfileVersion, state *stac
 	state.VersionID = types.StringValue(version.ID)
 	state.CreatedAt = types.StringValue(version.CreatedAt)
 	state.Channel = types.StringValue(version.Channel)
-	state.Changelog = types.StringNull()
-	if version.Changelog != nil {
-		state.Changelog = optionalString(*version.Changelog)
+	if state.Changelog.IsNull() || state.Changelog.IsUnknown() {
+		state.Changelog = types.StringNull()
+		if version.Changelog != nil {
+			state.Changelog = optionalString(*version.Changelog)
+		}
 	}
 	if version.Deprecation == nil {
 		state.Deprecation = nil

@@ -13,6 +13,7 @@ import (
 	"net/textproto"
 	"net/url"
 	"strconv"
+	"time"
 )
 
 const stackProfilesPath = "/api/v1/org/stack-profiles"
@@ -314,20 +315,55 @@ type stackProfileLogoResponse struct {
 	contentType string
 }
 
-// stackProfileLogoRequest is one round trip on the logo route, which takes a
-// multipart upload and answers raw image bytes, neither of which doRequest
-// speaks. It is not retried: a single upload or download is cheap to repeat
-// from Terraform.
+// stackProfileLogoRequest is doRequest for the logo route, which takes a
+// multipart upload and answers raw image bytes rather than JSON. It keeps the
+// shared request contract: it refuses while a scope argument is unresolved,
+// sends the organisation and project scope headers, and retries exactly what
+// doRequest retries (never a non-idempotent method on a server error).
 func (client *Client) stackProfileLogoRequest(ctx context.Context, method, path string, body []byte, contentType string) (*stackProfileLogoResponse, error) {
+	if client.UnresolvedScope != "" {
+		return nil, fmt.Errorf("%s is not known until apply; refusing to call %s %s without it", client.UnresolvedScope, method, path)
+	}
+	attempts := client.MaxRetries
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastError error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		response, statusCode, err := client.stackProfileLogoAttempt(ctx, method, path, body, contentType)
+		if err == nil && isAcceptableStatus(statusCode, nil) {
+			return response, nil
+		}
+		var responseBytes []byte
+		if err != nil {
+			lastError = err
+		} else {
+			responseBytes = response.body
+			lastError = &APIError{Method: method, Path: path, StatusCode: statusCode, Body: string(responseBytes)}
+		}
+		if attempt == attempts || !isRetryable(method, statusCode, err) {
+			return nil, lastError
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(retryDelay(attempt, responseBytes, statusCode)):
+		}
+	}
+	return nil, lastError
+}
+
+func (client *Client) stackProfileLogoAttempt(ctx context.Context, method, path string, body []byte, contentType string) (*stackProfileLogoResponse, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
 	}
 	request, err := http.NewRequestWithContext(ctx, method, client.BaseURL+path, bodyReader)
 	if err != nil {
-		return nil, fmt.Errorf("building request: %w", err)
+		return nil, 0, fmt.Errorf("building request: %w", err)
 	}
 	request.Header.Set("Authorization", "Bearer "+client.Token)
+	request.Header.Set("Accept", "image/png, image/jpeg, image/webp, application/json")
 	if contentType != "" {
 		request.Header.Set("Content-Type", contentType)
 	}
@@ -337,17 +373,17 @@ func (client *Client) stackProfileLogoRequest(ctx context.Context, method, path 
 	if client.OrganisationID != "" {
 		request.Header.Set(OrganisationHeader, client.OrganisationID)
 	}
+	if client.ProjectID != "" {
+		request.Header.Set(ProjectHeader, client.ProjectID)
+	}
 	response, err := client.HTTPClient.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("performing request: %w", err)
+		return nil, 0, fmt.Errorf("performing request: %w", err)
 	}
 	defer response.Body.Close()
 	responseBytes, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBodySize))
 	if err != nil {
-		return nil, fmt.Errorf("reading response body: %w", err)
+		return nil, response.StatusCode, fmt.Errorf("reading response body: %w", err)
 	}
-	if response.StatusCode < 200 || response.StatusCode > 299 {
-		return nil, &APIError{Method: method, Path: path, StatusCode: response.StatusCode, Body: string(responseBytes)}
-	}
-	return &stackProfileLogoResponse{body: responseBytes, contentType: response.Header.Get("Content-Type")}, nil
+	return &stackProfileLogoResponse{body: responseBytes, contentType: response.Header.Get("Content-Type")}, response.StatusCode, nil
 }
