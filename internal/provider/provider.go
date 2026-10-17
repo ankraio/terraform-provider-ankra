@@ -24,7 +24,7 @@ import (
 const (
 	tokenEnvironmentVariable          = "ANKRA_TOKEN"
 	baseURLEnvironmentVariable        = "ANKRA_BASE_URL"
-	organisationIDEnvironmentVariable = "ANKRA_ORGANISATION_ID"
+	organisationIDEnvironmentVariable = "ANKRA_ORG"
 	projectIDEnvironmentVariable      = "ANKRA_PROJECT_ID"
 )
 
@@ -69,7 +69,7 @@ func (providerInstance *ankraProvider) Schema(_ context.Context, _ provider.Sche
 				Optional:            true,
 			},
 			"organisation_id": schema.StringAttribute{
-				MarkdownDescription: "ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `" + client.OrganisationHeader + "` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORGANISATION_ID` environment variable. Defaults to the organisation the token is bound to.",
+				MarkdownDescription: "ID (UUID) of the organisation to act in, when the token's user belongs to more than one. Sent as the `" + client.OrganisationHeader + "` header, the same override as the CLI's `--org` flag. May also be set with the `ANKRA_ORG` environment variable, the variable the CLI reads for the same override (an ID here, not a slug). Defaults to the organisation the token is bound to.",
 				Optional:            true,
 			},
 			"project_id": schema.StringAttribute{
