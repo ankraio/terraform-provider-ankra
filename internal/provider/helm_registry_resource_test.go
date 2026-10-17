@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -28,7 +29,13 @@ type helmFake struct {
 	credentials        map[string]map[string]any
 	charts             map[string]map[string]any
 	credentialsCreated int
+	registriesCreated  int
 	isRevealDenied     bool
+	// Failure injection for the create paths: a 500 on the interval update,
+	// and on the next registry detail reads or credential listings.
+	isIntervalUpdateFailing bool
+	failingRegistryReads    int
+	failingCredentialLists  int
 }
 
 func newHelmFake(t *testing.T) *helmFake {
@@ -84,6 +91,7 @@ func newHelmFake(t *testing.T) *helmFake {
 				stored["exclude_charts"] = excludeCharts
 			}
 			fake.registries[name] = stored
+			fake.registriesCreated++
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{"errors": []any{}})
 	})
@@ -107,6 +115,11 @@ func newHelmFake(t *testing.T) *helmFake {
 		})
 	})
 	fake.handle("GET /api/v1/org/helm/registries/{name}", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.failingRegistryReads > 0 {
+			fake.failingRegistryReads--
+			writeJSON(t, writer, http.StatusInternalServerError, map[string]any{"detail": "Internal server error"})
+			return
+		}
 		stored, exists := fake.registries[request.PathValue("name")]
 		if !exists {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Unknown registry"})
@@ -130,6 +143,10 @@ func newHelmFake(t *testing.T) *helmFake {
 		}
 		var body map[string]any
 		decodeJSON(t, request, &body)
+		if fake.isIntervalUpdateFailing {
+			writeJSON(t, writer, http.StatusInternalServerError, map[string]any{"detail": "Internal server error"})
+			return
+		}
 		if len(body) != 1 || body["read_job_interval"] == nil {
 			t.Errorf("registry update sent %v; only read_job_interval is updatable", body)
 		}
@@ -163,6 +180,11 @@ func newHelmFake(t *testing.T) *helmFake {
 		writeJSON(t, writer, http.StatusOK, map[string]any{"success": true, "errors": []any{}})
 	})
 	fake.handle("GET /api/v1/org/helm/credentials", func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.failingCredentialLists > 0 {
+			fake.failingCredentialLists--
+			writeJSON(t, writer, http.StatusInternalServerError, map[string]any{"detail": "Internal server error"})
+			return
+		}
 		names := make([]string, 0, len(fake.credentials))
 		for name := range fake.credentials {
 			names = append(names, name)
@@ -523,4 +545,104 @@ func TestAccHelmRejectsInvalidConfigurationAtPlan(t *testing.T) {
 	if served := fake.served(); len(served) != 0 {
 		t.Errorf("invalid configuration reached the API: %v", served)
 	}
+}
+
+func TestAccHelmRegistryIntervalFailureDoesNotTaint(t *testing.T) {
+	fake := newHelmFake(t)
+	fake.isIntervalUpdateFailing = true
+	configuration := fake.providerBlock() + `
+resource "ankra_helm_registry" "example" {
+  name              = "example"
+  url               = "https://charts.example.com"
+  read_job_interval = 300
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The registry is created; the failed interval update is only a
+				// warning, so the registry is not tainted. The refresh after
+				// apply reads the platform's 120, so the plan is not empty.
+				Config:             configuration,
+				ExpectNonEmptyPlan: true,
+				Check: func(state *terraform.State) error {
+					if state.RootModule().Resources["ankra_helm_registry.example"].Primary.Tainted {
+						return fmt.Errorf("the registry was tainted, so the next apply would replace it")
+					}
+					if fake.registries["example"]["read_job_interval"] != float64(120) {
+						return fmt.Errorf("platform holds interval %v", fake.registries["example"]["read_job_interval"])
+					}
+					return nil
+				},
+			},
+			{
+				// The pending difference is applied as an in-place update.
+				PreConfig: func() { fake.isIntervalUpdateFailing = false },
+				Config:    configuration,
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("ankra_helm_registry.example", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_helm_registry.example", "read_job_interval", "300"),
+					func(_ *terraform.State) error {
+						if fake.registriesCreated != 1 {
+							return fmt.Errorf("the registry was recreated instead of updated in place")
+						}
+						if fake.registries["example"]["read_job_interval"] != float64(300) {
+							return fmt.Errorf("platform holds interval %v", fake.registries["example"]["read_job_interval"])
+						}
+						return nil
+					},
+				),
+			},
+		},
+	})
+}
+
+func TestAccHelmCreateReadFailureTaintsInsteadOfOrphaning(t *testing.T) {
+	fake := newHelmFake(t)
+	configuration := fake.providerBlock() + `
+resource "ankra_helm_registry_credential" "example" {
+  name     = "example-pull"
+  username = "robot"
+  password = "secret"
+}
+
+resource "ankra_helm_registry" "example" {
+  name = "example"
+  url  = "https://charts.example.com"
+}
+`
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// Both POSTs succeed and the read-back that follows fails.
+				PreConfig: func() {
+					fake.failingRegistryReads = 1
+					fake.failingCredentialLists = 1
+				},
+				Config:      configuration,
+				ExpectError: regexp.MustCompile("Unable to read Helm registry"),
+			},
+			{
+				// Without state the next apply would POST again and hit the
+				// duplicate-name refusal. With tainted state it replaces both.
+				Config: configuration,
+				Check: func(_ *terraform.State) error {
+					if fake.registriesCreated != 2 || fake.credentialsCreated != 2 {
+						return fmt.Errorf("expected each tainted object to be replaced once, got %d registry and %d credential creates",
+							fake.registriesCreated, fake.credentialsCreated)
+					}
+					if len(fake.registries) != 1 || len(fake.credentials) != 1 {
+						return fmt.Errorf("left %d registries and %d credentials", len(fake.registries), len(fake.credentials))
+					}
+					return nil
+				},
+			},
+		},
+	})
 }

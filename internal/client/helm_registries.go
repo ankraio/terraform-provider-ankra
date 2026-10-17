@@ -85,9 +85,8 @@ type helmListPagination struct {
 	TotalCount int `json:"total_count"`
 }
 
-// ConfigurationRejectedError reports a Helm registry, registry credential or
-// stack variables write the platform refused with its validation errors
-// inside a 2xx body.
+// ConfigurationRejectedError reports a Helm registry or registry credential
+// write the platform refused with its validation errors inside a 2xx body.
 type ConfigurationRejectedError struct {
 	Subject string
 	Errors  []ResourceError

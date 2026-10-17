@@ -98,6 +98,14 @@ func (credentialResource *helmRegistryCredentialResource) Create(ctx context.Con
 		return
 	}
 
+	// The credential exists from here on. State is written before the
+	// identifier is read back, so a failed read taints the credential instead
+	// of orphaning it, which would make the next apply fail on its own name.
+	plan.ID = types.StringNull()
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
 	credential, err := apiClient.FindHelmRegistryCredential(ctx, plan.Name.ValueString())
 	if err != nil {
 		response.Diagnostics.AddError("Unable to read Helm registry credential", err.Error())

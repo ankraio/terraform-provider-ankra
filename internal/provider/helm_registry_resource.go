@@ -164,6 +164,19 @@ func (registryResource *helmRegistryResource) Create(ctx context.Context, reques
 	}
 
 	desiredInterval := plan.ReadJobInterval
+	// The registry exists from here on. State is written from the plan before
+	// the read-back, so a failed read taints the registry instead of
+	// orphaning it, which would make the next apply fail on its own name.
+	plan.ID = plan.Name
+	plan.Kind = types.StringValue(client.HelmRegistryKind(plan.URL.ValueString()))
+	plan.LastSyncError = types.StringNull()
+	if plan.ReadJobInterval.IsUnknown() {
+		plan.ReadJobInterval = types.Int64Null()
+	}
+	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
 	if !registryResource.refresh(ctx, apiClient, &plan, &response.Diagnostics) {
 		return
 	}
@@ -176,9 +189,15 @@ func (registryResource *helmRegistryResource) Create(ctx context.Context, reques
 		return
 	}
 	if err := apiClient.UpdateHelmRegistry(ctx, plan.Name.ValueString(), desiredInterval.ValueInt64()); err != nil {
-		response.Diagnostics.AddError("Unable to set the Helm registry sync interval",
-			"The registry was created, but setting read_job_interval failed: "+err.Error())
-		return
+		// A warning, not an error: an error would taint the registry and the
+		// next apply would replace it, dropping its chart index. Terraform
+		// requires the configured value in state after apply, so it is
+		// recorded; the next refresh reads the platform's interval back and the
+		// plan retries the update in place.
+		response.Diagnostics.AddWarning("Unable to set the Helm registry sync interval",
+			fmt.Sprintf("The registry was created with the platform's sync interval of %d seconds, but setting read_job_interval "+
+				"to %d failed; the next plan shows the difference and applies it in place: %s",
+				plan.ReadJobInterval.ValueInt64(), desiredInterval.ValueInt64(), err.Error()))
 	}
 	plan.ReadJobInterval = desiredInterval
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)

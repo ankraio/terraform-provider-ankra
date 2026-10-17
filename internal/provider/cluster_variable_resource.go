@@ -98,7 +98,7 @@ func (variableResource *clusterVariableResource) Create(ctx context.Context, req
 		Description: stringPointer(plan.Description),
 	})
 	if err != nil {
-		response.Diagnostics.AddError("Unable to create cluster variable", err.Error())
+		response.Diagnostics.AddError("Unable to create cluster variable", clusterVariableErrorDetail(err))
 		return
 	}
 
@@ -122,7 +122,7 @@ func (variableResource *clusterVariableResource) Read(ctx context.Context, reque
 		return
 	}
 	if err != nil {
-		response.Diagnostics.AddError("Unable to read cluster variable", err.Error())
+		response.Diagnostics.AddError("Unable to read cluster variable", clusterVariableErrorDetail(err))
 		return
 	}
 	if readTargetChanged(state.ID, variable.ID) {
@@ -152,7 +152,7 @@ func (variableResource *clusterVariableResource) Update(ctx context.Context, req
 		Description: stringPointer(plan.Description),
 	})
 	if err != nil {
-		response.Diagnostics.AddError("Unable to update cluster variable", err.Error())
+		response.Diagnostics.AddError("Unable to update cluster variable", clusterVariableErrorDetail(err))
 		return
 	}
 
@@ -172,7 +172,7 @@ func (variableResource *clusterVariableResource) Delete(ctx context.Context, req
 	}
 
 	if err := apiClient.DeleteClusterVariable(ctx, state.ClusterID.ValueString(), state.Name.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete cluster variable", err.Error())
+		response.Diagnostics.AddError("Unable to delete cluster variable", clusterVariableErrorDetail(err))
 	}
 }
 
@@ -185,4 +185,15 @@ func (variableResource *clusterVariableResource) ImportState(ctx context.Context
 	}
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("cluster_id"), parts[0])...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("name"), parts[1])...)
+}
+
+// clusterVariableErrorDetail explains a cluster that is not visible: the
+// variable may still exist, so it is neither dropped from state nor reported
+// deleted, and the user has to say which of the two cases applies.
+func clusterVariableErrorDetail(err error) string {
+	if !client.IsClusterNotVisible(err) {
+		return err.Error()
+	}
+	return err.Error() + ". If the cluster belongs to another project, set project_id on the provider block. " +
+		"If the cluster was deleted, remove the variable from state with `terraform state rm`."
 }
