@@ -10,9 +10,25 @@ import (
 
 // catalogueAndStorageResources are stack profiles, backup vaults, buckets and the image registry.
 func catalogueAndStorageResources() []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{
+		NewStackProfileResource,
+		NewStackProfileVersionResource,
+		NewStackProfileShareResource,
+		NewStackProfileLogoResource,
+		NewBackupVaultResource,
+		NewObjectStorageBucketResource,
+		NewRegistryProjectResource,
+		NewRegistryRobotResource,
+		NewRegistryRetentionResource,
+	}
 }
 
 func catalogueAndStorageDataSources() []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		NewStackProfilesDataSource,
+		NewBackupVaultsDataSource,
+		NewObjectStorageBucketsDataSource,
+		NewRegistryProjectsDataSource,
+		NewRegistryRobotsDataSource,
+	}
 }

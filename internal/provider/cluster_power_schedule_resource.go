@@ -165,7 +165,7 @@ func (scheduleResource *clusterPowerScheduleResource) Read(ctx context.Context, 
 		return
 	}
 	schedule, err := apiClient.GetClusterPowerSchedule(ctx, state.ClusterID.ValueString(), state.ID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

@@ -130,7 +130,7 @@ func (keysResource *clusterSSHKeysResource) Read(ctx context.Context, request re
 		return
 	}
 	keys, err := apiClient.GetClusterSSHKeys(ctx, cluster.Kind, cluster.ID)
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

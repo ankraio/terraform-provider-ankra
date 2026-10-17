@@ -143,10 +143,11 @@ func (client *Client) UpdateHelmRegistry(ctx context.Context, name string, readJ
 		helmRegistryUpdateRequest{ReadJobInterval: readJobInterval}, nil)
 }
 
-// DeleteHelmRegistry removes a registry. A registry already gone is not an
-// error.
+// DeleteHelmRegistry removes a registry. A registry already gone is a
+// NotFound APIError: registries are project-scoped, so the caller decides
+// whether it means deleted or outside the current project.
 func (client *Client) DeleteHelmRegistry(ctx context.Context, name string) error {
-	return client.doRequest(ctx, http.MethodDelete, helmRegistriesPath+"/"+url.PathEscape(name), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, helmRegistriesPath+"/"+url.PathEscape(name), nil, nil)
 }
 
 // ListHelmRegistries returns every registry the organisation sees, the

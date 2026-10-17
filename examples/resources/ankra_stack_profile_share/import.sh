@@ -1,0 +1,2 @@
+# Shares are imported as <profile_id>/<organisation_slug>.
+terraform import ankra_stack_profile_share.partner 7b1d2c3e-4f5a-6b7c-8d9e-0f1a2b3c4d5e/partner-org

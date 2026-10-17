@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -45,6 +46,21 @@ func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *cl
 			"The provider's "+holder.client.UnresolvedScope+" depends on a value that is only known after apply. "+
 				"Requests are not sent without it, because they would act in a different organisation or project. "+
 				"Set it from a known value, or apply the resource it depends on first (-target).")
+		return nil
+	}
+	lookupContext, cancel := context.WithTimeout(context.Background(), client.DefaultTimeout)
+	defer cancel()
+	projectCount, err := holder.client.FloatingProjectCount(lookupContext)
+	if err != nil {
+		diagnostics.AddError("Unable to read the organisation's projects", err.Error())
+		return nil
+	}
+	if projectCount > 1 {
+		diagnostics.AddError("Provider project_id is required",
+			fmt.Sprintf("This organisation has %d projects and the provider sets no project_id, so the platform would scope every request to "+
+				"the project the token's user last selected in the portal. Objects in another project would then read as deleted, and "+
+				"destroy would report success while they live on. Set project_id on the provider (or ANKRA_PROJECT_ID) to the project these resources belong in.",
+				projectCount))
 		return nil
 	}
 	return holder.client
@@ -153,12 +169,106 @@ func listFromStrings(values []string) types.List {
 	return types.ListValueMust(types.StringType, elements)
 }
 
+// scopePrivateKey is the private-state key holding the organisation and
+// project a resource's object was created or last read in.
+const scopePrivateKey = "ankra_scope"
+
+type recordedScope struct {
+	OrganisationID string `json:"organisation_id"`
+	ProjectID      string `json:"project_id"`
+}
+
+type privateStateWriter interface {
+	SetKey(ctx context.Context, key string, value []byte) diag.Diagnostics
+}
+
+type privateStateReader interface {
+	GetKey(ctx context.Context, key string) ([]byte, diag.Diagnostics)
+}
+
+// trackScope records the provider's organisation and project in the
+// resource's private state. Call it at the end of Create and of every
+// successful Read, passing response.Private, so a later 404 can be told apart
+// from a scope change.
+func trackScope(ctx context.Context, apiClient *client.Client, private privateStateWriter) diag.Diagnostics {
+	if apiClient == nil || private == nil {
+		return nil
+	}
+	encoded, err := json.Marshal(recordedScope{OrganisationID: apiClient.OrganisationID, ProjectID: apiClient.ProjectID})
+	if err != nil {
+		return nil
+	}
+	return private.SetKey(ctx, scopePrivateKey, encoded)
+}
+
+// scopeMoved describes how the provider's scope differs from the one recorded
+// for the object, or returns "" when it does not differ or nothing was
+// recorded.
+func scopeMoved(ctx context.Context, apiClient *client.Client, private privateStateReader) string {
+	if apiClient == nil || private == nil {
+		return ""
+	}
+	encoded, diagnostics := private.GetKey(ctx, scopePrivateKey)
+	if diagnostics.HasError() || len(encoded) == 0 {
+		return ""
+	}
+	var recorded recordedScope
+	if err := json.Unmarshal(encoded, &recorded); err != nil {
+		return ""
+	}
+	switch {
+	case recorded.OrganisationID != apiClient.OrganisationID:
+		return fmt.Sprintf("organisation_id was %q when Terraform last saw this object and is now %q", recorded.OrganisationID, apiClient.OrganisationID)
+	case recorded.ProjectID != apiClient.ProjectID:
+		return fmt.Sprintf("project_id was %q when Terraform last saw this object and is now %q", recorded.ProjectID, apiClient.ProjectID)
+	}
+	return ""
+}
+
+const scopeMovedDetail = "The platform answered not found, but the provider is now scoped differently from when Terraform last saw this object, " +
+	"so it is most likely still there, in the old scope. It is kept in state rather than planned for recreation (or reported destroyed). " +
+	"Point the provider back at the old scope to manage it, or run `terraform state rm` if you mean to stop managing it."
+
 // removeWhenNotFound drops a resource from state when the platform reports it
-// gone, which plans its recreation. It reports whether it did so.
-func removeWhenNotFound(ctx context.Context, err error, response *resource.ReadResponse) bool {
+// gone, which plans its recreation. It reports whether it handled err: when
+// the provider's scope changed since the object was tracked, it records an
+// error and keeps the resource instead, because the 404 only means the object
+// is outside the new scope.
+func removeWhenNotFound(ctx context.Context, err error, apiClient *client.Client, response *resource.ReadResponse) bool {
 	if !client.IsNotFound(err) {
 		return false
 	}
+	if moved := scopeMoved(ctx, apiClient, response.Private); moved != "" {
+		response.Diagnostics.AddError("Object not visible in the provider's current scope", moved+". "+scopeMovedDetail)
+		return true
+	}
 	response.State.RemoveResource(ctx)
+	return true
+}
+
+// removeWhenTargetChanged handles a Read whose lookup found a different
+// object than the one in state (readTargetChanged): it drops the resource,
+// unless the provider's scope moved, in which case the original most likely
+// lives on in the old scope and the resource is kept with an error.
+func removeWhenTargetChanged(ctx context.Context, apiClient *client.Client, response *resource.ReadResponse) {
+	if moved := scopeMoved(ctx, apiClient, response.Private); moved != "" {
+		response.Diagnostics.AddError("Object not visible in the provider's current scope", moved+". "+scopeMovedDetail)
+		return
+	}
+	response.State.RemoveResource(ctx)
+}
+
+// deletedWhenNotFound reports whether a Delete may treat err as "already
+// gone". It returns false, and records an error, when the provider's scope
+// changed since the object was tracked: destroy must not report success for
+// an object that lives on in the old scope.
+func deletedWhenNotFound(ctx context.Context, err error, apiClient *client.Client, private privateStateReader, diagnostics *diag.Diagnostics) bool {
+	if !client.IsNotFound(err) {
+		return false
+	}
+	if moved := scopeMoved(ctx, apiClient, private); moved != "" {
+		diagnostics.AddError("Object not visible in the provider's current scope", moved+". "+scopeMovedDetail)
+		return false
+	}
 	return true
 }

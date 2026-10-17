@@ -126,7 +126,7 @@ func (zoneResource *clusterCustomDNSZoneResource) Read(ctx context.Context, requ
 		return
 	}
 	zones, err := apiClient.ListClusterCustomDNSZones(ctx, state.ClusterID.ValueString())
-	if clusterSettingsReadNotFound(ctx, err, state.ClusterID.ValueString(), response) {
+	if clusterSettingsReadNotFound(ctx, err, apiClient, state.ClusterID.ValueString(), response) {
 		return
 	}
 	if err != nil {

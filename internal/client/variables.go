@@ -89,8 +89,9 @@ func (client *Client) UpdateOrganisationVariable(ctx context.Context, name strin
 	return &envelope.Variable, nil
 }
 
-// DeleteOrganisationVariable deletes a variable. A variable already gone is
-// not an error.
+// DeleteOrganisationVariable deletes a variable. A variable already gone is a
+// NotFound APIError: the caller decides whether that counts as deleted, since
+// it can also mean the variable is outside the current project scope.
 func (client *Client) DeleteOrganisationVariable(ctx context.Context, name string) error {
-	return client.doRequest(ctx, http.MethodDelete, organisationVariablesPath+"/"+url.PathEscape(name), nil, nil, http.StatusNotFound)
+	return client.doRequest(ctx, http.MethodDelete, organisationVariablesPath+"/"+url.PathEscape(name), nil, nil)
 }

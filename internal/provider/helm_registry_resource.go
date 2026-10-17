@@ -174,6 +174,7 @@ func (registryResource *helmRegistryResource) Create(ctx context.Context, reques
 		plan.ReadJobInterval = types.Int64Null()
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	if response.Diagnostics.HasError() {
 		return
 	}
@@ -215,7 +216,7 @@ func (registryResource *helmRegistryResource) Read(ctx context.Context, request 
 	}
 
 	detail, err := apiClient.GetHelmRegistry(ctx, state.Name.ValueString())
-	if removeWhenNotFound(ctx, err, response) {
+	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
 	if err != nil {
@@ -223,11 +224,12 @@ func (registryResource *helmRegistryResource) Read(ctx context.Context, request 
 		return
 	}
 	if helmRegistryTargetChanged(state, detail) {
-		response.State.RemoveResource(ctx)
+		removeWhenTargetChanged(ctx, apiClient, response)
 		return
 	}
 	helmRegistryApplyDetail(&state, detail)
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
 func (registryResource *helmRegistryResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
@@ -265,9 +267,11 @@ func (registryResource *helmRegistryResource) Delete(ctx context.Context, reques
 		return
 	}
 
-	if err := apiClient.DeleteHelmRegistry(ctx, state.Name.ValueString()); err != nil {
-		response.Diagnostics.AddError("Unable to delete Helm registry", err.Error())
+	err := apiClient.DeleteHelmRegistry(ctx, state.Name.ValueString())
+	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+		return
 	}
+	response.Diagnostics.AddError("Unable to delete Helm registry", err.Error())
 }
 
 // ImportState imports by registry name.
