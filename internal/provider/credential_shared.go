@@ -5,8 +5,14 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -36,8 +42,9 @@ const credentialReplaceDescription = "The platform cannot change this setting on
 // credential resource documents.
 const credentialOperationalNotes = "\n\n" +
 	"**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): " +
-	"the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. " +
-	"If that read fails, the error names the `terraform import` to run, because the credential already exists.\n\n" +
+	"the provider reads the credential listing right after a create to fill in the read-only attributes. " +
+	"If that read fails, the credential is kept in state and marked tainted, so run `terraform untaint` to keep it. " +
+	"(A platform from before 2026-10-18 does not answer a create with the credential's id; there the error names the `terraform import` to run.)\n\n" +
 	"**Projects.** A credential belongs to the provider's project. After the provider's `project_id` changes, a credential from the old " +
 	"project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.\n\n" +
 	"**Refresh cost.** Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS " +
@@ -86,9 +93,12 @@ func credentialListedAttributes() map[string]schema.Attribute {
 			PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 		},
 		"display_name": schema.StringAttribute{
-			MarkdownDescription: "Label shown instead of the name in the Ankra portal, when one was set there.",
-			Computed:            true,
-			PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			MarkdownDescription: "Label shown instead of the name in the Ankra portal. Changed in place. " +
+				"Left unset, the label set in the portal (if any) is kept and read back; removing it from the configuration does not clear it.",
+			Optional:      true,
+			Computed:      true,
+			PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
+			Validators:    []validator.String{credentialDisplayNameValidator{}},
 		},
 		"available": schema.BoolAttribute{
 			MarkdownDescription: "Whether the platform considers the credential usable.",
@@ -166,9 +176,122 @@ func credentialWarnWhenAdopting(ctx context.Context, private credentialPrivateRe
 		return
 	}
 	diagnostics.AddWarning("Adopted "+label+" credential settings were not checked",
-		"This credential was imported. The platform never returns its secrets or connection settings (such as tokens, keys, api_url, "+
-			"project_id, region, jumphost or tls_insecure), so the configured values were recorded in state as they are, without being "+
-			"compared with what the platform holds. If they differ, the platform keeps using its own values until the credential is replaced.")
+		"This credential was imported. The platform never returns its secrets (such as tokens and keys) or some of its connection settings "+
+			"(such as jumphost or internal_api_url), so the configured values were recorded in state as they are, without being "+
+			"compared with what the platform holds. If they differ, the platform keeps using its own values until a secret is changed "+
+			"in the configuration, which rotates it, or the credential is replaced.")
+}
+
+// credentialApplyDisplayName sets the display name when the plan names one
+// that differs from the state, and answers the value to record: the planned
+// one after a write, the current one otherwise.
+func credentialApplyDisplayName(ctx context.Context, apiClient *client.Client, credentialID string, planned types.String, current types.String) (types.String, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if planned.IsNull() || planned.IsUnknown() || planned.Equal(current) {
+		return current, diagnostics
+	}
+	if _, err := apiClient.SetCredentialDisplayName(ctx, credentialID, planned.ValueStringPointer()); err != nil {
+		diagnostics.AddAttributeError(path.Root("display_name"), "Unable to set the credential's display name", credentialAPIErrorText(err))
+		return current, diagnostics
+	}
+	return planned, diagnostics
+}
+
+// credentialCreateDisplayName sets the configured display name right after a
+// create. A failure there is a warning, not an error: an error would leave
+// the new, working credential tainted, and the next apply would replace it
+// over a label. Terraform requires the state to hold the configured label,
+// so it is recorded as configured; the platform keeps the label it listed,
+// and the next refresh reads that back, so the next plan sets it again.
+func credentialCreateDisplayName(ctx context.Context, apiClient *client.Client, credentialID string, planned types.String, listed types.String) (types.String, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if planned.IsNull() || planned.IsUnknown() || planned.Equal(listed) {
+		if planned.IsUnknown() {
+			return listed, diagnostics
+		}
+		return planned, diagnostics
+	}
+	if _, err := apiClient.SetCredentialDisplayName(ctx, credentialID, planned.ValueStringPointer()); err != nil {
+		diagnostics.AddAttributeWarning(path.Root("display_name"), "The credential was created, but its display name was not set",
+			"The platform refused the display name, so the credential keeps the label it had: "+credentialAPIErrorText(err)+
+				"\n\nThe credential works and is kept. The next plan shows the display name as a change and sets it again.")
+	}
+	return planned, diagnostics
+}
+
+// credentialAPIErrorText prefers the platform's own explanation (its detail
+// or message) over the raw response body.
+func credentialAPIErrorText(err error) string {
+	var apiError *client.APIError
+	if !errors.As(err, &apiError) {
+		return err.Error()
+	}
+	var body struct {
+		Detail  any    `json:"detail"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(apiError.Body), &body) == nil {
+		if detail, isString := body.Detail.(string); isString && detail != "" {
+			return fmt.Sprintf("%s (%s %s answered %d)", detail, apiError.Method, apiError.Path, apiError.StatusCode)
+		}
+		if body.Message != "" {
+			return fmt.Sprintf("%s (%s %s answered %d)", body.Message, apiError.Method, apiError.Path, apiError.StatusCode)
+		}
+	}
+	return err.Error()
+}
+
+// credentialDisplayNameValidator rejects at plan time a label the platform
+// refuses, or stores differently from how it is written: the platform trims
+// surrounding whitespace and treats an empty label as clearing it.
+type credentialDisplayNameValidator struct{}
+
+const credentialDisplayNameMaxLength = 100
+
+func (credentialDisplayNameValidator) Description(_ context.Context) string {
+	return "value must be 1 to 100 characters, without surrounding whitespace or control characters"
+}
+
+func (displayNameValidator credentialDisplayNameValidator) MarkdownDescription(ctx context.Context) string {
+	return displayNameValidator.Description(ctx)
+}
+
+func (displayNameValidator credentialDisplayNameValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	isValid := value != "" && strings.TrimSpace(value) == value && utf8.RuneCountInString(value) <= credentialDisplayNameMaxLength &&
+		!strings.ContainsFunc(value, unicode.IsControl)
+	if !isValid {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid display name", "The platform refuses or rewrites this label: "+displayNameValidator.Description(ctx)+".")
+	}
+}
+
+// credentialAPIURLValidator rejects at plan time an API URL that carries a
+// user name or password, which the platform refuses: the URL is listed to
+// every member of the organisation, so credentials belong in the secret
+// fields.
+type credentialAPIURLValidator struct{}
+
+func (credentialAPIURLValidator) Description(_ context.Context) string {
+	return "value must not contain a user name or password"
+}
+
+func (apiURLValidator credentialAPIURLValidator) MarkdownDescription(ctx context.Context) string {
+	return apiURLValidator.Description(ctx)
+}
+
+func (apiURLValidator credentialAPIURLValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	parsed, err := url.Parse(request.ConfigValue.ValueString())
+	if err != nil || parsed.User == nil {
+		return
+	}
+	response.Diagnostics.AddAttributeError(request.Path, "Invalid API URL",
+		"The platform refuses an API URL that contains a user name or password; put the secret in the credential's secret fields.")
 }
 
 // credentialOneOfValidator rejects at plan time a value the platform refuses

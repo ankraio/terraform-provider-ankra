@@ -4,8 +4,9 @@ page_title: "ankra_hetzner_credential Resource - ankra"
 subcategory: ""
 description: |-
   A Hetzner Cloud API token credential, referenced by ankra_hetzner_cluster.credential_id. The counterpart of ankra credentials hetzner create and ankra credentials delete.
-  The platform never returns a credential's secrets or connection settings, so a change made to them outside Terraform is not detected; the name, and the credential's existence, are. The token API cannot change a credential in place, so changing a setting replaces it.
-  Permissions. The API token needs credentials.read as well as credentials.write (and credentials.delete to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the terraform import to run, because the credential already exists.
+  Changes. Changing api_token rotates the secret in place: the platform checks the new value with the provider and stores it only when the provider accepts it, otherwise the apply fails and the credential keeps its secret. display_name also changes in place. The other settings identify what the credential connects to, so changing them replaces the credential.
+  Drift. The platform never returns a secret, so a secret changed outside Terraform is not detected; the name, the display name and the credential's existence are.
+  Permissions. The API token needs credentials.read as well as credentials.write (and credentials.delete to destroy): the provider reads the credential listing right after a create to fill in the read-only attributes. If that read fails, the credential is kept in state and marked tainted, so run terraform untaint to keep it. (A platform from before 2026-10-18 does not answer a create with the credential's id; there the error names the terraform import to run.)
   Projects. A credential belongs to the provider's project. After the provider's project_id changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
   Refresh cost. Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS credential's secret to fill in scope and auth_method, so a refresh costs one secret read per AWS credential in the organisation.
 ---
@@ -14,9 +15,11 @@ description: |-
 
 A Hetzner Cloud API token credential, referenced by `ankra_hetzner_cluster.credential_id`. The counterpart of `ankra credentials hetzner create` and `ankra credentials delete`.
 
-The platform never returns a credential's secrets or connection settings, so a change made to them outside Terraform is not detected; the name, and the credential's existence, are. The token API cannot change a credential in place, so changing a setting replaces it.
+**Changes.** Changing `api_token` rotates the secret in place: the platform checks the new value with the provider and stores it only when the provider accepts it, otherwise the apply fails and the credential keeps its secret. `display_name` also changes in place. The other settings identify what the credential connects to, so changing them replaces the credential.
 
-**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the `terraform import` to run, because the credential already exists.
+**Drift.** The platform never returns a secret, so a secret changed outside Terraform is not detected; the name, the display name and the credential's existence are.
+
+**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): the provider reads the credential listing right after a create to fill in the read-only attributes. If that read fails, the credential is kept in state and marked tainted, so run `terraform untaint` to keep it. (A platform from before 2026-10-18 does not answer a create with the credential's id; there the error names the `terraform import` to run.)
 
 **Projects.** A credential belongs to the provider's project. After the provider's `project_id` changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
 
@@ -41,14 +44,17 @@ variable "hcloud_token" {
 
 ### Required
 
-- `api_token` (String, Sensitive) Hetzner Cloud API token. Changing it replaces the credential.
+- `api_token` (String, Sensitive) Hetzner Cloud API token. Changing it rotates the secret in place.
 - `name` (String) Credential name, unique per provider in the organisation. Changing it replaces the credential.
+
+### Optional
+
+- `display_name` (String) Label shown instead of the name in the Ankra portal. Changed in place. Left unset, the label set in the portal (if any) is kept and read back; removing it from the configuration does not clear it.
 
 ### Read-Only
 
 - `available` (Boolean) Whether the platform considers the credential usable.
 - `created_at` (String) When the credential was created.
-- `display_name` (String) Label shown instead of the name in the Ankra portal, when one was set there.
 - `id` (String) Identifier of the credential: the value cluster resources take as `credential_id` or `ssh_key_credential_id`.
 - `state` (String) Lifecycle state the platform reports, such as `up`.
 
