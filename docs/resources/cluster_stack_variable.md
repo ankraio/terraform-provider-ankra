@@ -5,7 +5,7 @@ subcategory: ""
 description: |-
   One variable of a stack on a cluster, referenced from the stack's manifests and add-on values as ${{ ankra.<name> }}. It shadows a cluster or organisation variable of the same name. Each write changes only this key of the deployed stack and leaves the stack's other keys, and any pending draft, as they are; a changed value redeploys the stack members that reference it.
   Manage each key in one place only. ankra_cluster does not send stack variables, so its applies keep the keys this resource sets. Anything that writes a stack's whole variable map replaces them, though: an ankra cluster apply whose stack carries a variables map, or publishing a stack draft (from the portal, say) that edits the stack's variables or other stack-level fields, because the draft does not pick up writes made after it was opened. After such a write the next plan shows the key missing or changed and sets it again.
-  Creating the resource for a key the stack already holds fails; import the key instead.
+  Creating the resource for a key the stack already holds with the configured value adopts it; with another value it fails, so import the key instead.
 ---
 
 # ankra_cluster_stack_variable (Resource)
@@ -14,7 +14,7 @@ One variable of a stack on a cluster, referenced from the stack's manifests and 
 
 **Manage each key in one place only.** `ankra_cluster` does not send stack variables, so its applies keep the keys this resource sets. Anything that writes a stack's whole variable map replaces them, though: an `ankra cluster apply` whose stack carries a `variables` map, or publishing a stack draft (from the portal, say) that edits the stack's variables or other stack-level fields, because the draft does not pick up writes made after it was opened. After such a write the next plan shows the key missing or changed and sets it again.
 
-Creating the resource for a key the stack already holds fails; import the key instead.
+Creating the resource for a key the stack already holds with the configured value adopts it; with another value it fails, so import the key instead.
 
 ## Example Usage
 

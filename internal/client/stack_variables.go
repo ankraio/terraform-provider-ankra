@@ -5,10 +5,16 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 )
+
+// stackPendingDeletionDetail is the start of the 409 detail a stack being
+// deleted answers to a variable write.
+const stackPendingDeletionDetail = "Stack is pending deletion"
 
 // StackVariables is the stack-level configuration a live stack runs with, as
 // deployed. A pending draft never contributes to it; HasPendingDraft only
@@ -82,15 +88,27 @@ func (client *Client) SetStackVariable(ctx context.Context, clusterID, stackName
 
 // DeleteStackVariable removes one key of a stack's deployed variables. A key
 // the stack does not hold is not an error. A stack the cluster does not have
-// is a NotFound APIError, and a stack pending deletion (409) is treated as
-// gone, since its variables go with it. A cluster that is not visible is a
+// is a NotFound APIError, and a stack pending deletion is treated as gone,
+// since its variables go with it; any other 409 is an error. A cluster that is not visible is a
 // *ClusterNotVisibleError, because the key may still exist.
 func (client *Client) DeleteStackVariable(ctx context.Context, clusterID, stackName, name string) error {
 	path := stackVariablesPath(clusterID, stackName) + "/" + url.PathEscape(name)
 	err := client.doRequest(ctx, http.MethodDelete, path, nil, nil)
-	var apiError *APIError
-	if errors.As(err, &apiError) && apiError.StatusCode == http.StatusConflict {
+	if isStackPendingDeletion(err) {
 		return nil
 	}
 	return clusterScopedError(clusterID, err)
+}
+
+// isStackPendingDeletion reports the 409 a write to a stack being deleted
+// answers. Any other conflict stays an error.
+func isStackPendingDeletion(err error) bool {
+	var apiError *APIError
+	if !errors.As(err, &apiError) || apiError.StatusCode != http.StatusConflict {
+		return false
+	}
+	var envelope struct {
+		Detail string `json:"detail"`
+	}
+	return json.Unmarshal([]byte(apiError.Body), &envelope) == nil && strings.Contains(envelope.Detail, stackPendingDeletionDetail)
 }

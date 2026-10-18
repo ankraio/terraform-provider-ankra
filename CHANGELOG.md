@@ -1,5 +1,9 @@
 ## 0.4.0 (Unreleased)
 
+UPGRADE NOTES:
+
+* 0.4.0 needs an Ankra platform from 2026-10-18 or later for `ankra_cluster_power_schedule` creates, removing keys from `ankra_mcp_server` `env`, `ankra_alert_destination` descriptions set at create, and `ankra_cluster_stack_variable`. The hosted platform already runs such a version.
+
 FEATURES:
 
 * provider: `project_id` (and `ANKRA_PROJECT_ID`) also takes a project slug. The slug is resolved to the project's ID once, before the first request; a slug that matches no project the token can see, or an organisation without projects, fails every resource and data source instead of acting in another project.
@@ -26,7 +30,7 @@ FEATURES:
 * **New Resource:** `ankra_cost_rate_card` - monthly rates for clusters on private-cloud credentials (Proxmox, Morpheus, vSphere, MAAS), per credential or as the organisation fallback card. Amounts are decimal strings; the same value spelled differently by the platform plans no change. ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
 * **New Resource:** `ankra_cost_autopilot_project_default` - one project's own default autopilot tiers, layered over the organisation's, with the project by ID or slug. Destroy returns the project to the organisation defaults. ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
 * **New Data Sources:** `ankra_service_packages`, `ankra_services` (retired services stay listed as `released`), `ankra_service_consumers`, `ankra_ai_remediation_policy` and `ankra_security_dispositions` (filter by `statuses` and `disposition`). ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
-* **New Resource:** `ankra_cluster_stack_variable` - one variable of a stack on a cluster, import as `<cluster_id>/<stack_name>/<name>`. Each write sets or removes only its own key, so other keys, and keys set by other means, are kept. `ankra_cluster` does not send stack variables and leaves them as they are; an `ankra cluster apply` whose stack carries a `variables` map, or publishing a stack draft that edits stack-level fields, replaces the whole map, so manage each key in one place only. Creating it for a key the stack already holds fails; import the key instead. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
+* **New Resource:** `ankra_cluster_stack_variable` - one variable of a stack on a cluster, import as `<cluster_id>/<stack_name>/<name>`. Each write sets or removes only its own key, so other keys, and keys set by other means, are kept. `ankra_cluster` does not send stack variables and leaves them as they are; an `ankra cluster apply` whose stack carries a `variables` map, or publishing a stack draft that edits stack-level fields, replaces the whole map, so manage each key in one place only. Creating it for a key the stack already holds with the configured value adopts the key; with another value it fails, so import the key instead. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
 * **New Data Source:** `ankra_cluster_stack_variables` - the variables a stack is deployed with, with its deploy wave, description and whether a draft is pending. A pending draft's values are never included. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
 
 ENHANCEMENTS:

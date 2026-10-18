@@ -68,7 +68,7 @@ func (variableResource *clusterStackVariableResource) Schema(_ context.Context, 
 			"`${{ ankra.<name> }}`. It shadows a cluster or organisation variable of the same name. Each write changes only this key " +
 			"of the deployed stack and leaves the stack's other keys, and any pending draft, as they are; a changed value redeploys " +
 			"the stack members that reference it.\n\n" + clusterStackVariableOwnershipNote + "\n\n" +
-			"Creating the resource for a key the stack already holds fails; import the key instead.",
+			"Creating the resource for a key the stack already holds with the configured value adopts it; with another value it fails, so import the key instead.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "`<cluster_id>/<stack_name>/<name>`.",
@@ -111,15 +111,20 @@ func (variableResource *clusterStackVariableResource) Create(ctx context.Context
 	}
 	clusterID, stackName, name := plan.ClusterID.ValueString(), plan.StackName.ValueString(), plan.Name.ValueString()
 
-	_, lookupError := apiClient.GetStackVariable(ctx, clusterID, stackName, name)
+	// A key that already holds the planned value is adopted: an earlier
+	// write may have landed without Terraform recording it, or the read that
+	// dropped it from state lagged. It is still written, which the platform
+	// answers as unchanged, because this read can lag too: a key deleted a
+	// moment ago may still show here.
+	existing, lookupError := apiClient.GetStackVariable(ctx, clusterID, stackName, name)
 	switch {
-	case lookupError == nil:
+	case lookupError == nil && existing != plan.Value.ValueString():
 		response.Diagnostics.AddError("Stack variable already set",
-			fmt.Sprintf("Stack %q on cluster %s already holds the variable %q. Import it instead of creating it, so Terraform does not "+
-				"take over a value something else manages: terraform import <resource address> %s",
+			fmt.Sprintf("Stack %q on cluster %s already holds the variable %q with a different value. Import it instead of creating it, "+
+				"so Terraform does not take over a value something else manages: terraform import <resource address> %s",
 				stackName, clusterID, name, clusterStackVariableID(clusterID, stackName, name)))
 		return
-	case !client.IsNotFound(lookupError):
+	case lookupError != nil && !client.IsNotFound(lookupError):
 		response.Diagnostics.AddError("Unable to read stack variables", clusterVariableErrorDetail(lookupError))
 		return
 	}

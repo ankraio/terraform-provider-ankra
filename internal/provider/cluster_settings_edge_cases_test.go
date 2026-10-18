@@ -206,6 +206,42 @@ resource "ankra_cluster_power_schedule" "nightly" {
 	})
 }
 
+// TestAccClusterPowerScheduleCreateListingLags pins that a create whose
+// listing does not show the new schedule yet still tracks created_id, takes
+// the rest from the configuration, and plans nothing once reads catch up.
+func TestAccClusterPowerScheduleCreateListingLags(t *testing.T) {
+	fake := newClusterSettingsFake(t)
+	fake.createListingLags = true
+	config := fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_cluster_power_schedule" "nightly" {
+  cluster_id      = %q
+  action          = "stop"
+  schedule_kind   = "cron"
+  cron_expression = "0 19 * * *"
+}
+`, clusterSettingsTestCluster)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_cluster_power_schedule.nightly", "id", "schedule-1"),
+					resource.TestCheckResourceAttr("ankra_cluster_power_schedule.nightly", "cron_expression", "0 19 * * *"),
+					resource.TestCheckResourceAttr("ankra_cluster_power_schedule.nightly", "timezone", "UTC"),
+					func(*terraform.State) error {
+						if len(fake.schedules) != 1 {
+							return fmt.Errorf("expected exactly one schedule, got %v", fake.schedules)
+						}
+						return nil
+					},
+				),
+			},
+			{Config: config, PlanOnly: true},
+		},
+	})
+}
+
 // TestAccClusterPowerScheduleCreateWithoutCreatedID pins that a create the
 // platform answers without created_id fails with the import instructions
 // instead of guessing which listed schedule is the new one.

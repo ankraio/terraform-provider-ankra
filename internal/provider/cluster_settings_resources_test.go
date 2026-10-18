@@ -49,6 +49,9 @@ type clusterSettingsFake struct {
 	duplicateCreate bool
 	// omitCreatedID makes a schedule create answer the listing alone.
 	omitCreatedID bool
+	// createListingLags makes a schedule create answer a listing, read from a
+	// lagging replica, that does not show the new schedule yet.
+	createListingLags bool
 	// joinFailsAfterCommit records a mesh membership and then answers 400.
 	joinFailsAfterCommit bool
 }
@@ -220,6 +223,10 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 			}
 			twin["id"] = fake.nextID("schedule")
 			fake.schedules = append([]map[string]any{twin}, fake.schedules...)
+		}
+		if fake.createListingLags {
+			writeJSON(t, writer, http.StatusOK, map[string]any{"created_id": row["id"], "schedules": fake.schedules[1:]})
+			return
 		}
 		if fake.omitCreatedID {
 			writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": fake.schedules})

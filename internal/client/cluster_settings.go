@@ -266,8 +266,26 @@ func (client *Client) CreateClusterPowerSchedule(ctx context.Context, clusterID 
 			return &created.Schedules[index], nil
 		}
 	}
-	return nil, &ClusterPowerScheduleUntrackedError{ClusterID: clusterID, Request: request, CandidateIDs: []string{created.CreatedID},
-		Cause: "the created schedule is missing from the listing the platform answered"}
+	// The listing is read from a replica and can lag the create, so a
+	// schedule it does not show yet is taken as requested; the next read
+	// fills in what the platform computed.
+	return clusterPowerScheduleFromRequest(created.CreatedID, request), nil
+}
+
+// clusterPowerScheduleFromRequest is the schedule a create request describes,
+// under the id the platform gave it, with nothing the platform computes.
+func clusterPowerScheduleFromRequest(scheduleID string, request ClusterPowerScheduleRequest) *ClusterPowerSchedule {
+	return &ClusterPowerSchedule{
+		ID:             scheduleID,
+		Action:         request.Action,
+		StopMode:       request.StopMode,
+		PreserveState:  request.PreserveState,
+		ScheduleKind:   request.ScheduleKind,
+		RunAt:          request.RunAt,
+		CronExpression: request.CronExpression,
+		Timezone:       request.Timezone,
+		Enabled:        request.Enabled,
+	}
 }
 
 // ClusterPowerScheduleUntrackedError is a create the platform may have

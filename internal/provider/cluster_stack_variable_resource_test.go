@@ -27,6 +27,15 @@ type stackVariablesFake struct {
 	deletePending   map[string]bool
 	isClusterHidden bool
 	writes          []string
+	// replica is what the next staleReads GETs answer instead of the live
+	// variables, the way the platform's read replica can lag a write.
+	replica    map[string]string
+	staleReads int
+	// pushFailsAfterWrite makes the next PUT store the value and then answer
+	// 422, as a write whose Git push failed does.
+	pushFailsAfterWrite bool
+	// conflictDetail, when set, makes every write answer 409 with it.
+	conflictDetail string
 }
 
 func newStackVariablesFake(t *testing.T) *stackVariablesFake {
@@ -44,6 +53,10 @@ func newStackVariablesFake(t *testing.T) *stackVariablesFake {
 		variables, exists := fake.stacks[request.PathValue("stack_name")]
 		if !exists {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Stack not found in this cluster"})
+			return nil, false
+		}
+		if request.Method != http.MethodGet && fake.conflictDetail != "" {
+			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": fake.conflictDetail})
 			return nil, false
 		}
 		if request.Method != http.MethodGet && fake.deletePending[request.PathValue("stack_name")] {
@@ -67,6 +80,10 @@ func newStackVariablesFake(t *testing.T) *stackVariablesFake {
 		variables, found := stackFor(writer, request)
 		if !found {
 			return
+		}
+		if fake.staleReads > 0 {
+			fake.staleReads--
+			variables = fake.replica
 		}
 		writeJSON(t, writer, http.StatusOK, map[string]any{
 			"stack_name": request.PathValue("stack_name"), "variables": variables, "deploy_wave": 2,
@@ -92,6 +109,13 @@ func newStackVariablesFake(t *testing.T) *stackVariablesFake {
 		fake.writes = append(fake.writes, "PUT "+name)
 		isChanged := variables[name] != *value
 		variables[name] = *value
+		if fake.pushFailsAfterWrite {
+			fake.pushFailsAfterWrite = false
+			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{
+				"detail": "The stack variables were updated, but pushing the change to the Git repository failed", "error_code": "git_push_failed",
+			})
+			return
+		}
 		writeOutcome(writer, request.PathValue("stack_name"), map[string]string{name: *value}, []string{}, isChanged)
 	})
 	fake.handle("DELETE "+variablesPath+"/{variable_name}", func(writer http.ResponseWriter, request *http.Request) {
@@ -204,6 +228,135 @@ func TestAccClusterStackVariableLifecycle(t *testing.T) {
 	})
 }
 
+func stackVariableResourceOnly(fake *stackVariablesFake) string {
+	return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_cluster_stack_variable" "domain" {
+  cluster_id = %q
+  stack_name = "platform"
+  name       = "ingress_domain"
+  value      = "apps.example.com"
+}
+`, clusterConfigurationTestCluster)
+}
+
+func copyStackVariables(variables map[string]string) map[string]string {
+	copied := map[string]string{}
+	for name, value := range variables {
+		copied[name] = value
+	}
+	return copied
+}
+
+// TestAccClusterStackVariableAdoptsAfterLaggedRefresh: a refresh served by a
+// lagging replica drops the key from state; the next create finds it holding
+// the configured value and adopts it.
+func TestAccClusterStackVariableAdoptsAfterLaggedRefresh(t *testing.T) {
+	fake := newStackVariablesFake(t)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: stackVariableResourceOnly(fake)},
+			{
+				PreConfig: func() {
+					fake.replica = map[string]string{"region": "eu-north"}
+					fake.staleReads = 1
+				},
+				Config: stackVariableResourceOnly(fake),
+				Check: func(_ *terraform.State) error {
+					if fake.stacks["platform"]["ingress_domain"] != "apps.example.com" {
+						return fmt.Errorf("the key was lost: %v", fake.stacks["platform"])
+					}
+					return nil
+				},
+			},
+			{Config: stackVariableResourceOnly(fake), PlanOnly: true},
+		},
+	})
+}
+
+// TestAccClusterStackVariableAdoptsAfterFailedPush: a write that stored the
+// value but answered 422 leaves nothing in state; the next apply adopts the
+// key instead of refusing it as already set.
+func TestAccClusterStackVariableAdoptsAfterFailedPush(t *testing.T) {
+	fake := newStackVariablesFake(t)
+	fake.pushFailsAfterWrite = true
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      stackVariableResourceOnly(fake),
+				ExpectError: regexp.MustCompile(`pushing\s+the\s+change\s+to\s+the\s+Git\s+repository\s+failed`),
+			},
+			{
+				Config: stackVariableResourceOnly(fake),
+				Check:  resource.TestCheckResourceAttr("ankra_cluster_stack_variable.domain", "value", "apps.example.com"),
+			},
+			{Config: stackVariableResourceOnly(fake), PlanOnly: true},
+		},
+	})
+}
+
+// TestAccClusterStackVariableRecreateWhileReplicaLags: the key is destroyed
+// and created again while the replica still shows the deleted key with the
+// configured value. The create adopts it and still writes it, so the key
+// exists afterwards instead of only in state.
+func TestAccClusterStackVariableRecreateWhileReplicaLags(t *testing.T) {
+	fake := newStackVariablesFake(t)
+	var replicaBeforeDestroy map[string]string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: stackVariableResourceOnly(fake),
+				Check: func(_ *terraform.State) error {
+					replicaBeforeDestroy = copyStackVariables(fake.stacks["platform"])
+					return nil
+				},
+			},
+			{Config: stackVariableResourceOnly(fake), Destroy: true},
+			{
+				PreConfig: func() {
+					if _, present := fake.stacks["platform"]["ingress_domain"]; present {
+						t.Fatalf("destroy left the key: %v", fake.stacks["platform"])
+					}
+					fake.replica = replicaBeforeDestroy
+					fake.staleReads = 1
+				},
+				Config: stackVariableResourceOnly(fake),
+				Check: func(_ *terraform.State) error {
+					if fake.stacks["platform"]["ingress_domain"] != "apps.example.com" {
+						return fmt.Errorf("the adopted key does not exist: %v", fake.stacks["platform"])
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// TestAccClusterStackVariableOtherConflictIsAnError: only the pending
+// deletion 409 reads as gone on destroy; another conflict fails it.
+func TestAccClusterStackVariableOtherConflictIsAnError(t *testing.T) {
+	fake := newStackVariablesFake(t)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: stackVariableResourceOnly(fake)},
+			{
+				PreConfig:   func() { fake.conflictDetail = "The cluster is locked by another operation" },
+				Config:      stackVariableResourceOnly(fake),
+				Destroy:     true,
+				ExpectError: regexp.MustCompile(`locked\s+by\s+another\s+operation`),
+			},
+			{
+				PreConfig: func() { fake.conflictDetail = "" },
+				Config:    stackVariableResourceOnly(fake),
+				Destroy:   true,
+			},
+		},
+	})
+}
+
 func TestAccClusterStackVariableRefusesKeyAlreadySet(t *testing.T) {
 	fake := newStackVariablesFake(t)
 	fake.stacks["platform"]["ingress_domain"] = "set.elsewhere.example.com"
@@ -211,7 +364,7 @@ func TestAccClusterStackVariableRefusesKeyAlreadySet(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{{
 			Config:      stackVariableConfiguration(fake, "apps.example.com"),
-			ExpectError: regexp.MustCompile(`(?s)already\s+holds\s+the\s+variable.*terraform\s+import\s+<resource\s+address>\s+` + clusterConfigurationTestCluster + `/platform/ingress_domain`),
+			ExpectError: regexp.MustCompile(`(?s)already\s+holds\s+the\s+variable.*different\s+value.*terraform\s+import\s+<resource\s+address>\s+` + clusterConfigurationTestCluster + `/platform/ingress_domain`),
 		}},
 	})
 	if fake.stacks["platform"]["ingress_domain"] != "set.elsewhere.example.com" || len(fake.writes) != 0 {

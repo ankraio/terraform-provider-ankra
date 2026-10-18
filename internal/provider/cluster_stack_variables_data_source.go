@@ -60,10 +60,11 @@ func (variablesDataSource *clusterStackVariablesDataSource) Schema(_ context.Con
 				Required:            true,
 			},
 			"variables": schema.MapAttribute{
-				MarkdownDescription: "The deployed variables, by name. Marked sensitive, like the resource's `value`.",
-				ElementType:         types.StringType,
-				Computed:            true,
-				Sensitive:           true,
+				MarkdownDescription: "The deployed variables, by name. Not marked sensitive: stack variables have no secret mode and " +
+					"are committed in plain text to the cluster's GitOps repository. The resource's `value` is marked sensitive only " +
+					"so plans do not print it.",
+				ElementType: types.StringType,
+				Computed:    true,
 			},
 			"deploy_wave": schema.Int64Attribute{
 				MarkdownDescription: "The stack's deploy wave; null when it has none.",

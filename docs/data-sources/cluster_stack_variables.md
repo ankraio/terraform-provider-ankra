@@ -34,4 +34,4 @@ data "ankra_cluster_stack_variables" "platform" {
 - `description` (String) The stack's description; null when it has none.
 - `has_pending_draft` (Boolean) Whether a draft of the stack is waiting to be published. A draft that edits stack-level fields replaces these variables when it is published.
 - `id` (String) `<cluster_id>/<stack_name>`.
-- `variables` (Map of String, Sensitive) The deployed variables, by name. Marked sensitive, like the resource's `value`.
+- `variables` (Map of String) The deployed variables, by name. Not marked sensitive: stack variables have no secret mode and are committed in plain text to the cluster's GitOps repository. The resource's `value` is marked sensitive only so plans do not print it.
