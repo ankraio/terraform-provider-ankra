@@ -3,22 +3,31 @@
 page_title: "ankra_cluster_agent_ci_settings Resource - ankra"
 subcategory: ""
 description: |-
-  How a cluster's Ankra agent runs pipeline steps. The counterpart of ankra cluster agent ci set. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting. The CI placement (--node-group, --node-selector, --toleration) is not managed here.
+  How a cluster's Ankra agent runs pipeline steps. The counterpart of ankra cluster agent ci set. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting.
 ---
 
 # ankra_cluster_agent_ci_settings (Resource)
 
-How a cluster's Ankra agent runs pipeline steps. The counterpart of `ankra cluster agent ci set`. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting. The CI placement (`--node-group`, `--node-selector`, `--toleration`) is not managed here.
+How a cluster's Ankra agent runs pipeline steps. The counterpart of `ankra cluster agent ci set`. Only the attributes set in configuration are written; an unset attribute keeps the platform's value and reports it. Destroying the resource restores the platform default of each setting the configuration has set; a setting the configuration never set (only reported) is left as it is. An imported resource resets nothing on destroy until an apply has written a setting.
 
 ## Example Usage
 
 ```terraform
 resource "ankra_cluster_agent_ci_settings" "ci" {
-  cluster_id         = "0b6f1d2e-1111-4222-8333-944445555666"
-  ci_worker_count    = 8
-  ci_storage_class   = "fast-ssd"
-  ci_run_reservation = "on"
-  ci_image_prepull   = "on"
+  cluster_id            = "0b6f1d2e-1111-4222-8333-944445555666"
+  ci_worker_count       = 8
+  ci_storage_class      = "fast-ssd"
+  ci_run_reservation    = "on"
+  ci_image_prepull      = "on"
+  ci_max_admitting_runs = 4
+  ci_reservation_sizing = "measured"
+
+  # Run every pipeline pod on the "ci" node group. The platform adds the
+  # group's node selector and tolerations.
+  ci_placement = {
+    node_group = "ci"
+    mode       = "required"
+  }
 }
 ```
 
@@ -33,6 +42,9 @@ resource "ankra_cluster_agent_ci_settings" "ci" {
 
 - `ci_build_apparmor_profile` (String) Node-installed AppArmor profile the rootless image builder runs under; empty for none.
 - `ci_image_prepull` (String) Whether the agent keeps the platform's step images pulled on its nodes: `off` (the default) or `on`.
+- `ci_max_admitting_runs` (Number) How many pipeline runs the cluster admits at once while their run reservations are still being scheduled, 1 to 32. It holds runs back only while `ci_run_reservation` is `on` and the agent supports it. The default, 2, reads as automatic: the platform raises it with `ci_worker_count`.
+- `ci_placement` (Attributes) Where every pipeline pod of the cluster is placed (step pods, their helpers and image builds), the counterpart of `--node-group`, `--node-selector` and `--toleration`. The platform resolves `node_group` into the group's node selector and tolerations and stores them merged with the ones named here; the configured values are kept in state while the stored placement still contains them, so that resolution plans no diff. Destroying the resource clears a placement the configuration has set. (see [below for nested schema](#nestedatt--ci_placement))
+- `ci_reservation_sizing` (String) What a run reservation is sized from: `declared` (what stages declare, the default) or `measured` (what their recent successful attempts used). It matters only while `ci_run_reservation` is `shadow` or `on`.
 - `ci_run_reservation` (String) Run reservation mode: `off` (the default), `shadow` or `on`.
 - `ci_storage_class` (String) StorageClass step workspaces are cut from; empty is the cluster default.
 - `ci_worker_count` (Number) How many pipeline steps the agent runs at once, 0 to 128. 0, the default, runs no pipeline-step scheduler.
@@ -41,6 +53,29 @@ resource "ankra_cluster_agent_ci_settings" "ci" {
 
 - `apply_state` (String) How the last write reached the agent: `applied`, `pending_upgrade` or `agent_offline`. The values are stored in every case.
 - `id` (String) The cluster id.
+
+<a id="nestedatt--ci_placement"></a>
+### Nested Schema for `ci_placement`
+
+Optional:
+
+- `mode` (String) `required` (the default) pins pipeline pods to the selected nodes; `preferred` favours them and lets pods run elsewhere when they have no room.
+- `node_group` (String) Ankra node group of the cluster whose nodes run pipeline pods.
+- `node_selector` (Map of String) Node labels a pipeline pod's node must carry.
+- `tolerations` (Attributes List) Taints every pipeline pod tolerates. (see [below for nested schema](#nestedatt--ci_placement--tolerations))
+
+<a id="nestedatt--ci_placement--tolerations"></a>
+### Nested Schema for `ci_placement.tolerations`
+
+Required:
+
+- `key` (String) Taint key.
+
+Optional:
+
+- `effect` (String) `NoSchedule`, `PreferNoSchedule` or `NoExecute`.
+- `operator` (String) `Equal` or `Exists`. Defaults to `Equal` with a value and `Exists` without.
+- `value` (String) Taint value.
 
 ## Import
 

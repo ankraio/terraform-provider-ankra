@@ -290,7 +290,15 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 		}
 		var body map[string]json.RawMessage
 		decodeJSON(t, request, &body)
+		if len(body) == 0 {
+			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "Name at least one setting"})
+			return
+		}
 		for key, raw := range body {
+			if key == "ci_placement" {
+				fake.ciSettings[key] = clusterSettingsResolvePlacement(t, raw)
+				continue
+			}
 			if string(raw) == "null" {
 				writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": key + " may not be null"})
 				return
@@ -398,7 +406,8 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 }
 
 func (fake *clusterSettingsFake) ciSettingsAnswer() map[string]any {
-	answer := map[string]any{"agent_version": "1.2.3", "supports_pipeline_steps": true, "apply_state": "applied", "updated_at": nil, "ci_placement": nil}
+	answer := map[string]any{"agent_version": "1.2.3", "supports_pipeline_steps": true, "apply_state": "applied", "updated_at": nil,
+		"ci_placement": nil, "ci_max_admitting_runs": 2, "ci_max_admitting_runs_effective": 2, "ci_reservation_sizing": "declared"}
 	for key, value := range fake.ciSettings {
 		answer[key] = value
 	}

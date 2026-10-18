@@ -5,6 +5,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -407,22 +408,89 @@ func (client *Client) SetClusterAgentAutoUpgrade(ctx context.Context, clusterID 
 // ClusterAgentCISettings is the stored CI settings of a cluster's agent. The
 // optional members are nil on a platform older than the setting.
 type ClusterAgentCISettings struct {
-	CIWorkerCount          int64   `json:"ci_worker_count"`
-	CIStorageClass         string  `json:"ci_storage_class"`
-	CIRunReservation       *string `json:"ci_run_reservation"`
-	CIImagePrepull         *string `json:"ci_image_prepull"`
-	CIBuildAppArmorProfile *string `json:"ci_build_apparmor_profile"`
-	ApplyState             string  `json:"apply_state"`
+	CIWorkerCount          int64                    `json:"ci_worker_count"`
+	CIStorageClass         string                   `json:"ci_storage_class"`
+	CIRunReservation       *string                  `json:"ci_run_reservation"`
+	CIImagePrepull         *string                  `json:"ci_image_prepull"`
+	CIBuildAppArmorProfile *string                  `json:"ci_build_apparmor_profile"`
+	CIPlacement            *ClusterAgentCIPlacement `json:"ci_placement"`
+	CIMaxAdmittingRuns     *int64                   `json:"ci_max_admitting_runs"`
+	CIReservationSizing    *string                  `json:"ci_reservation_sizing"`
+	ApplyState             string                   `json:"apply_state"`
+}
+
+// ClusterAgentCIPlacement is where every pipeline pod of the cluster is
+// placed. The platform resolves a named node group into its node selector
+// and tolerations and stores the merged result, so a read carries the
+// group's selector and tolerations beside the ones the write named.
+type ClusterAgentCIPlacement struct {
+	NodeGroup    string                              `json:"node_group,omitempty"`
+	NodeSelector map[string]string                   `json:"node_selector,omitempty"`
+	Tolerations  []ClusterAgentCIPlacementToleration `json:"tolerations,omitempty"`
+	Mode         string                              `json:"mode,omitempty"`
+}
+
+// ClusterAgentCIPlacementToleration is one taint every pipeline pod tolerates.
+type ClusterAgentCIPlacementToleration struct {
+	Key      string `json:"key"`
+	Operator string `json:"operator,omitempty"`
+	Value    string `json:"value,omitempty"`
+	Effect   string `json:"effect"`
 }
 
 // ClusterAgentCISettingsUpdate is a partial write: a nil member is left out
-// and the platform keeps its stored value. The placement is not part of it.
+// and the platform keeps its stored value. CIPlacement replaces the stored
+// placement whole, and ClearPlacement sends null, which removes it.
 type ClusterAgentCISettingsUpdate struct {
-	CIWorkerCount          *int64  `json:"ci_worker_count,omitempty"`
-	CIStorageClass         *string `json:"ci_storage_class,omitempty"`
-	CIRunReservation       *string `json:"ci_run_reservation,omitempty"`
-	CIImagePrepull         *string `json:"ci_image_prepull,omitempty"`
-	CIBuildAppArmorProfile *string `json:"ci_build_apparmor_profile,omitempty"`
+	CIWorkerCount          *int64
+	CIStorageClass         *string
+	CIRunReservation       *string
+	CIImagePrepull         *string
+	CIBuildAppArmorProfile *string
+	CIPlacement            *ClusterAgentCIPlacement
+	ClearPlacement         bool
+	CIMaxAdmittingRuns     *int64
+	CIReservationSizing    *string
+}
+
+// IsEmpty reports whether the update names no setting.
+func (update ClusterAgentCISettingsUpdate) IsEmpty() bool {
+	return update.CIWorkerCount == nil && update.CIStorageClass == nil && update.CIRunReservation == nil &&
+		update.CIImagePrepull == nil && update.CIBuildAppArmorProfile == nil && update.CIPlacement == nil &&
+		!update.ClearPlacement && update.CIMaxAdmittingRuns == nil && update.CIReservationSizing == nil
+}
+
+// MarshalJSON renders only the named members, and ci_placement as null when
+// the update clears it: the one member whose null means something.
+func (update ClusterAgentCISettingsUpdate) MarshalJSON() ([]byte, error) {
+	body := map[string]any{}
+	if update.CIWorkerCount != nil {
+		body["ci_worker_count"] = *update.CIWorkerCount
+	}
+	if update.CIStorageClass != nil {
+		body["ci_storage_class"] = *update.CIStorageClass
+	}
+	if update.CIRunReservation != nil {
+		body["ci_run_reservation"] = *update.CIRunReservation
+	}
+	if update.CIImagePrepull != nil {
+		body["ci_image_prepull"] = *update.CIImagePrepull
+	}
+	if update.CIBuildAppArmorProfile != nil {
+		body["ci_build_apparmor_profile"] = *update.CIBuildAppArmorProfile
+	}
+	if update.ClearPlacement {
+		body["ci_placement"] = nil
+	} else if update.CIPlacement != nil {
+		body["ci_placement"] = update.CIPlacement
+	}
+	if update.CIMaxAdmittingRuns != nil {
+		body["ci_max_admitting_runs"] = *update.CIMaxAdmittingRuns
+	}
+	if update.CIReservationSizing != nil {
+		body["ci_reservation_sizing"] = *update.CIReservationSizing
+	}
+	return json.Marshal(body)
 }
 
 // GetClusterAgentCISettings reads the cluster's agent CI settings.

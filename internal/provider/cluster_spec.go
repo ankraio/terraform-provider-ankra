@@ -5,6 +5,7 @@ package provider
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -115,6 +116,7 @@ func addonToAPI(addon addonModel, members memberKinds, memberPath path.Path, dia
 				jobError.Error())
 	}
 	apiAddon.JobConfiguration = jobConfiguration
+	apiAddon.Settings = addonSettingsToAPI(context.Background(), addon.Settings, diagnostics)
 	return apiAddon
 }
 

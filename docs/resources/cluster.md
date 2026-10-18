@@ -52,6 +52,19 @@ resource "ankra_cluster" "example" {
         create_job_timeout = 600
         update_job_timeout = 600
       })
+
+      # How the platform syncs the addon. Leave the block out to keep the
+      # settings made in the portal or with the CLI.
+      settings {
+        revision_history_limit = 5
+        sync_policy {
+          self_heal = true
+        }
+        ignore_differences {
+          kind          = "Deployment"
+          json_pointers = ["/spec/replicas"]
+        }
+      }
     }
   }
 
@@ -121,6 +134,70 @@ Optional:
 - `registry_name` (String) Name of the Helm registry as connected to the Ankra organisation. Defaults to a name derived from `registry_url`; the platform accepts any name when the URL matches a registry already connected, and otherwise asks for the registry to be connected first.
 - `registry_url` (String) URL of the Helm registry that serves the chart (`https://...` or `oci://...`). Required unless the deprecated `repository_url` is set.
 - `repository_url` (String, Deprecated) Deprecated alias of `registry_url`.
+- `settings` (Block, Optional) How the platform syncs the addon, the counterpart of `ankra cluster addons settings set`. Without the block the addon keeps the settings it has (set in the portal or the CLI). With it, the settings are written on every apply and each one the block leaves out takes the platform default, so an empty `settings {}` resets every setting to its default. Like the rest of `stacks`, the provider does not read the settings back, so a change made outside Terraform is not detected until the next apply that changes the stack rewrites it. (see [below for nested schema](#nestedblock--stacks--addons--settings))
+
+<a id="nestedblock--stacks--addons--settings"></a>
+### Nested Schema for `stacks.addons.settings`
+
+Optional:
+
+- `helm_wait_timeout_seconds` (Number) How long Helm waits for the release to become ready, in seconds.
+- `ignore_differences` (Block List) Differences the sync ignores. (see [below for nested schema](#nestedblock--stacks--addons--settings--ignore_differences))
+- `keep_failed_resources_for_debug` (Boolean) Whether resources of a failed install are kept for debugging. Default `false`.
+- `retry_policy` (Block, Optional) How a failed sync is retried. (see [below for nested schema](#nestedblock--stacks--addons--settings--retry_policy))
+- `revision_history_limit` (Number) How many release revisions are kept. Default 10.
+- `rollback_on_failure` (Boolean) Whether a failed upgrade rolls back. Default `true`.
+- `strict_health_check` (Boolean) Whether the addon counts as healthy only when every resource is. Default `false`.
+- `sync_policy` (Block, Optional) Automated sync behaviour. (see [below for nested schema](#nestedblock--stacks--addons--settings--sync_policy))
+- `sync_window` (Block, Optional) When the addon may sync. (see [below for nested schema](#nestedblock--stacks--addons--settings--sync_window))
+
+<a id="nestedblock--stacks--addons--settings--ignore_differences"></a>
+### Nested Schema for `stacks.addons.settings.ignore_differences`
+
+Optional:
+
+- `group` (String) API group of the resources.
+- `jq_path_expressions` (List of String) jq path expressions of the fields to ignore.
+- `json_pointers` (List of String) JSON pointers of the fields to ignore.
+- `kind` (String) Kind of the resources.
+- `managed_fields_managers` (List of String) Field managers whose changes are ignored.
+- `name` (String) Name of the resource.
+- `namespace` (String) Namespace of the resource.
+
+
+<a id="nestedblock--stacks--addons--settings--retry_policy"></a>
+### Nested Schema for `stacks.addons.settings.retry_policy`
+
+Optional:
+
+- `backoff_duration` (String) Wait before the first retry. Default `5s`.
+- `backoff_factor` (Number) Factor the wait grows by. Default 2.
+- `backoff_max_duration` (String) Longest wait between retries. Default `3m`.
+- `limit` (Number) How many times a failed sync is retried. Default 5.
+
+
+<a id="nestedblock--stacks--addons--settings--sync_policy"></a>
+### Nested Schema for `stacks.addons.settings.sync_policy`
+
+Optional:
+
+- `auto_prune` (Boolean) Whether resources removed from the chart are deleted. Default `true`.
+- `automated` (Boolean) Whether the addon syncs automatically. Default `true`.
+- `self_heal` (Boolean) Whether changes made in the cluster are reverted. Default `true`.
+- `sync_options` (List of String) Sync options. Default `CreateNamespace=true` and `ServerSideApply=true`.
+
+
+<a id="nestedblock--stacks--addons--settings--sync_window"></a>
+### Nested Schema for `stacks.addons.settings.sync_window`
+
+Optional:
+
+- `duration` (String) How long the window stays open, for example `1h`.
+- `enabled` (Boolean) Whether the window applies. Default `false`.
+- `schedule` (String) Cron expression the window opens on.
+- `timezone` (String) Time zone of the schedule. Default `UTC`.
+
+
 
 
 <a id="nestedblock--stacks--manifests"></a>

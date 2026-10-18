@@ -41,6 +41,8 @@ type mockPlatform struct {
 	imports      int
 	deletes      int
 	lastQueryRaw string
+	// lastBody is the body of the latest import.
+	lastBody map[string]any
 	// authorizations records the Authorization header of every request.
 	authorizations []string
 }
@@ -85,6 +87,7 @@ func (platform *mockPlatform) handleImport(writer http.ResponseWriter, request *
 		writer.WriteHeader(http.StatusUnprocessableEntity)
 		return
 	}
+	platform.lastBody = body
 	if problem := specShapeProblem(body); problem != "" {
 		writer.WriteHeader(http.StatusUnprocessableEntity)
 		_, _ = fmt.Fprintf(writer, `{"detail":[{"msg":%q}]}`, problem)
@@ -297,6 +300,106 @@ func TestAccClusterResourceLifecycle(t *testing.T) {
 					imports, deletes := platform.counts()
 					if imports != 2 || deletes != 0 {
 						return fmt.Errorf("imports = %d, deletes = %d; want 2 and 0", imports, deletes)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// TestAccClusterResourceAddonSettings sends an addon's settings block in the
+// import spec, and leaves settings out for an addon without the block, which
+// the platform reads as "keep the stored settings".
+func TestAccClusterResourceAddonSettings(t *testing.T) {
+	platform, server := newMockPlatform(t)
+	defer server.Close()
+	config := func(selfHeal bool) string {
+		return fmt.Sprintf(`
+provider "ankra" {
+  token    = "provider-token"
+  base_url = %q
+}
+
+resource "ankra_cluster" "test" {
+  cluster_name           = "dev"
+  github_credential_name = "cred"
+  github_branch          = "main"
+  github_repository      = "ankra-io/repo"
+
+  stacks {
+    name = "base"
+    addons {
+      name          = "podinfo"
+      chart_name    = "podinfo"
+      chart_version = "6.0.0"
+      registry_url  = "https://stefanprodan.github.io/podinfo"
+      namespace     = "podinfo"
+      settings {
+        revision_history_limit = 3
+        sync_policy {
+          self_heal = %t
+        }
+        ignore_differences {
+          kind          = "Deployment"
+          json_pointers = ["/spec/replicas"]
+        }
+      }
+    }
+    addons {
+      name          = "plain"
+      chart_name    = "plain"
+      chart_version = "1.0.0"
+      registry_url  = "https://charts.example.com"
+      namespace     = "plain"
+    }
+  }
+}
+`, server.URL, selfHeal)
+	}
+	addonSettings := func(index int) (map[string]any, bool) {
+		platform.mutex.Lock()
+		defer platform.mutex.Unlock()
+		spec, _ := platform.lastBody["spec"].(map[string]any)
+		stacks, _ := spec["stacks"].([]any)
+		stack, _ := stacks[0].(map[string]any)
+		addons, _ := stack["addons"].([]any)
+		addon, _ := addons[index].(map[string]any)
+		settings, present := addon["settings"].(map[string]any)
+		return settings, present
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: config(false),
+				Check: func(_ *terraform.State) error {
+					settings, present := addonSettings(0)
+					policy, _ := settings["sync_policy"].(map[string]any)
+					if !present || fmt.Sprint(settings["revision_history_limit"]) != "3" || policy["self_heal"] != false {
+						return fmt.Errorf("settings sent = %v", settings)
+					}
+					if _, present := policy["automated"]; present {
+						return fmt.Errorf("an unset member was sent: %v", policy)
+					}
+					if _, present := addonSettings(1); present {
+						return fmt.Errorf("an addon without a settings block sent settings")
+					}
+					return nil
+				},
+			},
+			{
+				Config: config(true),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectResourceAction("ankra_cluster.test", plancheck.ResourceActionUpdate),
+					},
+				},
+				Check: func(_ *terraform.State) error {
+					settings, _ := addonSettings(0)
+					policy, _ := settings["sync_policy"].(map[string]any)
+					if policy["self_heal"] != true {
+						return fmt.Errorf("settings change not re-imported: %v", settings)
 					}
 					return nil
 				},

@@ -64,18 +64,19 @@ type manifestModel struct {
 }
 
 type addonModel struct {
-	Name                   types.String   `tfsdk:"name"`
-	ChartName              types.String   `tfsdk:"chart_name"`
-	ChartVersion           types.String   `tfsdk:"chart_version"`
-	RegistryName           types.String   `tfsdk:"registry_name"`
-	RegistryURL            types.String   `tfsdk:"registry_url"`
-	RegistryCredentialName types.String   `tfsdk:"registry_credential_name"`
-	RepositoryURL          types.String   `tfsdk:"repository_url"`
-	Namespace              types.String   `tfsdk:"namespace"`
-	ConfigurationType      types.String   `tfsdk:"configuration_type"`
-	Configuration          types.String   `tfsdk:"configuration"`
-	Parents                []types.String `tfsdk:"parents"`
-	JobConfiguration       types.String   `tfsdk:"job_configuration"`
+	Name                   types.String        `tfsdk:"name"`
+	ChartName              types.String        `tfsdk:"chart_name"`
+	ChartVersion           types.String        `tfsdk:"chart_version"`
+	RegistryName           types.String        `tfsdk:"registry_name"`
+	RegistryURL            types.String        `tfsdk:"registry_url"`
+	RegistryCredentialName types.String        `tfsdk:"registry_credential_name"`
+	RepositoryURL          types.String        `tfsdk:"repository_url"`
+	Namespace              types.String        `tfsdk:"namespace"`
+	ConfigurationType      types.String        `tfsdk:"configuration_type"`
+	Configuration          types.String        `tfsdk:"configuration"`
+	Parents                []types.String      `tfsdk:"parents"`
+	JobConfiguration       types.String        `tfsdk:"job_configuration"`
+	Settings               *addonSettingsModel `tfsdk:"settings"`
 }
 
 type stackModel struct {
@@ -291,6 +292,9 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 											"`create_job_timeout`, `read_job_timeout`, `update_job_timeout`, `delete_job_timeout`.",
 										Optional: true,
 									},
+								},
+								Blocks: map[string]schema.Block{
+									"settings": addonSettingsBlock(),
 								},
 							},
 						},
