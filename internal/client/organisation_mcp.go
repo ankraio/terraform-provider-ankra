@@ -64,16 +64,17 @@ type MCPServerCreate struct {
 // configuration would never clear. A null allowed_tools, adapter_key or
 // cluster_allow_list clears it; an empty description clears the description.
 // EnvPatch merges by key into the stored env, so keys set outside Terraform
-// (an auth header added in the portal) survive; it is left out when empty.
+// (an auth header added in the portal) survive; a nil value deletes its key,
+// and the patch is left out when empty.
 type MCPServerUpdate struct {
-	Description      string            `json:"description"`
-	URL              string            `json:"url"`
-	EnvPatch         map[string]string `json:"env_patch,omitempty"`
-	AllowedTools     []string          `json:"allowed_tools"`
-	Enabled          bool              `json:"enabled"`
-	PermissionTier   string            `json:"permission_tier"`
-	AdapterKey       *string           `json:"adapter_key"`
-	ClusterAllowList []string          `json:"cluster_allow_list"`
+	Description      string             `json:"description"`
+	URL              string             `json:"url"`
+	EnvPatch         map[string]*string `json:"env_patch,omitempty"`
+	AllowedTools     []string           `json:"allowed_tools"`
+	Enabled          bool               `json:"enabled"`
+	PermissionTier   string             `json:"permission_tier"`
+	AdapterKey       *string            `json:"adapter_key"`
+	ClusterAllowList []string           `json:"cluster_allow_list"`
 }
 
 // MCPToolGrant grants one tool of a server to one organisation role.

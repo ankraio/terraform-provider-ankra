@@ -11,8 +11,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
-	"time"
 )
 
 func clusterSettingsPath(clusterID string) string {
@@ -241,70 +239,53 @@ func findClusterPowerSchedule(schedules []ClusterPowerSchedule, clusterID, sched
 	return nil, clusterSettingsNotFound(clusterSettingsImportedPath(clusterID)+"/power-schedules", "power schedule "+scheduleID+" not found")
 }
 
-// clusterPowerScheduleCreateLocks serialises schedule creation per cluster
-// within one provider process, so the listing taken before a create is not
-// raced by a sibling create Terraform runs in parallel.
-var (
-	clusterPowerScheduleCreateLocksGuard sync.Mutex
-	clusterPowerScheduleCreateLocks      = map[string]*sync.Mutex{}
-)
+// clusterPowerScheduleCreated is the create response: the created schedule's
+// id alongside the refreshed listing.
+type clusterPowerScheduleCreated struct {
+	CreatedID string                 `json:"created_id"`
+	Schedules []ClusterPowerSchedule `json:"schedules"`
+}
 
-// CreateClusterPowerSchedule creates a schedule. The platform answers the
-// refreshed listing rather than the new row, so the schedule created is the
-// one, among the ids the listing taken just before did not hold, that matches
-// the request.
+// CreateClusterPowerSchedule creates a schedule and returns it as the
+// refreshed listing shows it, found by the created_id the platform answers.
 func (client *Client) CreateClusterPowerSchedule(ctx context.Context, clusterID string, request ClusterPowerScheduleRequest) (*ClusterPowerSchedule, error) {
-	clusterPowerScheduleCreateLocksGuard.Lock()
-	lock, exists := clusterPowerScheduleCreateLocks[clusterID]
-	if !exists {
-		lock = &sync.Mutex{}
-		clusterPowerScheduleCreateLocks[clusterID] = lock
-	}
-	clusterPowerScheduleCreateLocksGuard.Unlock()
-	lock.Lock()
-	defer lock.Unlock()
-
-	before, err := client.ListClusterPowerSchedules(ctx, clusterID)
-	if err != nil {
-		return nil, err
-	}
-	known := make(map[string]bool, len(before))
-	for _, schedule := range before {
-		known[schedule.ID] = true
-	}
-	var listing clusterPowerScheduleListing
-	if err := client.doRequest(ctx, http.MethodPost, clusterSettingsImportedPath(clusterID)+"/power-schedules", request, &listing); err != nil {
+	var created clusterPowerScheduleCreated
+	if err := client.doRequest(ctx, http.MethodPost, clusterSettingsImportedPath(clusterID)+"/power-schedules", request, &created); err != nil {
 		var apiError *APIError
 		if errors.As(err, &apiError) {
 			return nil, err
 		}
 		return nil, &ClusterPowerScheduleUntrackedError{ClusterID: clusterID, Request: request, Cause: err.Error()}
 	}
-	var created []ClusterPowerSchedule
-	var newIDs []string
-	for _, schedule := range listing.Schedules {
-		if known[schedule.ID] {
-			continue
-		}
-		newIDs = append(newIDs, schedule.ID)
-		if clusterPowerScheduleMatches(schedule, request) {
-			created = append(created, schedule)
+	if created.CreatedID == "" {
+		return nil, &ClusterPowerScheduleUntrackedError{ClusterID: clusterID, Request: request,
+			Cause: "the platform did not answer the created schedule's id"}
+	}
+	for index := range created.Schedules {
+		if created.Schedules[index].ID == created.CreatedID {
+			return &created.Schedules[index], nil
 		}
 	}
-	if len(created) != 1 {
-		candidates := newIDs
-		if len(created) > 1 {
-			candidates = nil
-			for _, schedule := range created {
-				candidates = append(candidates, schedule.ID)
-			}
-		}
-		return nil, &ClusterPowerScheduleUntrackedError{
-			ClusterID: clusterID, Request: request, CandidateIDs: candidates,
-			Cause: fmt.Sprintf("%d new schedules in the listing match the request", len(created)),
-		}
+	// The listing is read from a replica and can lag the create, so a
+	// schedule it does not show yet is taken as requested; the next read
+	// fills in what the platform computed.
+	return clusterPowerScheduleFromRequest(created.CreatedID, request), nil
+}
+
+// clusterPowerScheduleFromRequest is the schedule a create request describes,
+// under the id the platform gave it, with nothing the platform computes.
+func clusterPowerScheduleFromRequest(scheduleID string, request ClusterPowerScheduleRequest) *ClusterPowerSchedule {
+	return &ClusterPowerSchedule{
+		ID:             scheduleID,
+		Action:         request.Action,
+		StopMode:       request.StopMode,
+		PreserveState:  request.PreserveState,
+		ScheduleKind:   request.ScheduleKind,
+		RunAt:          request.RunAt,
+		CronExpression: request.CronExpression,
+		Timezone:       request.Timezone,
+		Enabled:        request.Enabled,
 	}
-	return &created[0], nil
 }
 
 // ClusterPowerScheduleUntrackedError is a create the platform may have
@@ -341,28 +322,6 @@ func clusterSettingsDereference(value *string) string {
 		return "(none)"
 	}
 	return *value
-}
-
-// clusterPowerScheduleMatches reports whether a listed schedule is the one a
-// create request describes, comparing run_at as an instant.
-func clusterPowerScheduleMatches(schedule ClusterPowerSchedule, request ClusterPowerScheduleRequest) bool {
-	if schedule.Action != request.Action || schedule.ScheduleKind != request.ScheduleKind || schedule.Enabled != request.Enabled {
-		return false
-	}
-	if request.CronExpression != nil && (schedule.CronExpression == nil || *schedule.CronExpression != strings.TrimSpace(*request.CronExpression)) {
-		return false
-	}
-	if request.RunAt != nil {
-		if schedule.RunAt == nil {
-			return false
-		}
-		requested, requestedError := time.Parse(time.RFC3339, strings.TrimSpace(*request.RunAt))
-		listed, listedError := time.Parse(time.RFC3339, *schedule.RunAt)
-		if requestedError == nil && listedError == nil && !requested.Equal(listed) {
-			return false
-		}
-	}
-	return true
 }
 
 // UpdateClusterPowerSchedule replaces a schedule and returns it as the

@@ -88,7 +88,7 @@ resource "ankra_cluster" "example" {
 ### Optional
 
 - `ankra_token` (String, Sensitive, Deprecated) Deprecated per-resource API token. Configure the token on the provider block (or the ANKRA_TOKEN environment variable) instead of per resource. Changing it (for example rotating the token) updates the resource in place and never replaces the cluster.
-- `stacks` (Block List) Stacks of manifests and addons to apply to the cluster. (see [below for nested schema](#nestedblock--stacks))
+- `stacks` (Block List) Stacks of manifests and addons to apply to the cluster. A stack's variables are not set here, and applying this resource leaves them as they are; set them key by key with `ankra_cluster_stack_variable`. (see [below for nested schema](#nestedblock--stacks))
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `wait_for_online` (Boolean) Wait for the cluster agent to check in before the resource is considered created. Defaults to `false`, because importing a cluster only registers it - somebody still has to run `helm_command` against the cluster, which Terraform cannot do. Set it to `true` when that happens out of band and dependent resources need a live cluster.
 

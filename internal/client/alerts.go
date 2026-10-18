@@ -41,8 +41,6 @@ type AlertDestination struct {
 
 // AlertDestinationCreate is the create body. The platform defaults
 // integration_type to "slack" and enabled to true when they are omitted.
-// It does not store description on create, so CreateAlertDestination sends
-// it in a follow-up update.
 type AlertDestinationCreate struct {
 	Name            string  `json:"name"`
 	URL             *string `json:"url,omitempty"`
@@ -50,6 +48,7 @@ type AlertDestinationCreate struct {
 	ChannelName     *string `json:"channel_name,omitempty"`
 	TeamsTenantID   *string `json:"teams_tenant_id,omitempty"`
 	IntegrationType *string `json:"integration_type,omitempty"`
+	Description     *string `json:"description,omitempty"`
 	Template        *string `json:"template,omitempty"`
 	Enabled         *bool   `json:"enabled,omitempty"`
 }

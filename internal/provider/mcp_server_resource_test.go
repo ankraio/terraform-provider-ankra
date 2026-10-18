@@ -109,6 +109,10 @@ func newMCPFake(t *testing.T) *mcpFake {
 					return
 				}
 				for key, patched := range patch {
+					if patched == nil {
+						delete(fake.env[identifier], key)
+						continue
+					}
 					fake.env[identifier][key] = patched
 				}
 			case "description", "url", "enabled", "permission_tier":
@@ -333,15 +337,15 @@ resource "ankra_mcp_server" "leaky" {
 				Config: strings.Replace(withoutTools, `  env       = { Authorization = "$${SECRET_SLOT:slot-2}", Region = "eu" }`+"\n", "", 1),
 				Check: func(_ *terraform.State) error {
 					update := fake.updates[len(fake.updates)-1]
-					if _, present := update["env_patch"]; !present {
-						return fmt.Errorf("dropping env must blank the keys Terraform set, got %v", update)
+					if string(update["env_patch"]) != `{"Authorization":null,"Region":null}` {
+						return fmt.Errorf("dropping env must delete the keys Terraform set with null, got %s", update["env_patch"])
 					}
 					for identifier := range fake.env {
 						if fake.env[identifier]["X-Portal-Header"] != "${SECRET_SLOT:portal}" {
 							return fmt.Errorf("the portal header was touched: %v", fake.env[identifier])
 						}
-						if fake.env[identifier]["Region"] != "" {
-							return fmt.Errorf("a dropped key must be blanked, got %v", fake.env[identifier])
+						if _, present := fake.env[identifier]["Region"]; present {
+							return fmt.Errorf("a dropped key must be deleted, got %v", fake.env[identifier])
 						}
 					}
 					return nil
@@ -431,8 +435,9 @@ resource "ankra_mcp_server" "sentry" {
 }
 
 // TestAccMCPServerEnvKeyCaseCollisions pins N3: env keys are sent as HTTP
-// headers, so keys that differ only in letter case are refused, in one
-// configuration and against a key already stored.
+// headers, so keys that differ only in letter case are refused in one
+// configuration. Changing a key's letter case deletes the old spelling in the
+// same patch, so the two are never stored side by side.
 func TestAccMCPServerEnvKeyCaseCollisions(t *testing.T) {
 	fake := newMCPFake(t)
 	withEnv := func(env string) string {
@@ -455,14 +460,24 @@ resource "ankra_mcp_server" "sentry" {
 			},
 			{Config: withEnv(`{ Region = "eu" }`)},
 			{
-				Config:      withEnv(`{ REGION = "eu" }`),
-				ExpectError: regexp.MustCompile("Env key changes only in letter case"),
+				Config: withEnv(`{ REGION = "eu" }`),
+				Check: func(_ *terraform.State) error {
+					if len(fake.updates) != 1 {
+						return fmt.Errorf("expected one update, got %v", fake.updates)
+					}
+					if patch := string(fake.updates[0]["env_patch"]); patch != `{"REGION":"eu","Region":null}` {
+						return fmt.Errorf("the old spelling must be deleted in the same patch, got %s", patch)
+					}
+					for identifier := range fake.env {
+						if _, present := fake.env[identifier]["Region"]; present || fake.env[identifier]["REGION"] != "eu" {
+							return fmt.Errorf("both spellings are stored: %v", fake.env[identifier])
+						}
+					}
+					return nil
+				},
 			},
 		},
 	})
-	if len(fake.updates) != 0 {
-		t.Errorf("a colliding env reached the platform: %v", fake.updates)
-	}
 }
 
 func mcpToolGrantImportID(state *terraform.State) (string, error) {

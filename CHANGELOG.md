@@ -1,5 +1,9 @@
 ## 0.4.0 (Unreleased)
 
+UPGRADE NOTES:
+
+* 0.4.0 needs an Ankra platform from 2026-10-18 or later for `ankra_cluster_power_schedule` creates, removing keys from `ankra_mcp_server` `env`, `ankra_alert_destination` descriptions set at create, and `ankra_cluster_stack_variable`. The hosted platform already runs such a version.
+
 FEATURES:
 
 * provider: `project_id` (and `ANKRA_PROJECT_ID`) also takes a project slug. The slug is resolved to the project's ID once, before the first request; a slug that matches no project the token can see, or an organisation without projects, fails every resource and data source instead of acting in another project.
@@ -26,12 +30,17 @@ FEATURES:
 * **New Resource:** `ankra_cost_rate_card` - monthly rates for clusters on private-cloud credentials (Proxmox, Morpheus, vSphere, MAAS), per credential or as the organisation fallback card. Amounts are decimal strings; the same value spelled differently by the platform plans no change. ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
 * **New Resource:** `ankra_cost_autopilot_project_default` - one project's own default autopilot tiers, layered over the organisation's, with the project by ID or slug. Destroy returns the project to the organisation defaults. ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
 * **New Data Sources:** `ankra_service_packages`, `ankra_services` (retired services stay listed as `released`), `ankra_service_consumers`, `ankra_ai_remediation_policy` and `ankra_security_dispositions` (filter by `statuses` and `disposition`). ([#46](https://github.com/ankraio/terraform-provider-ankra/pull/46))
+* **New Resource:** `ankra_cluster_stack_variable` - one variable of a stack on a cluster, import as `<cluster_id>/<stack_name>/<name>`. Each write sets or removes only its own key, so other keys, and keys set by other means, are kept. `ankra_cluster` does not send stack variables and leaves them as they are; an `ankra cluster apply` whose stack carries a `variables` map, or publishing a stack draft that edits stack-level fields, replaces the whole map, so manage each key in one place only. Creating it for a key the stack already holds with the configured value adopts the key; with another value it fails, so import the key instead. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
+* **New Data Source:** `ankra_cluster_stack_variables` - the variables a stack is deployed with, with its deploy wave, description and whether a draft is pending. A pending draft's values are never included. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
 
 ENHANCEMENTS:
 
 * `ankra_hetzner_cluster`, `ankra_digitalocean_cluster`, `ankra_ovh_cluster`, `ankra_upcloud_cluster`, `ankra_scaleway_cluster`: new `accept_volume_data_loss` argument. The platform refuses to deprovision a cluster that still holds persistent volumes it would delete until the destroy consents; `force_destroy` does not give that consent. Unset means `false` and plans no change for existing state. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
 * The same five resources: **`terraform destroy` now waits** until the platform no longer lists the cluster, up to the `delete` timeout (default 30 minutes; set `timeouts { delete = "..." }` to change it), instead of returning as soon as the deprovision is accepted. This matches the other cluster lanes, so a replacement no longer collides with the old cluster's name while it is torn down. A destroy that finds the cluster already deprovisioning waits instead of sending the delete again. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
 * resource/ankra_ai_environment: New `demo_ttl_role_caps` (per role tier: `admin`, `operator`, `member`) and `home_slack_channel_id` / `home_slack_channel_name`, with a computed `home_slack_team_id`. Only the tiers you set are written; removing a tier from configuration stops managing it without resetting it. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
+* resource/ankra_mcp_server: A key removed from `env` is now deleted from the server instead of being kept with an empty value. Changing only the letter case of a key now works in one apply, since the old spelling is deleted in the same update. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
+* resource/ankra_cluster_power_schedule: Create identifies the new schedule by the id the platform answers, so it no longer lists the cluster's schedules first or fails when an identical schedule is created at the same time. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
+* resource/ankra_alert_destination: `description` is sent with the create instead of in a second request after it. ([#48](https://github.com/ankraio/terraform-provider-ankra/pull/48))
 
 BUG FIXES:
 

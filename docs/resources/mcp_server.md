@@ -46,7 +46,7 @@ resource "ankra_mcp_server" "sentry" {
 - `cluster_allow_list` (Set of String) Cluster ids allowed to use the server. Unset makes it available to every cluster.
 - `description` (String) Free-text description.
 - `enabled` (Boolean) Whether agent runs may use the server. Defaults to `true`.
-- `env` (Map of String, Sensitive) Environment variables and headers sent to the server. Only the keys you set are managed: keys added outside Terraform (an auth header set in the portal, say) are left alone, and leaving `env` unset touches nothing. A key removed from `env` is set to an empty value, because the API cannot delete a single key. A value under a key that looks sensitive (token, secret, password, api_key, authorization and the like) must be a `${SECRET_SLOT:<id>}` or `${VAULT:<path>}` marker: the platform refuses plaintext there. The values you set are stored in Terraform state (marked sensitive). The platform never returns values, so drift is detected only when a configured key disappears.
+- `env` (Map of String, Sensitive) Environment variables and headers sent to the server. Only the keys you set are managed: keys added outside Terraform (an auth header set in the portal, say) are left alone, and leaving `env` unset touches nothing. A key removed from `env` is deleted from the server. A value under a key that looks sensitive (token, secret, password, api_key, authorization and the like) must be a `${SECRET_SLOT:<id>}` or `${VAULT:<path>}` marker: the platform refuses plaintext there. The values you set are stored in Terraform state (marked sensitive). The platform never returns values, so drift is detected only when a configured key disappears.
 - `permission_tier` (String) `read_only` or `read_write`. Defaults to `read_only`.
 
 ### Read-Only

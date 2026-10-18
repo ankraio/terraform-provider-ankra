@@ -28,7 +28,6 @@ var (
 	_ resource.Resource                = (*mcpServerResource)(nil)
 	_ resource.ResourceWithConfigure   = (*mcpServerResource)(nil)
 	_ resource.ResourceWithImportState = (*mcpServerResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*mcpServerResource)(nil)
 )
 
 type mcpServerResource struct {
@@ -93,7 +92,7 @@ func (server *mcpServerResource) Schema(_ context.Context, _ resource.SchemaRequ
 			"env": schema.MapAttribute{
 				MarkdownDescription: "Environment variables and headers sent to the server. Only the keys you set are managed: keys " +
 					"added outside Terraform (an auth header set in the portal, say) are left alone, and leaving `env` unset touches " +
-					"nothing. A key removed from `env` is set to an empty value, because the API cannot delete a single key. A value " +
+					"nothing. A key removed from `env` is deleted from the server. A value " +
 					"under a key that looks sensitive (token, secret, password, api_key, authorization and the like) must be a " +
 					"`${SECRET_SLOT:<id>}` or `${VAULT:<path>}` marker: the platform refuses plaintext there. The values you set are " +
 					"stored in Terraform state (marked sensitive). The platform never returns values, so drift is detected only when " +
@@ -273,17 +272,17 @@ func mcpServerEnv(ctx context.Context, env types.Map, diagnostics *diag.Diagnost
 }
 
 // mcpServerEnvPatch is the env_patch of an update: the configured keys, and
-// an empty value for each key configuration dropped, since the API cannot
-// delete a key. Keys never configured are not named, so values set outside
-// Terraform survive. Nil means env is left untouched.
-func mcpServerEnvPatch(previous, planned map[string]string) map[string]string {
-	patch := map[string]string{}
+// a null for each key configuration dropped, which deletes it. Keys never
+// configured are not named, so values set outside Terraform survive. Nil
+// means env is left untouched.
+func mcpServerEnvPatch(previous, planned map[string]string) map[string]*string {
+	patch := map[string]*string{}
 	for key, value := range planned {
-		patch[key] = value
+		patch[key] = &value
 	}
 	for key := range previous {
 		if _, kept := planned[key]; !kept {
-			patch[key] = ""
+			patch[key] = nil
 		}
 	}
 	if len(patch) == 0 {
@@ -353,36 +352,6 @@ func mcpServerEnvCollision(planned, existing []string) (string, string, bool) {
 		}
 	}
 	return "", "", false
-}
-
-// ModifyPlan refuses an env key whose letter case changed from the key in
-// state: the old spelling cannot be deleted through the API, only blanked,
-// so both would be stored and collide as headers.
-func (server *mcpServerResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
-	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
-		return
-	}
-	var state, plan mcpServerModel
-	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
-	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if response.Diagnostics.HasError() {
-		return
-	}
-	plannedKeys := mcpServerEnvKeys(mcpServerEnv(ctx, plan.Env, &response.Diagnostics))
-	stateKeys := mcpServerEnvKeys(mcpServerEnv(ctx, state.Env, &response.Diagnostics))
-	if planned, existing, collides := mcpServerEnvCollision(plannedKeys, stateKeys); collides {
-		response.Diagnostics.AddAttributeError(path.Root("env"), "Env key changes only in letter case",
-			fmt.Sprintf("%q would be added next to %q, which is already stored. The API cannot delete a single env key, only blank it, so "+
-				"both would be sent as the same HTTP header. Delete %q from the server in the portal first, then apply.", planned, existing, existing))
-	}
-}
-
-func mcpServerEnvKeys(values map[string]string) []string {
-	keys := make([]string, 0, len(values))
-	for key := range values {
-		keys = append(keys, key)
-	}
-	return keys
 }
 
 // mcpServerNameValidator mirrors the platform's name rule: 1 to 120
