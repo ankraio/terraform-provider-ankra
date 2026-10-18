@@ -242,7 +242,8 @@ func managedPoolTaints(taints []map[string]string) []client.NodeGroupTaint {
 
 // managedNodePoolAttributes are the pool attributes, without the name. A
 // standalone pool (ankra_managed_node_pool) replaces itself when an argument
-// the platform cannot change in place changes; inside ankra_managed_cluster
+// the platform cannot change in place changes, except the size, which the
+// resource changes by a tracked blue/green replacement; inside ankra_managed_cluster
 // the node_pools map refuses such a change at plan time instead, because
 // replacing the cluster for it would destroy every workload.
 func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
@@ -267,16 +268,6 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 		replaceList = []planmodifier.List{listplanmodifier.RequiresReplace()}
 		replaceObject = []planmodifier.Object{objectplanmodifier.RequiresReplace()}
 	}
-	var sizeModifiers []planmodifier.String
-	if isStandalone {
-		sizeModifiers = []planmodifier.String{stringplanmodifier.RequiresReplaceIf(
-			func(_ context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
-				response.RequiresReplace = !strings.EqualFold(request.PlanValue.ValueString(), request.StateValue.ValueString())
-			},
-			"Changing the size replaces the pool; a change of case only is not a change.",
-			"Changing the size replaces the pool; a change of case only is not a change.",
-		)}
-	}
 	computedString := func(description string) schema.StringAttribute {
 		return schema.StringAttribute{
 			MarkdownDescription: description,
@@ -289,8 +280,7 @@ func managedNodePoolAttributes(isStandalone bool) map[string]schema.Attribute {
 		"size": schema.StringAttribute{
 			MarkdownDescription: "Node size in the provider's vocabulary (droplet size, machine type, VM size, plan). " +
 				"Compared case-insensitively, since providers report sizes in their own case.",
-			Required:      true,
-			PlanModifiers: sizeModifiers,
+			Required: true,
 		},
 		"node_count": schema.Int64Attribute{
 			MarkdownDescription: "Number of nodes (the API's `count`); the platform defaults it to 1. Changed in place. While " +
