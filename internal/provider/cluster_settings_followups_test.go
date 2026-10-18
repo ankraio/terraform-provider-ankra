@@ -655,3 +655,60 @@ func TestAddonSettingsToAPI(t *testing.T) {
 		t.Errorf("an addon without a settings block sent %s; the platform must keep its stored settings", encoded)
 	}
 }
+
+// TestAccClusterFollowupResourcesResolveProjectSlug: with a provider scoped
+// by project slug, every request of the new resources carries the project's
+// ID, and a destroy without refresh does not read the slug as a scope move.
+func TestAccClusterFollowupResourcesResolveProjectSlug(t *testing.T) {
+	const projectID = "7d3f0c1e-2222-4333-8444-955556666777"
+	fake := newClusterSettingsFake(t)
+	fake.addFollowupRoutes(t)
+	listings := 0
+	registerProjects(fake.routeFake, map[string]string{"platform": projectID}, &listings)
+	protection := newStackProtectionFake(t)
+	registerProjects(protection.routeFake, map[string]string{"platform": projectID}, &listings)
+	settingsConfig := slugProviderBlock(fake.routeFake, "platform") + fmt.Sprintf(`
+resource "ankra_cluster_control_plane_self_heal" "prod" {
+  cluster_id = %q
+  enabled    = false
+}
+
+resource "ankra_cluster_labels" "prod" {
+  cluster_id = %q
+  labels     = { tier = "gold" }
+}
+
+resource "ankra_cluster_agent_resources" "prod" {
+  cluster_id  = %q
+  cpu_request = "100m"
+}
+`, clusterSettingsTestCluster, clusterSettingsTestCluster, clusterSettingsTestCluster)
+	protectionConfig := slugProviderBlock(protection.routeFake, "platform") + fmt.Sprintf(`
+resource "ankra_stack_backup_protection" "shop" {
+  cluster_id = %q
+  stack_name = "shop"
+  vault      = "production-backups"
+}
+`, clusterSettingsTestCluster)
+	for _, testCase := range []struct {
+		fake   *routeFake
+		config string
+	}{{fake.routeFake, settingsConfig}, {protection.routeFake, protectionConfig}} {
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			Steps: []resource.TestStep{
+				{Config: testCase.config},
+				{Config: testCase.config, Destroy: true, PreventPostDestroyRefresh: true},
+			},
+		})
+		if outside := testCase.fake.requestsOutsideProject(projectID); len(outside) != 0 {
+			t.Errorf("requests not scoped to the resolved project: %v", outside)
+		}
+	}
+	if listings == 0 {
+		t.Error("the slug was never resolved against the project listing")
+	}
+	if protection.unprotects != 1 {
+		t.Errorf("destroy unprotected %d times, want once", protection.unprotects)
+	}
+}
