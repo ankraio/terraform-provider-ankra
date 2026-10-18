@@ -5,6 +5,9 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"net/url"
 	"slices"
 	"strings"
@@ -188,10 +191,54 @@ func credentialApplyDisplayName(ctx context.Context, apiClient *client.Client, c
 		return current, diagnostics
 	}
 	if _, err := apiClient.SetCredentialDisplayName(ctx, credentialID, planned.ValueStringPointer()); err != nil {
-		diagnostics.AddAttributeError(path.Root("display_name"), "Unable to set the credential's display name", err.Error())
+		diagnostics.AddAttributeError(path.Root("display_name"), "Unable to set the credential's display name", credentialAPIErrorText(err))
 		return current, diagnostics
 	}
 	return planned, diagnostics
+}
+
+// credentialCreateDisplayName sets the configured display name right after a
+// create. A failure there is a warning, not an error: an error would leave
+// the new, working credential tainted, and the next apply would replace it
+// over a label. Terraform requires the state to hold the configured label,
+// so it is recorded as configured; the platform keeps the label it listed,
+// and the next refresh reads that back, so the next plan sets it again.
+func credentialCreateDisplayName(ctx context.Context, apiClient *client.Client, credentialID string, planned types.String, listed types.String) (types.String, diag.Diagnostics) {
+	var diagnostics diag.Diagnostics
+	if planned.IsNull() || planned.IsUnknown() || planned.Equal(listed) {
+		if planned.IsUnknown() {
+			return listed, diagnostics
+		}
+		return planned, diagnostics
+	}
+	if _, err := apiClient.SetCredentialDisplayName(ctx, credentialID, planned.ValueStringPointer()); err != nil {
+		diagnostics.AddAttributeWarning(path.Root("display_name"), "The credential was created, but its display name was not set",
+			"The platform refused the display name, so the credential keeps the label it had: "+credentialAPIErrorText(err)+
+				"\n\nThe credential works and is kept. The next plan shows the display name as a change and sets it again.")
+	}
+	return planned, diagnostics
+}
+
+// credentialAPIErrorText prefers the platform's own explanation (its detail
+// or message) over the raw response body.
+func credentialAPIErrorText(err error) string {
+	var apiError *client.APIError
+	if !errors.As(err, &apiError) {
+		return err.Error()
+	}
+	var body struct {
+		Detail  any    `json:"detail"`
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(apiError.Body), &body) == nil {
+		if detail, isString := body.Detail.(string); isString && detail != "" {
+			return fmt.Sprintf("%s (%s %s answered %d)", detail, apiError.Method, apiError.Path, apiError.StatusCode)
+		}
+		if body.Message != "" {
+			return fmt.Sprintf("%s (%s %s answered %d)", body.Message, apiError.Method, apiError.Path, apiError.StatusCode)
+		}
+	}
+	return err.Error()
 }
 
 // credentialDisplayNameValidator rejects at plan time a label the platform

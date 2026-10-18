@@ -105,6 +105,8 @@ type credentialFake struct {
 	// writes the provider sent.
 	rotations          []map[string]any
 	displayNameUpdates []map[string]json.RawMessage
+	// displayNameRefused answers the display-name route 403.
+	displayNameRefused bool
 }
 
 func newCredentialFake(t *testing.T) *credentialFake {
@@ -240,6 +242,10 @@ func newCredentialFake(t *testing.T) *credentialFake {
 		var body map[string]json.RawMessage
 		decodeJSON(t, request, &body)
 		fake.displayNameUpdates = append(fake.displayNameUpdates, body)
+		if fake.displayNameRefused {
+			writeJSON(t, writer, http.StatusForbidden, map[string]any{"detail": "Missing permission: credentials.write"})
+			return
+		}
 		raw, present := body["display_name"]
 		if !present {
 			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "display_name is required"})

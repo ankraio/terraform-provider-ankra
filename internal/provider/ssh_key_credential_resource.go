@@ -182,7 +182,7 @@ func (sshKeyResource *sshKeyCredentialResource) Create(ctx context.Context, requ
 	}
 	plannedDisplayName := plan.DisplayName
 	sshKeyResource.applyListed(&plan, credential)
-	displayName, displayNameDiagnostics := credentialApplyDisplayName(ctx, apiClient, created.ID, plannedDisplayName, plan.DisplayName)
+	displayName, displayNameDiagnostics := credentialCreateDisplayName(ctx, apiClient, created.ID, plannedDisplayName, plan.DisplayName)
 	response.Diagnostics.Append(displayNameDiagnostics...)
 	plan.DisplayName = displayName
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)

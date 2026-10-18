@@ -253,6 +253,72 @@ resource "ankra_ssh_key_credential" "laptop" {
 	})
 }
 
+// TestAccCredentialCreateKeepsTheCredentialWhenTheDisplayNameFails pins that
+// a display name the platform refuses right after a create is a warning:
+// the new credential is neither tainted nor replaced, keeps its listed label,
+// and the next apply sets the label in place.
+func TestAccCredentialCreateKeepsTheCredentialWhenTheDisplayNameFails(t *testing.T) {
+	fake := newCredentialFake(t)
+	fake.displayNameRefused = true
+	configuration := fake.providerBlock() + `
+resource "ankra_hetzner_credential" "main" {
+  name         = "hetzner-main"
+  api_token    = "token"
+  display_name = "Production"
+}
+
+resource "ankra_ssh_key_credential" "laptop" {
+  name           = "laptop"
+  ssh_public_key = "ssh-ed25519 AAAAC3laptop me@laptop"
+  display_name   = "Production"
+}
+`
+	inPlace := resource.ConfigPlanChecks{
+		PreApply: []plancheck.PlanCheck{
+			plancheck.ExpectResourceAction("ankra_hetzner_credential.main", plancheck.ResourceActionUpdate),
+			plancheck.ExpectResourceAction("ankra_ssh_key_credential.laptop", plancheck.ResourceActionUpdate),
+		},
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				// The refresh after the apply reads the listed label, so the
+				// plan is not empty: it asks to set the label again.
+				Config:             configuration,
+				ExpectNonEmptyPlan: true,
+				Check: func(_ *terraform.State) error {
+					for _, record := range fake.records {
+						if record.displayName != nil {
+							return fmt.Errorf("credential %s is labelled %q after a refused write", record.name, *record.displayName)
+						}
+					}
+					if len(fake.creates) != 2 || len(fake.displayNameUpdates) != 2 {
+						return fmt.Errorf("sent creates %v and display name updates %v", fake.creates, fake.displayNameUpdates)
+					}
+					return nil
+				},
+			},
+			{
+				PreConfig:        func() { fake.displayNameRefused = false },
+				Config:           configuration,
+				ConfigPlanChecks: inPlace,
+				Check: func(_ *terraform.State) error {
+					for _, record := range fake.records {
+						if record.displayName == nil || *record.displayName != "Production" {
+							return fmt.Errorf("credential %s is labelled %v", record.name, record.displayName)
+						}
+					}
+					if len(fake.creates) != 2 || len(fake.deletes) != 0 {
+						return fmt.Errorf("the credentials were replaced: creates %v, deletes %v", fake.creates, fake.deletes)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
 // TestAccCredentialListedSettingsDrift pins drift detection on the
 // connection settings the listing carries: a re-pointed credential plans a
 // replacement, a setting the listing leaves out keeps the state, and the

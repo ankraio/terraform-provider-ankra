@@ -405,7 +405,7 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 	if kind.awsMethod != "" {
 		awsCredential, err := apiClient.CreateAwsCredential(ctx, kind.awsMethod, body)
 		if err != nil {
-			response.Diagnostics.AddError("Unable to create "+kind.label+" credential", err.Error())
+			response.Diagnostics.AddError("Unable to create "+kind.label+" credential", credentialAPIErrorText(err))
 			return
 		}
 		created, err = apiClient.GetCredential(ctx, kind.provider, awsCredential.ID)
@@ -430,7 +430,7 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 			return
 		}
 		if err != nil {
-			response.Diagnostics.AddError("Unable to create "+kind.label+" credential", err.Error())
+			response.Diagnostics.AddError("Unable to create "+kind.label+" credential", credentialAPIErrorText(err))
 			return
 		}
 	}
@@ -440,7 +440,7 @@ func (credentialResource *providerCredentialResource) Create(ctx context.Context
 	response.Diagnostics.Append(request.Plan.GetAttribute(ctx, path.Root("display_name"), &plannedDisplayName)...)
 	response.Diagnostics.Append(credentialSetListed(ctx, &response.State, created)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
-	displayName, displayNameDiagnostics := credentialApplyDisplayName(ctx, apiClient, created.ID, plannedDisplayName, types.StringPointerValue(created.DisplayName))
+	displayName, displayNameDiagnostics := credentialCreateDisplayName(ctx, apiClient, created.ID, plannedDisplayName, types.StringPointerValue(created.DisplayName))
 	response.Diagnostics.Append(displayNameDiagnostics...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("display_name"), displayName)...)
 }
@@ -507,7 +507,7 @@ func (credentialResource *providerCredentialResource) Update(ctx context.Context
 				return
 			}
 			if err := apiClient.UpdateProxmoxCredentialTailscale(ctx, credentialID.ValueString(), tailscale); err != nil {
-				response.Diagnostics.AddError("Unable to update "+kind.label+" credential Tailscale settings", err.Error())
+				response.Diagnostics.AddError("Unable to update "+kind.label+" credential Tailscale settings", credentialAPIErrorText(err))
 				return
 			}
 			response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("tailscale"), planned)...)
@@ -577,7 +577,7 @@ func (credentialResource *providerCredentialResource) rotate(ctx context.Context
 
 	rotation, err := apiClient.RotateCredential(ctx, credentialID, secretFields)
 	if err != nil {
-		detail := err.Error()
+		detail := credentialAPIErrorText(err)
 		var apiError *client.APIError
 		if errors.As(err, &apiError) && (apiError.StatusCode == http.StatusNotFound || apiError.StatusCode == http.StatusMethodNotAllowed) {
 			detail += "\n\nRotating a credential in place needs an Ankra platform from 2026-10-18 or later."
@@ -628,7 +628,7 @@ func (credentialResource *providerCredentialResource) Delete(ctx context.Context
 	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
 		return
 	}
-	response.Diagnostics.AddError("Unable to delete "+credentialResource.kind.label+" credential", err.Error())
+	response.Diagnostics.AddError("Unable to delete "+credentialResource.kind.label+" credential", credentialAPIErrorText(err))
 }
 
 // ImportState imports by credential id. The platform never returns the
