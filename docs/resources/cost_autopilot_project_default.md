@@ -28,11 +28,11 @@ resource "ankra_cost_autopilot_project_default" "payments" {
 ### Required
 
 - `defaults` (Map of String) Tier per environment kind. Kinds: `production`, `staging`, `development`, `preview`, `unknown`. Tiers: `hands-off`, `scheduled`, `managed`, `ephemeral`. At least one.
-- `project_id` (String) Project the defaults apply to. Changing it replaces the resource.
+- `project_id` (String) Project the defaults apply to, by ID or slug. Moving to another project replaces the resource; writing the same project differently (its slug instead of its ID) does not.
 
 ### Read-Only
 
-- `id` (String) The project id.
+- `id` (String) The project's ID, whichever way `project_id` names it.
 - `project_name` (String) Name of the project.
 
 ## Import

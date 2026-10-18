@@ -357,6 +357,8 @@ func TestAccCostAutopilotProjectDefault(t *testing.T) {
 	fake := newRouteFake(t)
 	projects := map[string]map[string]any{}
 	var putBodies []map[string]json.RawMessage
+	var projectListings, deletes int
+	registerProjects(fake, map[string]string{"payments": followupProjectID}, &projectListings)
 	fake.handle("GET /api/v1/org/cloud-cost/autopilot", func(writer http.ResponseWriter, _ *http.Request) {
 		layers := []map[string]any{}
 		for _, project := range projects {
@@ -381,6 +383,7 @@ func TestAccCostAutopilotProjectDefault(t *testing.T) {
 		writeJSON(t, writer, http.StatusOK, project)
 	})
 	fake.handle("DELETE /api/v1/org/cloud-cost/autopilot/projects/{project_id}", func(writer http.ResponseWriter, request *http.Request) {
+		deletes++
 		delete(projects, request.PathValue("project_id"))
 		writeJSON(t, writer, http.StatusOK, map[string]any{"project_id": request.PathValue("project_id"), "project_name": "payments",
 			"defaults": map[string]any{}, "set_by": "", "set_at": "0001-01-01T00:00:00Z"})
@@ -443,6 +446,20 @@ resource "ankra_cost_autopilot_project_default" "payments" {
 				ImportState:       true,
 				ImportStateId:     followupProjectID,
 				ImportStateVerify: true,
+			},
+			{
+				// The same project by slug is an in-place change, not a move.
+				Config: strings.Replace(config(`{ production = "scheduled" }`), fmt.Sprintf("%q", followupProjectID), `"payments"`, 1),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_cost_autopilot_project_default.payments", "project_id", "payments"),
+					resource.TestCheckResourceAttr("ankra_cost_autopilot_project_default.payments", "id", followupProjectID),
+					func(_ *terraform.State) error {
+						if deletes != 0 {
+							return fmt.Errorf("respelling the project as its slug replaced the resource")
+						}
+						return nil
+					},
+				),
 			},
 		},
 	})

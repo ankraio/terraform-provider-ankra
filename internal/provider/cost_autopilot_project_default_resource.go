@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -23,6 +24,7 @@ var (
 	_ resource.Resource                = (*costAutopilotProjectDefaultResource)(nil)
 	_ resource.ResourceWithConfigure   = (*costAutopilotProjectDefaultResource)(nil)
 	_ resource.ResourceWithImportState = (*costAutopilotProjectDefaultResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*costAutopilotProjectDefaultResource)(nil)
 )
 
 type costAutopilotProjectDefaultResource struct {
@@ -55,15 +57,14 @@ func (projectDefault *costAutopilotProjectDefaultResource) Schema(_ context.Cont
 			"Destroy removes the project's defaults, so its clusters follow the organisation's again.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
-				MarkdownDescription: "The project id.",
+				MarkdownDescription: "The project's ID, whichever way `project_id` names it.",
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"project_id": schema.StringAttribute{
-				MarkdownDescription: "Project the defaults apply to. Changing it replaces the resource.",
+				MarkdownDescription: "Project the defaults apply to, by ID or slug. Moving to another project replaces the resource; writing the same project differently (its slug instead of its ID) does not.",
 				Required:            true,
-				Validators:          []validator.String{securityUUIDValidator{}},
-				PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
+				Validators:          []validator.String{costProjectReferenceValidator{}},
 			},
 			"defaults": schema.MapAttribute{
 				MarkdownDescription: "Tier per environment kind. Kinds: `production`, `staging`, `development`, `preview`, `unknown`. " +
@@ -78,6 +79,12 @@ func (projectDefault *costAutopilotProjectDefaultResource) Schema(_ context.Cont
 			},
 		},
 	}
+}
+
+// ModifyPlan replaces the resource when project_id names another project,
+// but not when it only respells the same one.
+func (projectDefault *costAutopilotProjectDefaultResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	helmPlanProjectReplacement(ctx, projectDefault.client, request, response)
 }
 
 func (projectDefault *costAutopilotProjectDefaultResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
@@ -103,7 +110,12 @@ func (projectDefault *costAutopilotProjectDefaultResource) write(ctx context.Con
 	if diagnostics.HasError() {
 		return
 	}
-	stored, err := apiClient.SetCostAutopilotProject(ctx, model.ProjectID.ValueString(), defaults)
+	projectID, err := apiClient.ProjectIDFor(ctx, model.ProjectID.ValueString())
+	if err != nil {
+		diagnostics.AddError("Unable to resolve project_id", err.Error())
+		return
+	}
+	stored, err := apiClient.SetCostAutopilotProject(ctx, projectID, defaults)
 	if err != nil {
 		diagnostics.AddError("Unable to set the project's autopilot defaults",
 			err.Error()+"\n\nA 404 means the project is not a live project of the organisation.")
@@ -124,7 +136,12 @@ func (projectDefault *costAutopilotProjectDefaultResource) Read(ctx context.Cont
 	if response.Diagnostics.HasError() {
 		return
 	}
-	stored, err := apiClient.GetCostAutopilotProject(ctx, state.ProjectID.ValueString())
+	projectID, err := apiClient.ProjectIDFor(ctx, state.ProjectID.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError("Unable to resolve project_id", err.Error())
+		return
+	}
+	stored, err := apiClient.GetCostAutopilotProject(ctx, projectID)
 	if removeWhenNotFound(ctx, err, apiClient, response) {
 		return
 	}
@@ -147,14 +164,19 @@ func (projectDefault *costAutopilotProjectDefaultResource) Delete(ctx context.Co
 	if response.Diagnostics.HasError() {
 		return
 	}
-	err := apiClient.ClearCostAutopilotProject(ctx, state.ProjectID.ValueString())
+	projectID, err := apiClient.ProjectIDFor(ctx, state.ProjectID.ValueString())
+	if err != nil {
+		response.Diagnostics.AddError("Unable to resolve project_id", err.Error())
+		return
+	}
+	err = apiClient.ClearCostAutopilotProject(ctx, projectID)
 	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
 		return
 	}
 	response.Diagnostics.AddError("Unable to remove the project's autopilot defaults", err.Error())
 }
 
-// ImportState imports by project id.
+// ImportState imports by project ID or slug.
 func (projectDefault *costAutopilotProjectDefaultResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("project_id"), request.ID)...)
@@ -162,7 +184,9 @@ func (projectDefault *costAutopilotProjectDefaultResource) ImportState(ctx conte
 
 func (model *costAutopilotProjectDefaultModel) apply(ctx context.Context, stored *client.CostAutopilotProject, diagnostics *diag.Diagnostics) {
 	model.ID = types.StringValue(stored.ProjectID)
-	model.ProjectID = types.StringValue(stored.ProjectID)
+	if model.ProjectID.IsNull() || model.ProjectID.IsUnknown() || model.ProjectID.ValueString() == "" {
+		model.ProjectID = types.StringValue(stored.ProjectID)
+	}
 	model.ProjectName = types.StringValue(stored.ProjectName)
 	defaults, mapDiagnostics := types.MapValueFrom(ctx, types.StringType, stored.Defaults)
 	diagnostics.Append(mapDiagnostics...)
@@ -188,5 +212,27 @@ func (costAutopilotProjectDefaultsNotEmpty) ValidateMap(_ context.Context, reque
 	if len(request.ConfigValue.Elements()) == 0 {
 		response.Diagnostics.AddAttributeError(request.Path, "Empty defaults",
 			"Name at least one environment kind. To make a project follow the organisation's defaults, destroy this resource.")
+	}
+}
+
+// costProjectReferenceValidator accepts a project ID or a project slug.
+type costProjectReferenceValidator struct{}
+
+func (costProjectReferenceValidator) Description(_ context.Context) string {
+	return "must be a project ID or a project slug (lowercase letters, digits and \"-\", at most 63 characters)"
+}
+
+func (referenceValidator costProjectReferenceValidator) MarkdownDescription(ctx context.Context) string {
+	return referenceValidator.Description(ctx)
+}
+
+func (referenceValidator costProjectReferenceValidator) ValidateString(ctx context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	value := request.ConfigValue.ValueString()
+	if !uuidPattern.MatchString(value) && !projectSlugPattern.MatchString(value) {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid project_id",
+			fmt.Sprintf("%q %s.", value, referenceValidator.Description(ctx)))
 	}
 }
