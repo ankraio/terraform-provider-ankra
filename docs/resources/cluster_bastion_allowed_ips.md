@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_bastion_allowed_ips Resource - ankra"
 subcategory: ""
 description: |-
-  The IPv4 sources allowed to reach a cluster's bastion over SSH, on Hetzner, OVHcloud, UpCloud and DigitalOcean clusters. The platform's own addresses are always allowed as well. Without this resource (or with an empty cidrs), the bastion accepts SSH from any source, key-only. The platform applies a change to the bastion in the background, so the apply returns once the list is stored. A list changed outside Terraform shows as drift. Destroying the resource clears the list, which opens the bastion to every source again. Declare at most one per cluster. Needs an Ankra platform from 2026-10-18 or later. AWS and Ankra Cloud clusters set their list with bastion_allowed_ips on the cluster resource instead.
+  The IPv4 sources allowed to reach a cluster's bastion over SSH, on Hetzner, OVHcloud, UpCloud and DigitalOcean clusters. The platform's own addresses are always allowed as well. Without this resource (or with an empty cidrs), the bastion accepts SSH from any source, key-only. The platform applies a change to the bastion in the background, so the apply returns once the list is stored. A list changed outside Terraform shows as drift. Destroying the resource clears the list, which opens the bastion to every source again, and waits (up to the delete timeout, default 10 minutes) until the platform has applied that to the bastion, so destroying the cluster in the same run does not race it. Declare at most one per cluster. Needs an Ankra platform from 2026-10-18 or later. AWS and Ankra Cloud clusters set their list with bastion_allowed_ips on the cluster resource instead.
 ---
 
 # ankra_cluster_bastion_allowed_ips (Resource)
 
-The IPv4 sources allowed to reach a cluster's bastion over SSH, on Hetzner, OVHcloud, UpCloud and DigitalOcean clusters. The platform's own addresses are always allowed as well. Without this resource (or with an empty `cidrs`), the bastion accepts SSH from any source, key-only. The platform applies a change to the bastion in the background, so the apply returns once the list is stored. A list changed outside Terraform shows as drift. Destroying the resource clears the list, which opens the bastion to every source again. Declare at most one per cluster. Needs an Ankra platform from 2026-10-18 or later. AWS and Ankra Cloud clusters set their list with `bastion_allowed_ips` on the cluster resource instead.
+The IPv4 sources allowed to reach a cluster's bastion over SSH, on Hetzner, OVHcloud, UpCloud and DigitalOcean clusters. The platform's own addresses are always allowed as well. Without this resource (or with an empty `cidrs`), the bastion accepts SSH from any source, key-only. The platform applies a change to the bastion in the background, so the apply returns once the list is stored. A list changed outside Terraform shows as drift. Destroying the resource clears the list, which opens the bastion to every source again, and waits (up to the `delete` timeout, default 10 minutes) until the platform has applied that to the bastion, so destroying the cluster in the same run does not race it. Declare at most one per cluster. Needs an Ankra platform from 2026-10-18 or later. AWS and Ankra Cloud clusters set their list with `bastion_allowed_ips` on the cluster resource instead.
 
 ## Example Usage
 
@@ -30,10 +30,21 @@ resource "ankra_cluster_bastion_allowed_ips" "prod" {
 - `cidrs` (Set of String) IPv4 CIDRs allowed to reach the bastion over SSH, at most 64, written in canonical form (`203.0.113.7/32` for one address, host bits zero). IPv6 and `0.0.0.0/0` are refused; an empty set clears the list.
 - `cluster_id` (String) Identifier of the cluster. Changing it replaces the resource.
 
+### Optional
+
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
+
 ### Read-Only
 
 - `cluster_kind` (String) Kind of the cluster (`hetzner`, `ovh`, `upcloud` or `digitalocean`), resolved from the platform; it selects the API lane.
 - `id` (String) The cluster id.
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `delete` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours). Setting a timeout for a Delete operation is only applicable if changes are saved into state before the destroy operation occurs.
 
 ## Import
 

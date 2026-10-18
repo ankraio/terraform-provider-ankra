@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -39,11 +41,19 @@ type clusterBastionAllowedIPsResource struct {
 	configuredClient
 }
 
+// defaultBastionAllowedIPsClearTimeout bounds how long destroy waits for the
+// operation that clears the list on the bastion.
+const defaultBastionAllowedIPsClearTimeout = 10 * time.Minute
+
+// bastionAllowedIPsPollInterval paces that wait; tests shorten it.
+var bastionAllowedIPsPollInterval = 10 * time.Second
+
 type clusterBastionAllowedIPsModel struct {
-	ID          types.String `tfsdk:"id"`
-	ClusterID   types.String `tfsdk:"cluster_id"`
-	ClusterKind types.String `tfsdk:"cluster_kind"`
-	CIDRs       types.Set    `tfsdk:"cidrs"`
+	ID          types.String   `tfsdk:"id"`
+	ClusterID   types.String   `tfsdk:"cluster_id"`
+	ClusterKind types.String   `tfsdk:"cluster_kind"`
+	CIDRs       types.Set      `tfsdk:"cidrs"`
+	Timeouts    timeouts.Value `tfsdk:"timeouts"`
 }
 
 // NewClusterBastionAllowedIPsResource returns the
@@ -56,13 +66,15 @@ func (allowedIPsResource *clusterBastionAllowedIPsResource) Metadata(_ context.C
 	response.TypeName = request.ProviderTypeName + "_cluster_bastion_allowed_ips"
 }
 
-func (allowedIPsResource *clusterBastionAllowedIPsResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
+func (allowedIPsResource *clusterBastionAllowedIPsResource) Schema(ctx context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "The IPv4 sources allowed to reach a cluster's bastion over SSH, on Hetzner, OVHcloud, UpCloud and " +
 			"DigitalOcean clusters. The platform's own addresses are always allowed as well. Without this resource (or with an " +
 			"empty `cidrs`), the bastion accepts SSH from any source, key-only. The platform applies a change to the bastion in the " +
 			"background, so the apply returns once the list is stored. A list changed outside Terraform shows as drift. Destroying " +
-			"the resource clears the list, which opens the bastion to every source again. Declare at most one per cluster. " +
+			"the resource clears the list, which opens the bastion to every source again, and waits (up to the `delete` timeout, " +
+			"default 10 minutes) until the platform has applied that to the bastion, so destroying the cluster in the same run does " +
+			"not race it. Declare at most one per cluster. " +
 			"Needs an Ankra platform from 2026-10-18 or later. AWS and Ankra Cloud clusters set their list with " +
 			"`bastion_allowed_ips` on the cluster resource instead.",
 		Attributes: map[string]schema.Attribute{
@@ -81,6 +93,9 @@ func (allowedIPsResource *clusterBastionAllowedIPsResource) Schema(_ context.Con
 				ElementType: types.StringType,
 				Validators:  []validator.Set{clusterBastionAllowedIPsValidator{}},
 			},
+		},
+		Blocks: map[string]schema.Block{
+			"timeouts": timeouts.Block(ctx, timeouts.Opts{Delete: true}),
 		},
 	}
 }
@@ -194,7 +209,10 @@ func (allowedIPsResource *clusterBastionAllowedIPsResource) Update(ctx context.C
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 
-// Delete clears the list, which opens the bastion to every source again.
+// Delete clears the list, which opens the bastion to every source again, and
+// waits for the operation applying that to settle: a destroy of the whole
+// configuration deletes the cluster right after, which would otherwise race
+// the bastion update still in flight.
 func (allowedIPsResource *clusterBastionAllowedIPsResource) Delete(ctx context.Context, request resource.DeleteRequest, response *resource.DeleteResponse) {
 	apiClient := allowedIPsResource.requireClient(&response.Diagnostics)
 	if apiClient == nil {
@@ -205,11 +223,56 @@ func (allowedIPsResource *clusterBastionAllowedIPsResource) Delete(ctx context.C
 	if response.Diagnostics.HasError() {
 		return
 	}
-	_, err := apiClient.SetBastionAllowedIPs(ctx, state.ClusterKind.ValueString(), state.ClusterID.ValueString(), []string{})
-	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+	wait := resolveTimeout(ctx, state.Timeouts.Delete, defaultBastionAllowedIPsClearTimeout, &response.Diagnostics)
+	if response.Diagnostics.HasError() {
 		return
 	}
-	response.Diagnostics.AddError("Unable to clear the bastion SSH allowlist", clusterBastionAllowedIPsErrorText(err, state.ClusterID.ValueString()))
+	clusterID := state.ClusterID.ValueString()
+	written, err := apiClient.SetBastionAllowedIPs(ctx, state.ClusterKind.ValueString(), clusterID, []string{})
+	if err != nil {
+		if deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+			return
+		}
+		response.Diagnostics.AddError("Unable to clear the bastion SSH allowlist", clusterBastionAllowedIPsErrorText(err, clusterID))
+		return
+	}
+	if written.OperationID == nil || *written.OperationID == "" {
+		return
+	}
+	waitContext, cancel := context.WithTimeout(ctx, wait)
+	defer cancel()
+	if err := awaitBastionAllowedIPsOperation(waitContext, apiClient, *written.OperationID); err != nil {
+		response.Diagnostics.AddError("Clearing the bastion SSH allowlist did not finish",
+			fmt.Sprintf("The list of cluster %s was cleared, but the operation applying that to the bastion %s. "+
+				"Run the destroy again once it has settled; the list is already clear, so it then returns at once.", clusterID, err))
+	}
+}
+
+// awaitBastionAllowedIPsOperation polls the operation that applies an
+// allowlist write until it ends. An operation the platform no longer finds
+// (404) has settled; one the token may not read (401, 403) cannot be
+// followed, and is not waited for.
+func awaitBastionAllowedIPsOperation(ctx context.Context, apiClient *client.Client, operationID string) error {
+	for {
+		execution, err := apiClient.GetExecution(ctx, operationID)
+		switch {
+		case client.IsNotFound(err), apiStatus(err) == http.StatusUnauthorized, apiStatus(err) == http.StatusForbidden:
+			return nil
+		case err == nil && execution.Status == client.ExecutionStatusSuccess:
+			return nil
+		case err == nil && client.IsExecutionFailed(execution.Status):
+			detail := ""
+			if execution.ErrorExcerpt != nil && *execution.ErrorExcerpt != "" {
+				detail = ": " + *execution.ErrorExcerpt
+			}
+			return fmt.Errorf("(operation %s) ended %s%s", operationID, execution.Status, detail)
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("(operation %s) was still running at the delete timeout", operationID)
+		case <-time.After(bastionAllowedIPsPollInterval):
+		}
+	}
 }
 
 // ImportState imports by cluster id; the read resolves the cluster's kind.

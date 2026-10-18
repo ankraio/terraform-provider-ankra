@@ -46,16 +46,25 @@ func (client *Client) GetBastionAllowedIPs(ctx context.Context, lane, clusterID 
 	return &allowedIPs, nil
 }
 
-// SetBastionAllowedIPs replaces the allowlist and answers the stored,
-// normalised list. An empty list clears it, opening SSH to every source. The
-// platform applies the change to the bastion in the background.
-func (client *Client) SetBastionAllowedIPs(ctx context.Context, lane, clusterID string, allowedIPs []string) ([]string, error) {
+// BastionAllowedIPsWrite is the platform's answer to an allowlist write: the
+// stored, normalised list and the operation that applies it to the bastion.
+// OperationID is nil when the write scheduled no work (the list already
+// matched, the cluster is stopped, or a running operation covers it).
+type BastionAllowedIPsWrite struct {
+	BastionAllowedIPs []string `json:"bastion_allowed_ips"`
+	OperationID       *string  `json:"operation_id"`
+}
+
+// SetBastionAllowedIPs replaces the allowlist. An empty list clears it,
+// opening SSH to every source. The platform applies the change to the
+// bastion in the background, as the answered operation.
+func (client *Client) SetBastionAllowedIPs(ctx context.Context, lane, clusterID string, allowedIPs []string) (*BastionAllowedIPsWrite, error) {
 	if allowedIPs == nil {
 		allowedIPs = []string{}
 	}
-	var stored BastionAllowedIPs
-	if err := client.doRequest(ctx, http.MethodPut, bastionAllowedIPsPath(lane, clusterID), bastionAllowedIPsUpdate{BastionAllowedIPs: allowedIPs}, &stored); err != nil {
+	var written BastionAllowedIPsWrite
+	if err := client.doRequest(ctx, http.MethodPut, bastionAllowedIPsPath(lane, clusterID), bastionAllowedIPsUpdate{BastionAllowedIPs: allowedIPs}, &written); err != nil {
 		return nil, err
 	}
-	return stored.BastionAllowedIPs, nil
+	return &written, nil
 }

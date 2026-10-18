@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/plancheck"
@@ -38,10 +39,23 @@ type bastionFake struct {
 	// readMissing answers the read 405, as a platform from before
 	// 2026-10-18 does: only the PUT is mounted there.
 	readMissing bool
+	// runningReads is how many reads of a write's operation answer
+	// "running" before it ends with finalStatus ("success" when empty);
+	// operationsMissing answers every operation read 404.
+	runningReads      int
+	finalStatus       string
+	operationsMissing bool
+	// operationReads counts reads of each operation; pendingReads is what
+	// is left of runningReads for each.
+	operationReads map[string]int
+	pendingReads   map[string]int
 }
 
 func newBastionFake(t *testing.T) *bastionFake {
-	fake := &bastionFake{routeFake: newRouteFake(t), clusters: map[string]*bastionFakeCluster{
+	previousInterval := bastionAllowedIPsPollInterval
+	bastionAllowedIPsPollInterval = 10 * time.Millisecond
+	t.Cleanup(func() { bastionAllowedIPsPollInterval = previousInterval })
+	fake := &bastionFake{routeFake: newRouteFake(t), operationReads: map[string]int{}, pendingReads: map[string]int{}, clusters: map[string]*bastionFakeCluster{
 		bastionFakeClusterID:    {kind: "hetzner", hasBastion: true},
 		bastionFakeAWSClusterID: {kind: "aws", hasBastion: true},
 	}}
@@ -109,14 +123,48 @@ func newBastionFake(t *testing.T) *bastionFake {
 			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "bastion_allowed_ips is required"})
 			return
 		}
+		var operationID any
+		if cluster.allowedIPs == nil || !slices.Equal(cluster.allowedIPs, body.BastionAllowedIPs) {
+			identifier := fmt.Sprintf("operation-%d", len(fake.writes)+1)
+			fake.pendingReads[identifier] = fake.runningReads
+			operationID = identifier
+		}
 		cluster.allowedIPs = append([]string{}, body.BastionAllowedIPs...)
 		fake.writes = append(fake.writes, cluster.allowedIPs)
 		writeJSON(t, writer, http.StatusOK, map[string]any{
 			"node_id": "bastion-1", "kind": cluster.kind + "_bastion", "name": "bastion",
-			"bastion_allowed_ips": cluster.allowedIPs, "operation_id": "operation-1",
+			"bastion_allowed_ips": cluster.allowedIPs, "operation_id": operationID,
 		})
 	})
+	fake.handle("GET /api/v1/org/executions/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		identifier := request.PathValue("id")
+		fake.operationReads[identifier]++
+		pending, known := fake.pendingReads[identifier]
+		if fake.operationsMissing || !known {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Execution not found"})
+			return
+		}
+		status := "running"
+		if pending > 0 {
+			fake.pendingReads[identifier] = pending - 1
+		} else {
+			status = fake.finalStatus
+			if status == "" {
+				status = "success"
+			}
+		}
+		execution := map[string]any{"id": identifier, "name": "update_bastion_allowed_ips", "status": status, "error_excerpt": nil}
+		if status == "failed" {
+			execution["error_excerpt"] = "the provider firewall refused the update"
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"execution": execution})
+	})
 	return fake
+}
+
+// lastOperation is the operation of the provider's last write.
+func (fake *bastionFake) lastOperation() string {
+	return fmt.Sprintf("operation-%d", len(fake.writes))
 }
 
 func bastionFakeConfiguration(fake *bastionFake, clusterID string, cidrs string) string {
@@ -335,5 +383,103 @@ func TestAccClusterBastionAllowedIPsRefusals(t *testing.T) {
 		if len(fake.writes) != 0 {
 			t.Errorf("a platform without the read got writes %v", fake.writes)
 		}
+	})
+}
+
+// TestAccClusterBastionAllowedIPsDestroyWaitsForTheClear pins that destroy
+// returns only once the operation applying the cleared list has ended, so a
+// cluster destroyed in the same run does not race it.
+func TestAccClusterBastionAllowedIPsDestroyWaitsForTheClear(t *testing.T) {
+	fake := newBastionFake(t)
+	fake.runningReads = 3
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		CheckDestroy: func(_ *terraform.State) error {
+			stored := fake.clusters[bastionFakeClusterID].allowedIPs
+			if stored == nil || len(stored) != 0 {
+				return fmt.Errorf("destroy left the bastion holding %v", stored)
+			}
+			if reads := fake.operationReads[fake.lastOperation()]; reads != 4 {
+				return fmt.Errorf("destroy read the clear operation %d times, want 4 (three running, then success)", reads)
+			}
+			return nil
+		},
+		Steps: []resource.TestStep{
+			{Config: bastionFakeConfiguration(fake, bastionFakeClusterID, `"203.0.113.0/24"`)},
+		},
+	})
+}
+
+// TestAccClusterBastionAllowedIPsDestroyReportsAFailedClear pins that a clear
+// operation that fails, or outlasts the delete timeout, fails the destroy and
+// keeps the resource. An operation the platform no longer finds counts as
+// settled.
+func TestAccClusterBastionAllowedIPsDestroyReportsAFailedClear(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		prepare  func(fake *bastionFake)
+		timeouts string
+		expected string
+	}{
+		"failed": {prepare: func(fake *bastionFake) { fake.finalStatus = "failed" }, expected: `(?s)ended\s+failed.*firewall\s+refused`},
+		"timed out": {
+			prepare:  func(fake *bastionFake) { fake.runningReads = 1000000 },
+			timeouts: "\n\n  timeouts {\n    delete = \"1s\"\n  }",
+			expected: `(?s)still\s+running\s+at\s+the\s+delete\s+timeout`,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := newBastionFake(t)
+			configuration := fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_cluster_bastion_allowed_ips" "main" {
+  cluster_id = %q
+  cidrs      = ["203.0.113.0/24"]%s
+}
+`, bastionFakeClusterID, testCase.timeouts)
+			resource.Test(t, resource.TestCase{
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{Config: configuration},
+					{
+						PreConfig:   func() { testCase.prepare(fake) },
+						Config:      configuration,
+						Destroy:     true,
+						ExpectError: regexp.MustCompile(testCase.expected),
+					},
+					{
+						// The failed destroy kept the resource: the refresh sees
+						// the cleared list as drift and sets it again.
+						PreConfig: func() {
+							fake.finalStatus = ""
+							fake.runningReads = 0
+						},
+						Config: configuration,
+						Check:  bastionFakeExpect(fake, "203.0.113.0/24"),
+					},
+				},
+				CheckDestroy: func(_ *terraform.State) error {
+					if stored := fake.clusters[bastionFakeClusterID].allowedIPs; stored == nil || len(stored) != 0 {
+						return fmt.Errorf("destroy left the bastion holding %v", stored)
+					}
+					return nil
+				},
+			})
+		})
+	}
+
+	t.Run("operation no longer found", func(t *testing.T) {
+		fake := newBastionFake(t)
+		fake.operationsMissing = true
+		resource.Test(t, resource.TestCase{
+			ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+			CheckDestroy: func(_ *terraform.State) error {
+				if stored := fake.clusters[bastionFakeClusterID].allowedIPs; stored == nil || len(stored) != 0 {
+					return fmt.Errorf("destroy left the bastion holding %v", stored)
+				}
+				return nil
+			},
+			Steps: []resource.TestStep{
+				{Config: bastionFakeConfiguration(fake, bastionFakeClusterID, `"203.0.113.0/24"`)},
+			},
+		})
 	})
 }
