@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -167,7 +168,10 @@ resource "ankra_cluster_power_schedule" "launch" {
 	})
 }
 
-func TestAccClusterPowerScheduleAmbiguousCreate(t *testing.T) {
+// TestAccClusterPowerScheduleCreatedID pins that a create tracks the
+// schedule the platform names in created_id, even when an identical schedule
+// landed in the same listing, and that it lists nothing before creating.
+func TestAccClusterPowerScheduleCreatedID(t *testing.T) {
 	fake := newClusterSettingsFake(t)
 	fake.duplicateCreate = true
 	resource.Test(t, resource.TestCase{
@@ -181,7 +185,45 @@ resource "ankra_cluster_power_schedule" "nightly" {
   cron_expression = "0 19 * * *"
 }
 `, clusterSettingsTestCluster),
-			ExpectError: regexp.MustCompile(`Candidates:\s+schedule-\d+,\s+schedule-\d+`),
+			Check: resource.ComposeAggregateTestCheckFunc(
+				resource.TestCheckResourceAttr("ankra_cluster_power_schedule.nightly", "id", "schedule-1"),
+				func(*terraform.State) error {
+					served := fake.served()
+					for index, request := range served {
+						if request == "POST /api/v1/org/clusters/imported/"+clusterSettingsTestCluster+"/power-schedules" {
+							for _, earlier := range served[:index] {
+								if strings.HasSuffix(earlier, "/power-schedules") {
+									return fmt.Errorf("the create listed the schedules first: %v", served)
+								}
+							}
+							return nil
+						}
+					}
+					return fmt.Errorf("no create was sent: %v", served)
+				},
+			),
+		}},
+	})
+}
+
+// TestAccClusterPowerScheduleCreateWithoutCreatedID pins that a create the
+// platform answers without created_id fails with the import instructions
+// instead of guessing which listed schedule is the new one.
+func TestAccClusterPowerScheduleCreateWithoutCreatedID(t *testing.T) {
+	fake := newClusterSettingsFake(t)
+	fake.omitCreatedID = true
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{{
+			Config: fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_cluster_power_schedule" "nightly" {
+  cluster_id      = %q
+  action          = "stop"
+  schedule_kind   = "cron"
+  cron_expression = "0 19 * * *"
+}
+`, clusterSettingsTestCluster),
+			ExpectError: regexp.MustCompile(`(?s)did\s+not\s+answer\s+the\s+created\s+schedule.s\s+id.*terraform\s+import`),
 		}},
 	})
 }

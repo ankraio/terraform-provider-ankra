@@ -17,8 +17,8 @@ import (
 
 // alertFake holds alert destinations and routes the way the platform does
 // (go/internal/alertsapi, go/internal/notifyroutesapi): the destination
-// create answers 200 with the URL masked and does not store a description,
-// get and list return the stored URL, the listing pages, an update keeps any
+// create answers 200 with the URL masked and stores the description it is
+// given, get and list return the stored URL, the listing pages, an update keeps any
 // member that is absent or null and treats an empty channel_id as "back to
 // URL delivery", and the routes PATCH clears a nullable filter sent as null.
 type alertFake struct {
@@ -82,15 +82,12 @@ func newAlertFake(t *testing.T) *alertFake {
 	fake.handle("POST /api/v1/org/alerts/integrations", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
-		if _, hasDescription := body["description"]; hasDescription {
-			t.Errorf("create sent a description, which the platform drops")
-		}
 		fake.created++
 		destinationID := fmt.Sprintf("00000000-0000-0000-0000-%012d", fake.created)
 		row := map[string]any{
 			"id": destinationID, "name": body["name"], "url": body["url"], "channel_id": body["channel_id"],
 			"channel_name": body["channel_name"], "teams_tenant_id": body["teams_tenant_id"],
-			"integration_type": "slack", "description": nil, "template": body["template"], "enabled": true,
+			"integration_type": "slack", "description": body["description"], "template": body["template"], "enabled": true,
 		}
 		if integrationType, set := body["integration_type"]; set {
 			row["integration_type"] = integrationType
@@ -341,8 +338,11 @@ resource "ankra_alert_route" "critical" {
 					func(_ *terraform.State) error {
 						for _, row := range fake.destinations {
 							if row["name"] == "pager" && row["description"] != "on-call" {
-								return fmt.Errorf("description was not stored by the follow-up update: %v", row["description"])
+								return fmt.Errorf("description was not stored by the create: %v", row["description"])
 							}
+						}
+						if len(fake.destinationUpdates) != 0 {
+							return fmt.Errorf("create sent follow-up updates: %v", fake.destinationUpdates)
 						}
 						return nil
 					},

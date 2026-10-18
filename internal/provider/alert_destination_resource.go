@@ -149,6 +149,7 @@ func (destinationResource *alertDestinationResource) Create(ctx context.Context,
 		ChannelName:     stringPointer(plan.ChannelName),
 		TeamsTenantID:   stringPointer(plan.TeamsTenantID),
 		IntegrationType: stringPointer(plan.IntegrationType),
+		Description:     stringPointer(plan.Description),
 		Template:        stringPointer(plan.Template),
 		Enabled:         boolPointer(plan.Enabled),
 	})
@@ -159,16 +160,6 @@ func (destinationResource *alertDestinationResource) Create(ctx context.Context,
 	plan.ID = types.StringValue(destinationID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
-	if response.Diagnostics.HasError() {
-		return
-	}
-
-	// The platform's create does not store a description; only its update does.
-	if description := stringPointer(plan.Description); description != nil {
-		if err := apiClient.UpdateAlertDestination(ctx, destinationID, client.AlertDestinationUpdate{Description: description}); err != nil {
-			response.Diagnostics.AddError("Unable to set alert destination description", err.Error())
-		}
-	}
 }
 
 func (destinationResource *alertDestinationResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {

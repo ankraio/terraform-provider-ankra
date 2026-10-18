@@ -44,8 +44,11 @@ type clusterSettingsFake struct {
 	// clusterHidden makes the cluster-scoped routes answer 404 "Cluster not
 	// found", as ClusterIsInScope does for a cluster outside the project scope.
 	clusterHidden bool
-	// duplicateCreate makes a schedule create commit two identical rows.
+	// duplicateCreate makes a schedule create commit a second, identical row
+	// next to the one it answers as created_id, as a concurrent create would.
 	duplicateCreate bool
+	// omitCreatedID makes a schedule create answer the listing alone.
+	omitCreatedID bool
 	// joinFailsAfterCommit records a mesh membership and then answers 400.
 	joinFailsAfterCommit bool
 }
@@ -218,7 +221,11 @@ func newClusterSettingsFake(t *testing.T) *clusterSettingsFake {
 			twin["id"] = fake.nextID("schedule")
 			fake.schedules = append([]map[string]any{twin}, fake.schedules...)
 		}
-		writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": fake.schedules})
+		if fake.omitCreatedID {
+			writeJSON(t, writer, http.StatusOK, map[string]any{"schedules": fake.schedules})
+			return
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"created_id": row["id"], "schedules": fake.schedules})
 	})
 	fake.handle("PUT "+importedPrefix+"/power-schedules/{schedule_id}", func(writer http.ResponseWriter, request *http.Request) {
 		if fake.answerHidden(t, writer) {

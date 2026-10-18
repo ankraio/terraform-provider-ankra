@@ -186,7 +186,8 @@ func (clusterResourceInstance *clusterResource) Schema(ctx context.Context, _ re
 		Blocks: map[string]schema.Block{
 			"timeouts": timeouts.Block(ctx, timeouts.Opts{Create: true, Update: true}),
 			"stacks": schema.ListNestedBlock{
-				MarkdownDescription: "Stacks of manifests and addons to apply to the cluster.",
+				MarkdownDescription: "Stacks of manifests and addons to apply to the cluster. A stack's variables are not set here, " +
+					"and applying this resource leaves them as they are; set them key by key with `ankra_cluster_stack_variable`.",
 				NestedObject: schema.NestedBlockObject{
 					Attributes: map[string]schema.Attribute{
 						"name": schema.StringAttribute{

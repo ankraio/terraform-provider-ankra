@@ -15,6 +15,7 @@ func configurationResources() []func() resource.Resource {
 		NewHelmRegistryResource,
 		NewHelmRegistryCredentialResource,
 		NewClusterVariableResource,
+		NewClusterStackVariableResource,
 	}
 }
 
@@ -25,5 +26,6 @@ func configurationDataSources() []func() datasource.DataSource {
 		NewHelmRegistryCredentialsDataSource,
 		NewHelmChartDataSource,
 		NewClusterVariablesDataSource,
+		NewClusterStackVariablesDataSource,
 	}
 }
