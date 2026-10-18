@@ -23,6 +23,7 @@ func clusterSettingResources() []func() resource.Resource {
 		NewClusterLogShippingResource,
 		NewClusterMeshResource,
 		NewClusterMeshMemberResource,
+		NewClusterBastionAllowedIPsResource,
 	}
 }
 
