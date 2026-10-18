@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
-	"strconv"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -50,15 +49,6 @@ func (client *Client) CreateProvisionedCluster(ctx context.Context, lane string,
 		return ImportClusterResponse{}, err
 	}
 	return response, nil
-}
-
-// DeleteProvisionedCluster deprovisions a cluster on the given cloud lane,
-// releasing its cloud resources. A 404 is treated as success so deletes are
-// idempotent.
-func (client *Client) DeleteProvisionedCluster(ctx context.Context, lane, clusterID string, force bool) error {
-	path := "/api/v1/clusters/" + url.PathEscape(lane) + "/" + url.PathEscape(clusterID) +
-		"?force=" + strconv.FormatBool(force)
-	return client.doRequest(ctx, http.MethodDelete, path, nil, nil, http.StatusNotFound)
 }
 
 // WaitOptions configures a readiness poll.

@@ -12,6 +12,16 @@ FEATURES:
 * **New Data Source:** `ankra_cluster_dns_zones` - the generated DNS domain and reconciliation state of each cluster in the provider's scope (the project's clusters when the provider sets `project_id`).
 * **New Data Source:** `ankra_cloudflare_dns_records` - the records in a Cloudflare zone, filtered by `name`, `record_type` or `search`. `is_truncated` (and a warning) reports a zone larger than the platform's listing bound.
 * **New Data Source:** `ankra_alert_ingest_credentials` - the organisation's alert ingest credentials and the webhook path each accepts, with the pinned cluster's name and whether that cluster is still available. Tokens are never listed.
+* **New Data Sources (lane catalogues):** `ankra_aws_regions`, `ankra_aws_instance_types`, `ankra_aws_vpcs`, `ankra_aws_subnets`, `ankra_proxmox_hosts`, `ankra_proxmox_bridges`, `ankra_proxmox_storages`, `ankra_proxmox_templates`, `ankra_morpheus_groups`, `ankra_morpheus_clouds`, `ankra_morpheus_plans`, `ankra_morpheus_layouts`, `ankra_morpheus_networks`, `ankra_ankracloud_zones`, `ankra_ankracloud_plans`: what a credential can build a cluster with, read live from the cloud at plan time. The AWS and Ankra Cloud catalogues also report `pricing_complete` and `incomplete_reasons`. The Ankra Cloud catalogues use the organisation's built-in credential when `credential_id` is unset. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
+
+ENHANCEMENTS:
+
+* `ankra_hetzner_cluster`, `ankra_digitalocean_cluster`, `ankra_ovh_cluster`, `ankra_upcloud_cluster`, `ankra_scaleway_cluster`: new `accept_volume_data_loss` argument. The platform refuses to deprovision a cluster that still holds persistent volumes it would delete until the destroy consents; `force_destroy` does not give that consent. Unset means `false` and plans no change for existing state. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
+* The same five resources: **`terraform destroy` now waits** until the platform no longer lists the cluster, up to the `delete` timeout (default 30 minutes; set `timeouts { delete = "..." }` to change it), instead of returning as soon as the deprovision is accepted. This matches the other cluster lanes, so a replacement no longer collides with the old cluster's name while it is torn down. A destroy that finds the cluster already deprovisioning waits instead of sending the delete again. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
+
+BUG FIXES:
+
+* `ankra_hetzner_cluster`, `ankra_digitalocean_cluster`, `ankra_ovh_cluster`, `ankra_upcloud_cluster`, `ankra_scaleway_cluster`: the resources now record the organisation and project they were created in. When `organisation_id` or `project_id` changes and the cluster is no longer visible, it stays in state with an error instead of being planned for recreation or reported destroyed. `force_destroy` keeps its `true` default. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
 
 ## 0.3.0 (2026-10-17)
 

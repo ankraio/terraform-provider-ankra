@@ -38,9 +38,3 @@ type HetznerClusterRequest struct {
 func (client *Client) CreateHetznerCluster(ctx context.Context, request HetznerClusterRequest) (ImportClusterResponse, error) {
 	return client.CreateProvisionedCluster(ctx, LaneHetzner, request)
 }
-
-// DeleteHetznerCluster deprovisions a Hetzner cluster by id, releasing its
-// cloud resources. A 404 is treated as success so deletes are idempotent.
-func (client *Client) DeleteHetznerCluster(ctx context.Context, clusterID string, force bool) error {
-	return client.DeleteProvisionedCluster(ctx, LaneHetzner, clusterID, force)
-}

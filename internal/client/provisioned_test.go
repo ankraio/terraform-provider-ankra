@@ -162,7 +162,7 @@ func TestProvisionedLanePathsMatchContract(t *testing.T) {
 			if createPath != testCase.want {
 				subtest.Errorf("create path = %q, want %q", createPath, testCase.want)
 			}
-			if err := apiClient.DeleteProvisionedCluster(context.Background(), testCase.lane, "c-1", false); err != nil {
+			if err := apiClient.DeprovisionLaneCluster(context.Background(), testCase.lane, "c-1", LaneDeprovisionOptions{}); err != nil {
 				subtest.Fatalf("delete: %v", err)
 			}
 			if deletePath != testCase.want+"/c-1" {
