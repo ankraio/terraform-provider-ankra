@@ -4,4 +4,13 @@ resource "ankra_ai_environment" "this" {
   demo_ttl_hours       = 48
   default_gateway_mode = "ask"
   demo_base_domain     = "previews.example.com"
+
+  # Only the tiers set here are managed; operator keeps the organisation's value.
+  demo_ttl_role_caps = {
+    admin  = 336
+    member = 48
+  }
+
+  home_slack_channel_id   = "C0123456789"
+  home_slack_channel_name = "ankra-ai"
 }

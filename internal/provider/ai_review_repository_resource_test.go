@@ -6,6 +6,7 @@ package provider
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"sort"
 	"strings"
@@ -39,6 +40,8 @@ type organisationAIFake struct {
 	ruleWrites        []map[string]json.RawMessage
 	spendCapWrites    []map[string]json.RawMessage
 	environmentWrites []map[string]json.RawMessage
+	binding           map[string]any
+	bindingWrites     []map[string]json.RawMessage
 	created           int
 }
 
@@ -46,6 +49,15 @@ func aiFakeEnvironmentDefaults() map[string]any {
 	return map[string]any{
 		"staging_cluster_id": nil, "workspace_ttl_hours": float64(8), "demo_ttl_hours": float64(24), "default_gateway_mode": "ask",
 		"demo_base_domain": nil, "demo_ingress_class_name": nil, "demo_tls_secret_name": nil, "demo_cert_issuer_name": nil,
+		"demo_ttl_role_caps":    map[string]any{"admin": float64(720), "operator": float64(168), "member": float64(72)},
+		"home_slack_channel_id": nil, "home_slack_channel_name": nil, "home_slack_team_id": nil,
+	}
+}
+
+func aiFakeBindingDefaults() map[string]any {
+	return map[string]any{
+		"ai_review": true, "mention_replies": true, "pr_previews": false, "merge_when_green": false, "review_model": "",
+		"review_drafts": false, "max_reviews_per_pr": float64(0), "custom_instructions": "",
 	}
 }
 
@@ -54,6 +66,7 @@ func newOrganisationAIFake(t *testing.T) *organisationAIFake {
 		routeFake: newRouteFake(t), rules: map[string]map[string]any{}, related: map[string]map[string]any{},
 		spendCap:    map[string]any{"daily_chat_usd_cap": nil, "daily_token_soft_cap": nil, "daily_token_hard_cap": nil},
 		environment: aiFakeEnvironmentDefaults(),
+		binding:     aiFakeBindingDefaults(),
 	}
 
 	fake.handle("GET /api/v1/org/ai-gateway/scm-bindings", func(writer http.ResponseWriter, _ *http.Request) {
@@ -66,11 +79,36 @@ func newOrganisationAIFake(t *testing.T) *organisationAIFake {
 		for _, name := range names {
 			overrides = append(overrides, fake.rules[name])
 		}
-		writeJSON(t, writer, http.StatusOK, map[string]any{"bindings": []map[string]any{{
-			"provider": "github", "binding_external_id": aiTestInstallation, "display_name": "acme", "detail": "",
-			"ai_review": true, "mention_replies": true, "pr_previews": false, "merge_when_green": false, "review_model": "",
-			"review_drafts": false, "max_reviews_per_pr": 0, "repo_overrides": overrides,
-		}}})
+		row := map[string]any{"provider": "github", "binding_external_id": aiTestInstallation, "display_name": "acme", "detail": "", "repo_overrides": overrides}
+		for key, value := range fake.binding {
+			row[key] = value
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"bindings": []map[string]any{row}, "total": 1})
+	})
+	fake.handle("PUT /api/v1/org/ai-gateway/scm-bindings/{provider}/{binding_external_id}", func(writer http.ResponseWriter, request *http.Request) {
+		if request.PathValue("provider") != "github" || request.PathValue("binding_external_id") != aiTestInstallation {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Unknown SCM binding for this organisation"})
+			return
+		}
+		var body map[string]json.RawMessage
+		decodeJSON(t, request, &body)
+		fake.bindingWrites = append(fake.bindingWrites, body)
+		if _, present := body["ai_review"]; !present {
+			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "ai_review is required"})
+			return
+		}
+		if _, present := body["mention_replies"]; !present {
+			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "mention_replies is required"})
+			return
+		}
+		answer := map[string]any{"success": true, "provider": "github", "binding_external_id": aiTestInstallation}
+		for key, raw := range body {
+			var value any
+			_ = json.Unmarshal(raw, &value)
+			fake.binding[key] = value
+			answer[key] = value
+		}
+		writeJSON(t, writer, http.StatusOK, answer)
 	})
 	fake.handle("PUT /api/v1/org/ai-gateway/scm-bindings/{provider}/{binding_external_id}/repo-overrides", func(writer http.ResponseWriter, request *http.Request) {
 		if request.PathValue("provider") != "github" || request.PathValue("binding_external_id") != aiTestInstallation {
@@ -187,7 +225,7 @@ func newOrganisationAIFake(t *testing.T) *organisationAIFake {
 	})
 
 	renderEnvironment := func() map[string]any {
-		row := map[string]any{"staging_cluster_name": nil, "staging_cluster_online": false, "demo_ttl_role_caps": map[string]any{"admin": 720}, "dns_root_domain": nil}
+		row := map[string]any{"staging_cluster_name": nil, "staging_cluster_online": false, "dns_root_domain": nil}
 		for key, value := range fake.environment {
 			row[key] = value
 		}
@@ -205,6 +243,40 @@ func newOrganisationAIFake(t *testing.T) *organisationAIFake {
 		fake.environmentWrites = append(fake.environmentWrites, body)
 		if _, present := body["dns_root_domain"]; present {
 			t.Errorf("the AI environment write must not touch dns_root_domain")
+		}
+		body = maps.Clone(body)
+		if raw, present := body["home_slack_channel_id"]; present {
+			var channel any
+			_ = json.Unmarshal(raw, &channel)
+			var name any
+			_ = json.Unmarshal(body["home_slack_channel_name"], &name)
+			if channel == nil || channel == "" {
+				channel, name = nil, nil
+			} else if name == nil {
+				name = ""
+			}
+			fake.environment["home_slack_channel_id"], fake.environment["home_slack_channel_name"] = channel, name
+			fake.environment["home_slack_team_id"] = map[bool]any{true: nil, false: "T0001"}[channel == nil]
+		}
+		delete(body, "home_slack_channel_id")
+		delete(body, "home_slack_channel_name")
+		if raw, present := body["demo_ttl_role_caps"]; present {
+			var caps map[string]any
+			_ = json.Unmarshal(raw, &caps)
+			merged := map[string]any{}
+			stored, _ := fake.environment["demo_ttl_role_caps"].(map[string]any)
+			for tier, hours := range stored {
+				merged[tier] = hours
+			}
+			for tier, hours := range caps {
+				if tier != "admin" && tier != "operator" && tier != "member" {
+					writeJSON(t, writer, http.StatusBadRequest, map[string]any{"detail": "demo_ttl_role_caps keys must be 'admin', 'operator', or 'member'."})
+					return
+				}
+				merged[tier] = hours
+			}
+			fake.environment["demo_ttl_role_caps"] = merged
+			delete(body, "demo_ttl_role_caps")
 		}
 		for key, raw := range body {
 			var value any

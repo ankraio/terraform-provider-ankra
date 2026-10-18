@@ -7,11 +7,13 @@ import (
 	"context"
 	"strings"
 
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
@@ -22,10 +24,11 @@ import (
 )
 
 var (
-	_ resource.Resource                = (*aiEnvironmentResource)(nil)
-	_ resource.ResourceWithConfigure   = (*aiEnvironmentResource)(nil)
-	_ resource.ResourceWithImportState = (*aiEnvironmentResource)(nil)
-	_ resource.ResourceWithModifyPlan  = (*aiEnvironmentResource)(nil)
+	_ resource.Resource                   = (*aiEnvironmentResource)(nil)
+	_ resource.ResourceWithConfigure      = (*aiEnvironmentResource)(nil)
+	_ resource.ResourceWithImportState    = (*aiEnvironmentResource)(nil)
+	_ resource.ResourceWithModifyPlan     = (*aiEnvironmentResource)(nil)
+	_ resource.ResourceWithValidateConfig = (*aiEnvironmentResource)(nil)
 )
 
 const aiEnvironmentID = "ai_environment"
@@ -36,13 +39,35 @@ const aiEnvironmentID = "ai_environment"
 // entry: clearing it would stop every AI workspace and demo, so destroy
 // leaves it as it is.
 var aiEnvironmentDefaults = map[string]any{
-	"workspace_ttl_hours":     8,
-	"demo_ttl_hours":          24,
-	"default_gateway_mode":    "ask",
-	"demo_base_domain":        nil,
-	"demo_ingress_class_name": nil,
-	"demo_tls_secret_name":    nil,
-	"demo_cert_issuer_name":   nil,
+	"workspace_ttl_hours":               8,
+	"demo_ttl_hours":                    24,
+	"default_gateway_mode":              "ask",
+	"demo_base_domain":                  nil,
+	"demo_ingress_class_name":           nil,
+	"demo_tls_secret_name":              nil,
+	"demo_cert_issuer_name":             nil,
+	"home_slack_channel_id":             nil,
+	aiEnvironmentRoleCapKey("admin"):    720,
+	aiEnvironmentRoleCapKey("operator"): 168,
+	aiEnvironmentRoleCapKey("member"):   72,
+}
+
+// aiEnvironmentRoleCapTiers are the role tiers a demo lifetime cap is set
+// for: owner shares the admin tier, viewer and custom roles the member tier.
+var aiEnvironmentRoleCapTiers = []string{"admin", "operator", "member"}
+
+const aiEnvironmentRoleCapsField = "demo_ttl_role_caps"
+
+// aiEnvironmentRoleCapKey names one tier of demo_ttl_role_caps in the
+// managed-settings record, so destroy resets only the tiers configured.
+func aiEnvironmentRoleCapKey(tier string) string {
+	return aiEnvironmentRoleCapsField + "." + tier
+}
+
+var aiEnvironmentRoleCapsAttributeTypes = map[string]attr.Type{
+	"admin":    types.Int64Type,
+	"operator": types.Int64Type,
+	"member":   types.Int64Type,
 }
 
 type aiEnvironmentResource struct {
@@ -60,6 +85,10 @@ type aiEnvironmentModel struct {
 	DemoIngressClassName types.String `tfsdk:"demo_ingress_class_name"`
 	DemoTLSSecretName    types.String `tfsdk:"demo_tls_secret_name"`
 	DemoCertIssuerName   types.String `tfsdk:"demo_cert_issuer_name"`
+	DemoTTLRoleCaps      types.Object `tfsdk:"demo_ttl_role_caps"`
+	HomeSlackChannelID   types.String `tfsdk:"home_slack_channel_id"`
+	HomeSlackChannelName types.String `tfsdk:"home_slack_channel_name"`
+	HomeSlackTeamID      types.String `tfsdk:"home_slack_team_id"`
 }
 
 // NewAIEnvironmentResource returns the ankra_ai_environment resource, the
@@ -115,6 +144,31 @@ func (environment *aiEnvironmentResource) Schema(_ context.Context, _ resource.S
 			"demo_ingress_class_name": aiEnvironmentString("Ingress class for demo ingresses. Stored lowercased."),
 			"demo_tls_secret_name":    aiEnvironmentString("Secret holding a certificate for the preview domain. Stored lowercased."),
 			"demo_cert_issuer_name":   aiEnvironmentString("cert-manager ClusterIssuer demo ingresses ask instead of the cluster's own. Needs `demo_base_domain`. Stored lowercased."),
+			"demo_ttl_role_caps": schema.SingleNestedAttribute{
+				MarkdownDescription: "Longest demo lifetime, in hours (1 to 720), each role tier may ask for. Owner shares the `admin` tier; viewer and custom " +
+					"roles share the `member` tier. Only the tiers you set are managed: an unset tier keeps the organisation's value, and removing a tier from configuration " +
+					"stops managing it without resetting it (destroy resets only the tiers set at the last apply). " +
+					"Platform defaults: admin 720, operator 168, member 72.",
+				Optional:      true,
+				Computed:      true,
+				PlanModifiers: []planmodifier.Object{objectplanmodifier.UseStateForUnknown()},
+				Attributes: map[string]schema.Attribute{
+					"admin":    aiEnvironmentRoleCap("Cap for the admin tier (owner and admin)."),
+					"operator": aiEnvironmentRoleCap("Cap for the operator tier."),
+					"member":   aiEnvironmentRoleCap("Cap for the member tier (member, viewer and custom roles)."),
+				},
+			},
+			"home_slack_channel_id": aiEnvironmentString("Slack channel id of the organisation's home channel, where AI notifications go by default. " +
+				"Needs Slack connected to the organisation. Destroy clears it when the configuration set it."),
+			"home_slack_channel_name": schema.StringAttribute{
+				MarkdownDescription: "Display name of the home Slack channel. Needs `home_slack_channel_id`.",
+				Optional:            true,
+				Computed:            true,
+			},
+			"home_slack_team_id": schema.StringAttribute{
+				MarkdownDescription: "Slack workspace of the home channel.",
+				Computed:            true,
+			},
 		},
 	}
 }
@@ -142,7 +196,89 @@ func aiEnvironmentBody(model aiEnvironmentModel) map[string]any {
 	putString("demo_ingress_class_name", model.DemoIngressClassName)
 	putString("demo_tls_secret_name", model.DemoTLSSecretName)
 	putString("demo_cert_issuer_name", model.DemoCertIssuerName)
+	if !model.HomeSlackChannelID.IsNull() && !model.HomeSlackChannelID.IsUnknown() {
+		putString("home_slack_channel_id", model.HomeSlackChannelID)
+		putString("home_slack_channel_name", model.HomeSlackChannelName)
+	}
+	if caps := aiEnvironmentConfiguredRoleCaps(model.DemoTTLRoleCaps); len(caps) > 0 {
+		body[aiEnvironmentRoleCapsField] = caps
+	}
 	return body
+}
+
+// aiEnvironmentConfiguredRoleCaps is the configured tiers of
+// demo_ttl_role_caps. The platform merges the map it receives into the stored
+// one, so the tiers left out keep their values.
+func aiEnvironmentConfiguredRoleCaps(object types.Object) map[string]int64 {
+	if object.IsNull() || object.IsUnknown() {
+		return nil
+	}
+	caps := map[string]int64{}
+	attributes := object.Attributes()
+	for _, tier := range aiEnvironmentRoleCapTiers {
+		value, isInt64 := attributes[tier].(types.Int64)
+		if isInt64 && !value.IsNull() && !value.IsUnknown() {
+			caps[tier] = value.ValueInt64()
+		}
+	}
+	return caps
+}
+
+// aiEnvironmentManagedKeys is the managed-settings record of a write body:
+// its top-level keys, with demo_ttl_role_caps recorded per tier.
+func aiEnvironmentManagedKeys(body map[string]any) map[string]any {
+	managed := map[string]any{}
+	for key, value := range body {
+		if key == "home_slack_channel_name" {
+			continue
+		}
+		if caps, isCaps := value.(map[string]int64); isCaps && key == aiEnvironmentRoleCapsField {
+			for tier := range caps {
+				managed[aiEnvironmentRoleCapKey(tier)] = true
+			}
+			continue
+		}
+		managed[key] = value
+	}
+	return managed
+}
+
+// aiEnvironmentNestRoleCaps folds per-tier reset entries back into the
+// demo_ttl_role_caps map the platform takes.
+func aiEnvironmentNestRoleCaps(body map[string]any) map[string]any {
+	caps := map[string]any{}
+	for _, tier := range aiEnvironmentRoleCapTiers {
+		if value, present := body[aiEnvironmentRoleCapKey(tier)]; present {
+			caps[tier] = value
+			delete(body, aiEnvironmentRoleCapKey(tier))
+		}
+	}
+	if len(caps) > 0 {
+		body[aiEnvironmentRoleCapsField] = caps
+	}
+	return body
+}
+
+func aiEnvironmentRoleCap(description string) schema.Int64Attribute {
+	return schema.Int64Attribute{
+		MarkdownDescription: description, Optional: true, Computed: true,
+		PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()},
+		Validators:    []validator.Int64{deployInt64Range{minimum: 1, maximum: 720}},
+	}
+}
+
+// ValidateConfig refuses a home channel name without its id: the platform
+// keys the home channel on the id and would ignore the name.
+func (environment *aiEnvironmentResource) ValidateConfig(ctx context.Context, request resource.ValidateConfigRequest, response *resource.ValidateConfigResponse) {
+	var config aiEnvironmentModel
+	response.Diagnostics.Append(request.Config.Get(ctx, &config)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if !config.HomeSlackChannelName.IsNull() && config.HomeSlackChannelID.IsNull() {
+		response.Diagnostics.AddAttributeError(path.Root("home_slack_channel_name"), "Home Slack channel name without its id",
+			"Set home_slack_channel_id too: the platform identifies the home channel by its id and ignores a name on its own.")
+	}
 }
 
 // ModifyPlan plans an update when the set of configured settings changed,
@@ -156,7 +292,7 @@ func (environment *aiEnvironmentResource) ModifyPlan(ctx context.Context, reques
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if organisationManagedKeysChanged(ctx, aiEnvironmentBody(config), request.Private) {
+	if organisationManagedKeysChanged(ctx, aiEnvironmentManagedKeys(aiEnvironmentBody(config)), request.Private) {
 		response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("staging_cluster_name"), types.StringUnknown())...)
 	}
 }
@@ -198,7 +334,7 @@ func (environment *aiEnvironmentResource) write(ctx context.Context, config tfsd
 	}
 	aiEnvironmentApply(&model, stored)
 	diagnostics.Append(state.Set(ctx, &model)...)
-	diagnostics.Append(organisationRecordManagedKeys(ctx, body, private)...)
+	diagnostics.Append(organisationRecordManagedKeys(ctx, aiEnvironmentManagedKeys(body), private)...)
 	diagnostics.Append(trackScope(ctx, apiClient, private)...)
 }
 
@@ -229,7 +365,7 @@ func (environment *aiEnvironmentResource) Delete(ctx context.Context, request re
 	if apiClient == nil {
 		return
 	}
-	body := organisationResetBody(organisationManagedKeys(ctx, request.Private), aiEnvironmentDefaults)
+	body := aiEnvironmentNestRoleCaps(organisationResetBody(organisationManagedKeys(ctx, request.Private), aiEnvironmentDefaults))
 	if len(body) == 0 {
 		return
 	}
@@ -266,4 +402,20 @@ func aiEnvironmentApply(model *aiEnvironmentModel, stored *client.OrganisationAI
 	model.DemoIngressClassName = aiEnvironmentNormalised(model.DemoIngressClassName, stored.DemoIngressClassName)
 	model.DemoTLSSecretName = aiEnvironmentNormalised(model.DemoTLSSecretName, stored.DemoTLSSecretName)
 	model.DemoCertIssuerName = aiEnvironmentNormalised(model.DemoCertIssuerName, stored.DemoCertIssuerName)
+	model.HomeSlackChannelID = types.StringPointerValue(stored.HomeSlackChannelID)
+	model.HomeSlackChannelName = types.StringPointerValue(stored.HomeSlackChannelName)
+	model.HomeSlackTeamID = types.StringPointerValue(stored.HomeSlackTeamID)
+	model.DemoTTLRoleCaps = types.ObjectValueMust(aiEnvironmentRoleCapsAttributeTypes, map[string]attr.Value{
+		"admin":    aiEnvironmentRoleCapValue(stored.DemoTTLRoleCaps, "admin"),
+		"operator": aiEnvironmentRoleCapValue(stored.DemoTTLRoleCaps, "operator"),
+		"member":   aiEnvironmentRoleCapValue(stored.DemoTTLRoleCaps, "member"),
+	})
+}
+
+func aiEnvironmentRoleCapValue(caps map[string]int64, tier string) types.Int64 {
+	value, present := caps[tier]
+	if !present {
+		return types.Int64Null()
+	}
+	return types.Int64Value(value)
 }

@@ -157,9 +157,12 @@ func (client *Client) CurrentCaller(ctx context.Context) (*OrganisationCaller, e
 
 // OrganisationRole is one role an organisation can grant.
 type OrganisationRole struct {
-	Slug    string `json:"slug"`
-	Name    string `json:"name"`
-	Builtin bool   `json:"builtin"`
+	ID          *string  `json:"id"`
+	Slug        string   `json:"slug"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Builtin     bool     `json:"builtin"`
+	Permissions []string `json:"permissions"`
 }
 
 type organisationRolesEnvelope struct {

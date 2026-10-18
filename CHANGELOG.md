@@ -19,15 +19,20 @@ FEATURES:
 * **New Resource:** `ankra_cluster_agent_resources` - CPU and memory requests and limits of the cluster's agent (`ankra cluster agent resources set`). ([#44](https://github.com/ankraio/terraform-provider-ankra/pull/44))
 * **New Resource:** `ankra_cluster_control_plane_self_heal` - whether Ankra may restart a NotReady control plane node. ([#44](https://github.com/ankraio/terraform-provider-ankra/pull/44))
 * **New Resource:** `ankra_cluster_labels` - the cluster's labels, which dynamic cluster groups select on. It owns the cluster's whole label set; creating it on a cluster with labels it does not name fails, so import them first. ([#44](https://github.com/ankraio/terraform-provider-ankra/pull/44))
+* **New Data Sources:** `ankra_organisation_roles`, `ankra_api_tokens` and `ankra_service_tokens` - the organisation's roles, the token user's personal tokens and the organisation's service tokens. Token values are never listed. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
+* **New Resource:** `ankra_secret_slot` - an organisation secret slot, referenced elsewhere (for example an `ankra_mcp_server` secret header) by its `${SECRET_SLOT:<id>}` marker, the `sentinel` attribute. A value change replaces the value in place and keeps the marker. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
+* **New Resource:** `ankra_ai_review_binding` - the AI Gateway settings of one source-control binding: AI review, @mention replies, pull request previews, merge when green and the review defaults. Destroy leaves the settings as they are. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
 
 ENHANCEMENTS:
 
 * `ankra_hetzner_cluster`, `ankra_digitalocean_cluster`, `ankra_ovh_cluster`, `ankra_upcloud_cluster`, `ankra_scaleway_cluster`: new `accept_volume_data_loss` argument. The platform refuses to deprovision a cluster that still holds persistent volumes it would delete until the destroy consents; `force_destroy` does not give that consent. Unset means `false` and plans no change for existing state. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
 * The same five resources: **`terraform destroy` now waits** until the platform no longer lists the cluster, up to the `delete` timeout (default 30 minutes; set `timeouts { delete = "..." }` to change it), instead of returning as soon as the deprovision is accepted. This matches the other cluster lanes, so a replacement no longer collides with the old cluster's name while it is torn down. A destroy that finds the cluster already deprovisioning waits instead of sending the delete again. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
+* resource/ankra_ai_environment: New `demo_ttl_role_caps` (per role tier: `admin`, `operator`, `member`) and `home_slack_channel_id` / `home_slack_channel_name`, with a computed `home_slack_team_id`. Only the tiers you set are written; removing a tier from configuration stops managing it without resetting it. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
 
 BUG FIXES:
 
 * `ankra_hetzner_cluster`, `ankra_digitalocean_cluster`, `ankra_ovh_cluster`, `ankra_upcloud_cluster`, `ankra_scaleway_cluster`: the resources now record the organisation and project they were created in. When `organisation_id` or `project_id` changes and the cluster is no longer visible, it stays in state with an error instead of being planned for recreation or reported destroyed. `force_destroy` keeps its `true` default. ([#43](https://github.com/ankraio/terraform-provider-ankra/pull/43))
+* resource/ankra_service_token: A token whose service account no longer holds its role (removed outside Terraform) now reads back with an empty `role_slug`, so the plan shows the drift and warns, and apply fails instead of reporting the configured role. Terraform does not give the role back; assign it again in the portal, or replace the token explicitly with `-replace`. ([#45](https://github.com/ankraio/terraform-provider-ankra/pull/45))
 
 ## 0.3.0 (2026-10-17)
 

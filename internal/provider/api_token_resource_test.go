@@ -140,7 +140,7 @@ func newTokenFake(t *testing.T) *tokenFake {
 			if row["account_name"] != name {
 				continue
 			}
-			if row["role_slug"] != roleSlug {
+			if row["role_slug"] != roleSlug && row["role_slug"] != "" {
 				writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": fmt.Sprintf("Service account %q already holds the %s role", name, row["role_slug"])})
 				return
 			}
@@ -154,6 +154,13 @@ func newTokenFake(t *testing.T) *tokenFake {
 		row["account_name"] = name
 		row["label"] = label
 		row["role_slug"] = roleSlug
+		for _, other := range fake.service {
+			if other["account_name"] == name {
+				// The role belongs to the account: a mint on an account
+				// without one grants it to every token of the account.
+				other["role_slug"] = roleSlug
+			}
+		}
 		var scopes []any
 		_ = json.Unmarshal(raw["scopes"], &scopes)
 		row["scopes"] = tokenFakeScopes(scopes)

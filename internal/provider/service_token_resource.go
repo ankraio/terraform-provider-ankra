@@ -64,6 +64,10 @@ func (token *serviceTokenResource) Schema(_ context.Context, _ resource.SchemaRe
 			"The service account is created with `role_slug` when the organisation has none of that name; for an existing account " +
 			"`role_slug` must be the role it already holds. The provider never changes an account's role: a change of `role_slug`, " +
 			"or a role changed in the portal, stops the plan with an error until configuration and portal agree.\n\n" +
+			"**Account without a role.** When the account's role was removed outside Terraform (in the portal, for example), the token " +
+			"reads back with an empty `role_slug`, so the plan shows the difference and warns. Terraform does not give the role back: " +
+			"apply fails, and the token is left as it is, until the role is assigned again in the portal or you replace the token " +
+			"explicitly (`terraform apply -replace=<address>`), which mints a new token on the account with `role_slug`.\n\n" +
 			"**Account stand-down.** When an account's last token is deleted, the platform stands the account down and retires its " +
 			"role assignments. Changing `name` (the account) therefore replaces the token on a new account and, if it was the old " +
 			"account's last token, stands the old account down; destroy does the same. Every other change keeps a token on the " +
@@ -135,12 +139,16 @@ func (token *serviceTokenResource) ModifyPlan(ctx context.Context, request resou
 	if response.Diagnostics.HasError() {
 		return
 	}
-	if !plan.RoleSlug.IsUnknown() && !plan.RoleSlug.Equal(state.RoleSlug) {
+	if !plan.RoleSlug.IsUnknown() && !plan.RoleSlug.Equal(state.RoleSlug) && !serviceTokenAccountHasNoRole(state) {
 		response.Diagnostics.AddAttributeError(path.Root("role_slug"), "Service account role cannot change here",
 			fmt.Sprintf("Service account %q holds the %s role, and configuration says %s. Minting never changes an account's role, and "+
 				"re-creating the account would retire its assignments. Change the role in the portal (members), then set role_slug to match.",
 				state.Name.ValueString(), state.RoleSlug.ValueString(), plan.RoleSlug.ValueString()))
 		return
+	}
+	if serviceTokenAccountHasNoRole(state) {
+		response.Diagnostics.AddAttributeWarning(path.Root("role_slug"), "Service account no longer holds its role",
+			serviceTokenRoleRemovedDetail(state.Name.ValueString(), plan.RoleSlug.ValueString()))
 	}
 	if organisationTokenPlanRemint(ctx, state.Revoked, request, response) {
 		return
@@ -268,6 +276,12 @@ func (token *serviceTokenResource) Update(ctx context.Context, request resource.
 	if response.Diagnostics.HasError() {
 		return
 	}
+	if serviceTokenAccountHasNoRole(state) {
+		response.Diagnostics.AddAttributeError(path.Root("role_slug"), "Service account no longer holds its role",
+			serviceTokenRoleRemovedDetail(state.Name.ValueString(), plan.RoleSlug.ValueString()))
+		response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+		return
+	}
 	if plan.Label.IsUnknown() {
 		plan.Label = state.Label
 	}
@@ -307,7 +321,14 @@ func (token *serviceTokenResource) finish(ctx context.Context, apiClient *client
 	}
 	listed, err := apiClient.GetServiceToken(ctx, plan.ID.ValueString())
 	if err == nil {
+		configuredRole := plan.RoleSlug
 		serviceTokenApplyListing(plan, listed)
+		if listed.RoleSlug == "" {
+			// The mint grants the configured role to an account without
+			// one; a listing that does not show it yet must not contradict
+			// the configuration. The next read records what holds.
+			plan.RoleSlug = configuredRole
+		}
 	}
 	diagnostics.Append(state.Set(ctx, plan)...)
 	diagnostics.Append(trackScope(ctx, apiClient, private)...)
@@ -403,14 +424,27 @@ func (token *serviceTokenResource) ImportState(ctx context.Context, request reso
 	resource.ImportStatePassthroughID(ctx, path.Root("id"), request, response)
 }
 
+// serviceTokenAccountHasNoRole reports whether the account holds no role
+// assignment, which someone removed outside Terraform.
+// serviceTokenRoleRemovedDetail explains why Terraform leaves a token whose
+// account lost its role alone: the removal may have been deliberate.
+func serviceTokenRoleRemovedDetail(accountName, roleSlug string) string {
+	return fmt.Sprintf("Service account %q no longer holds the %s role; it was removed outside Terraform. Terraform does not give it back "+
+		"and does not re-mint the token: apply fails here until the role is assigned to the account again in the portal (members), "+
+		"or until you replace the token explicitly with `terraform apply -replace=<address>`, which mints a new token on the account with role %s.",
+		accountName, roleSlug, roleSlug)
+}
+
+func serviceTokenAccountHasNoRole(state serviceTokenModel) bool {
+	return !state.RoleSlug.IsNull() && !state.RoleSlug.IsUnknown() && state.RoleSlug.ValueString() == ""
+}
+
 // serviceTokenApplyListing copies the listing into state. An empty role
-// means the account was stood down; the recorded role is kept, since no
-// configuration value could match an absent role.
+// means the account holds no role assignment; it is recorded as such, so the
+// plan shows the drift. Terraform never restores the role on its own.
 func serviceTokenApplyListing(model *serviceTokenModel, listed *client.OrganisationServiceToken) {
 	model.Name = types.StringValue(listed.AccountName)
-	if listed.RoleSlug != "" {
-		model.RoleSlug = types.StringValue(listed.RoleSlug)
-	}
+	model.RoleSlug = types.StringValue(listed.RoleSlug)
 	model.Label = types.StringValue(listed.Label)
 	model.AccountID = types.StringValue(listed.AccountID)
 	model.ExpiresAt = organisationTimestampState(model.ExpiresAt, listed.ExpiresAt)
