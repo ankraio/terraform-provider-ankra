@@ -180,7 +180,11 @@ func (sshKeyResource *sshKeyCredentialResource) Create(ctx context.Context, requ
 			"The credential "+created.ID+" was created but could not be read back: "+err.Error())
 		return
 	}
+	plannedDisplayName := plan.DisplayName
 	sshKeyResource.applyListed(&plan, credential)
+	displayName, displayNameDiagnostics := credentialApplyDisplayName(ctx, apiClient, created.ID, plannedDisplayName, plan.DisplayName)
+	response.Diagnostics.Append(displayNameDiagnostics...)
+	plan.DisplayName = displayName
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
@@ -209,10 +213,10 @@ func (sshKeyResource *sshKeyCredentialResource) Read(ctx context.Context, reques
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
 
-// Update sends nothing: it only records the configured generate flag of a
-// just-imported credential, or a public key that differs from the stored one
-// in surrounding whitespace only. Every real change is planned as a
-// replacement.
+// Update sets a changed display name. Otherwise it only records the
+// configured generate flag of a just-imported credential, or a public key
+// that differs from the stored one in surrounding whitespace only. Every
+// other change is planned as a replacement.
 func (sshKeyResource *sshKeyCredentialResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	apiClient := sshKeyResource.requireClient(&response.Diagnostics)
 	if apiClient == nil {
@@ -222,6 +226,12 @@ func (sshKeyResource *sshKeyCredentialResource) Update(ctx context.Context, requ
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	_, displayNameDiagnostics := credentialApplyDisplayName(ctx, apiClient, state.ID.ValueString(), plan.DisplayName, state.DisplayName)
+	response.Diagnostics.Append(displayNameDiagnostics...)
+	if response.Diagnostics.HasError() {
+		response.State.Raw = request.State.Raw
 		return
 	}
 

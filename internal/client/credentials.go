@@ -54,6 +54,17 @@ type Credential struct {
 	Fingerprint  *string `json:"fingerprint,omitempty"`
 	KeyType      *string `json:"key_type,omitempty"`
 	Comment      *string `json:"comment,omitempty"`
+	// APIURL, TLSInsecure, ProjectID, Endpoint and Region are the connection
+	// settings of a provider credential, set only on the providers that store
+	// them: api_url and tls_insecure on proxmox and morpheus, project_id on ovh
+	// and scaleway, endpoint on ankracloud, region on aws. A platform that
+	// could not read them, or predates them, leaves them out, which means
+	// unknown rather than unset.
+	APIURL      *string `json:"api_url,omitempty"`
+	TLSInsecure *bool   `json:"tls_insecure,omitempty"`
+	ProjectID   *string `json:"project_id,omitempty"`
+	Endpoint    *string `json:"endpoint,omitempty"`
+	Region      *string `json:"region,omitempty"`
 }
 
 // CredentialSSHKeyCreate is the SSH key credential create body: either a
@@ -139,11 +150,13 @@ func (client *Client) findCredential(ctx context.Context, provider string, match
 }
 
 // CreateProviderCredential creates a cloud provider credential from the
-// provider's create body. The platform answers {"success": true} without the
-// new credential's id, so it is looked up by name afterwards.
+// provider's create body and reads it back from the listing. The platform
+// answers with the new credential's id; a platform that predates that
+// answers without it, and the credential is then looked up by name.
 func (client *Client) CreateProviderCredential(ctx context.Context, provider string, body map[string]any) (*Credential, error) {
 	var outcome struct {
-		Success bool `json:"success"`
+		Success bool   `json:"success"`
+		ID      string `json:"id"`
 	}
 	createPath := credentialCreatePath + "/" + url.PathEscape(provider)
 	if err := client.doRequest(ctx, http.MethodPost, createPath, body, &outcome); err != nil {
@@ -153,6 +166,13 @@ func (client *Client) CreateProviderCredential(ctx context.Context, provider str
 		return nil, fmt.Errorf("the platform did not report the %s credential as created", provider)
 	}
 	name, _ := body["name"].(string)
+	if outcome.ID != "" {
+		created, err := client.GetCredential(ctx, provider, outcome.ID)
+		if err != nil {
+			return nil, &CredentialReadBackError{Provider: provider, Name: name, ID: outcome.ID, Err: err}
+		}
+		return created, nil
+	}
 	created, err := client.GetCredentialByName(ctx, provider, name)
 	if err != nil {
 		return nil, &CredentialReadBackError{Provider: provider, Name: name, Err: err}
@@ -163,10 +183,13 @@ func (client *Client) CreateProviderCredential(ctx context.Context, provider str
 // CredentialReadBackError reports a credential the platform created but the
 // listing did not return afterwards, for example because the token lacks
 // credentials.read. The credential exists, so a retried create fails on its
-// name; the caller should point at an import instead.
+// name. ID is set when the platform answered the create with it, so the
+// caller can record the credential; without it the caller should point at
+// an import instead.
 type CredentialReadBackError struct {
 	Provider string
 	Name     string
+	ID       string
 	Err      error
 }
 
@@ -176,6 +199,58 @@ func (readBackError *CredentialReadBackError) Error() string {
 
 func (readBackError *CredentialReadBackError) Unwrap() error {
 	return readBackError.Err
+}
+
+// CredentialRotationResult is the platform's check of the new secret: the
+// provider is asked to accept it before anything is stored.
+type CredentialRotationResult struct {
+	OK      bool     `json:"ok"`
+	Code    *string  `json:"code"`
+	Message *string  `json:"message"`
+	Hints   []string `json:"hints"`
+}
+
+// CredentialRotation is the platform's answer to a rotation. Rotated is false
+// when the provider refused the new secret; the stored secret is then left as
+// it was.
+type CredentialRotation struct {
+	Rotated bool                     `json:"rotated"`
+	Result  CredentialRotationResult `json:"result"`
+}
+
+type credentialRotationRequest struct {
+	Payload map[string]string `json:"payload"`
+}
+
+// RotateCredential replaces secret fields of a provider credential in place.
+// The platform checks the new secret with the provider first and stores it
+// only when the provider accepts it; fields left out keep their stored value.
+func (client *Client) RotateCredential(ctx context.Context, credentialID string, secretFields map[string]string) (*CredentialRotation, error) {
+	var rotation CredentialRotation
+	rotatePath := credentialsPath + "/" + url.PathEscape(credentialID)
+	if err := client.doRequest(ctx, http.MethodPut, rotatePath, credentialRotationRequest{Payload: secretFields}, &rotation); err != nil {
+		return nil, err
+	}
+	return &rotation, nil
+}
+
+// credentialDisplayNameUpdate always carries the display_name key: an
+// explicit null clears the label.
+type credentialDisplayNameUpdate struct {
+	DisplayName *string `json:"display_name"`
+}
+
+// SetCredentialDisplayName sets a credential's display name, or clears it
+// when displayName is nil, and answers the label the platform stored.
+func (client *Client) SetCredentialDisplayName(ctx context.Context, credentialID string, displayName *string) (*string, error) {
+	var stored struct {
+		DisplayName *string `json:"display_name"`
+	}
+	updatePath := credentialsPath + "/" + url.PathEscape(credentialID)
+	if err := client.doRequest(ctx, http.MethodPatch, updatePath, credentialDisplayNameUpdate{DisplayName: displayName}, &stored); err != nil {
+		return nil, err
+	}
+	return stored.DisplayName, nil
 }
 
 // CreateSSHKeyCredential creates an organisation-wide SSH key credential.

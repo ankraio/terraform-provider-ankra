@@ -5,6 +5,7 @@ package provider
 
 import (
 	"fmt"
+	"net/http"
 	"regexp"
 	"testing"
 
@@ -14,11 +15,13 @@ import (
 )
 
 // TestAccProviderCredentialReadBackForbidden covers a token that may create
-// credentials but not list them: the generic create cannot learn the new id,
-// so its error names the import to run.
+// credentials but not list them, on a platform that answers the create
+// without the new id: the create cannot learn the id, so its error names the
+// import to run.
 func TestAccProviderCredentialReadBackForbidden(t *testing.T) {
 	fake := newCredentialFake(t)
 	fake.listingForbidden = true
+	fake.createOmitsID = true
 	resource.Test(t, resource.TestCase{
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
@@ -36,6 +39,111 @@ resource "ankra_hetzner_credential" "main" {
 	if fake.recordNamed("hetzner", "hetzner-main") == nil {
 		t.Errorf("the platform should hold the created credential")
 	}
+}
+
+// TestAccProviderCredentialCreateUsesTheAnsweredID pins that a create reads
+// the new credential by the id the platform answers, not by its name: a
+// credential of the same name in another project the listing also shows
+// must not be picked up.
+func TestAccProviderCredentialCreateUsesTheAnsweredID(t *testing.T) {
+	fake := newCredentialFake(t)
+	const decoyID = "00000000-0000-4000-8000-000000000000"
+	fake.records[decoyID] = &credentialFakeRecord{
+		id: decoyID, name: "hetzner-main", provider: "hetzner", settings: map[string]any{"name": "hetzner-main"},
+	}
+	fake.handle("POST /api/v1/credentials/hetzner", func(writer http.ResponseWriter, request *http.Request) {
+		var body map[string]any
+		decodeJSON(t, request, &body)
+		fake.creates = append(fake.creates, body)
+		const createdID = "00000000-0000-4000-8000-000000000001"
+		fake.records[createdID] = &credentialFakeRecord{id: createdID, name: "hetzner-main", provider: "hetzner", settings: body}
+		writeJSON(t, writer, http.StatusCreated, map[string]any{"success": true, "id": createdID, "name": "hetzner-main", "errors": []any{}})
+	})
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_hetzner_credential" "main" {
+  name      = "hetzner-main"
+  api_token = "token"
+}
+`,
+				Check: resource.TestCheckResourceAttr("ankra_hetzner_credential.main", "id", "00000000-0000-4000-8000-000000000001"),
+			},
+		},
+	})
+}
+
+// TestAccProviderCredentialCreateOnAnOlderPlatform pins the fallback for a
+// platform that answers a create without the id: the credential is found by
+// its name.
+func TestAccProviderCredentialCreateOnAnOlderPlatform(t *testing.T) {
+	fake := newCredentialFake(t)
+	fake.createOmitsID = true
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + `
+resource "ankra_digitalocean_credential" "main" {
+  name      = "do-main"
+  api_token = "token"
+}
+`,
+				Check: func(state *terraform.State) error {
+					record := fake.recordNamed("digitalocean", "do-main")
+					if record == nil || state.RootModule().Resources["ankra_digitalocean_credential.main"].Primary.ID != record.id {
+						return fmt.Errorf("the credential was not found by name")
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+// TestAccProviderCredentialReadBackForbiddenKeepsTheAnsweredID covers a token
+// that may create credentials but not list them, on a platform that answers
+// the create with the id: the id is kept in state, so the next apply
+// replaces the credential instead of failing on its name.
+func TestAccProviderCredentialReadBackForbiddenKeepsTheAnsweredID(t *testing.T) {
+	fake := newCredentialFake(t)
+	fake.listingForbidden = true
+	configuration := fake.providerBlock() + `
+resource "ankra_hetzner_credential" "main" {
+  name      = "hetzner-main"
+  api_token = "token"
+}
+`
+	var orphanID string
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      configuration,
+				ExpectError: regexp.MustCompile("recorded in state"),
+			},
+			{
+				PreConfig: func() {
+					fake.listingForbidden = false
+					if record := fake.recordNamed("hetzner", "hetzner-main"); record != nil {
+						orphanID = record.id
+					}
+				},
+				Config: configuration,
+				Check: func(_ *terraform.State) error {
+					if orphanID == "" {
+						return fmt.Errorf("the first create stored nothing")
+					}
+					if len(fake.deletes) != 1 || fake.deletes[0] != orphanID {
+						return fmt.Errorf("deleted %v, want the tainted %s", fake.deletes, orphanID)
+					}
+					return nil
+				},
+			},
+		},
+	})
 }
 
 // TestAccAwsCredentialReadBackForbidden covers the same failure on the AWS

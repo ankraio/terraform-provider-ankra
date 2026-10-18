@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -32,6 +33,44 @@ type credentialFakeRecord struct {
 	// project is the project the create was scoped to; empty is
 	// organisation-wide.
 	project string
+	// displayName is the label set through the display-name route.
+	displayName *string
+}
+
+// credentialFakeRotatable is the platform's rotatable field set per provider
+// (credsurface.platformRotatableSecretFields and the AWS legacy sets).
+var credentialFakeRotatable = map[string][]string{
+	"hetzner": {"api_token"}, "upcloud": {"api_token"}, "digitalocean": {"api_token"}, "ankracloud": {"api_token"},
+	"ovh": {"application_key", "application_secret", "consumer_key"}, "azure": {"client_id", "client_secret"},
+	"scaleway": {"access_key", "secret_key"}, "proxmox": {"token_id", "token_secret"}, "morpheus": {"access_token"},
+}
+
+// credentialFakeRefusedSecret is a secret value the fake's provider check
+// refuses, the way a provider refuses a revoked or mistyped token.
+const credentialFakeRefusedSecret = "refused-by-the-provider"
+
+// credentialFakeListedSettings adds the connection settings the platform
+// lists for the record's provider, read from what the create stored.
+func credentialFakeListedSettings(record *credentialFakeRecord, row map[string]any) {
+	copyString := func(key string) {
+		if value, isString := record.settings[key].(string); isString && value != "" {
+			row[key] = value
+		}
+	}
+	switch record.provider {
+	case "proxmox", "morpheus":
+		copyString("api_url")
+		if tlsInsecure, isBool := record.settings["tls_insecure"].(bool); isBool {
+			row["tls_insecure"] = tlsInsecure
+		}
+	case "ovh", "scaleway":
+		copyString("project_id")
+	case "ankracloud":
+		endpoint, _ := record.settings["endpoint"].(string)
+		row["endpoint"] = credentialNormaliseAnkraCloudEndpoint(endpoint)
+	case "aws":
+		copyString("region")
+	}
 }
 
 // credentialFakeVisible mirrors the platform's ResourceScope: a request sees
@@ -41,7 +80,8 @@ func credentialFakeVisible(record *credentialFakeRecord, request *http.Request) 
 }
 
 // credentialFake holds credentials the way the platform does: provider
-// creates answer without the new id, the listing is metadata only, names are
+// creates answer with the new id, the listing is metadata and connection
+// settings only, secrets rotate in place after a provider check, names are
 // unique per provider, an SSH key is stored trimmed, and the Proxmox
 // Tailscale update clears the join on an explicit null.
 type credentialFake struct {
@@ -55,6 +95,16 @@ type credentialFake struct {
 	// listingForbidden answers the listing 403, as for a token without
 	// credentials.read.
 	listingForbidden bool
+	// createOmitsID answers provider creates without the new id, as a
+	// platform from before 2026-10-18 does.
+	createOmitsID bool
+	// listingOmitsSettings lists no connection settings, as a platform from
+	// before 2026-10-18 does, or one that could not read them.
+	listingOmitsSettings bool
+	// rotations and displayNameUpdates record the bodies of the in-place
+	// writes the provider sent.
+	rotations          []map[string]any
+	displayNameUpdates []map[string]json.RawMessage
 }
 
 func newCredentialFake(t *testing.T) *credentialFake {
@@ -104,7 +154,7 @@ func newCredentialFake(t *testing.T) *credentialFake {
 				listedState = "up"
 			}
 			row := map[string]any{
-				"id": record.id, "name": record.name, "display_name": nil, "provider": record.provider,
+				"id": record.id, "name": record.name, "display_name": record.displayName, "provider": record.provider,
 				"organisation_id": "11111111-1111-4111-8111-111111111111", "system": false, "available": true,
 				"state": listedState, "created_at": "2026-10-17T10:00:00+00:00", "updated_at": "2026-10-17T10:00:00+00:00",
 			}
@@ -119,6 +169,9 @@ func newCredentialFake(t *testing.T) *credentialFake {
 				if record.scope != "" {
 					row["scope"] = record.scope
 				}
+			}
+			if !fake.listingOmitsSettings {
+				credentialFakeListedSettings(record, row)
 			}
 			listing = append(listing, row)
 		}
@@ -136,8 +189,73 @@ func newCredentialFake(t *testing.T) *credentialFake {
 			}}}})
 			return
 		}
-		store(request, provider, body)
-		writeJSON(t, writer, http.StatusCreated, map[string]any{"success": true, "errors": []any{}})
+		record := store(request, provider, body)
+		if fake.createOmitsID {
+			writeJSON(t, writer, http.StatusCreated, map[string]any{"success": true, "errors": []any{}})
+			return
+		}
+		writeJSON(t, writer, http.StatusCreated, map[string]any{"success": true, "id": record.id, "name": record.name, "errors": []any{}})
+	})
+	fake.handle("PUT /api/v1/org/credentials/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		record, exists := fake.records[request.PathValue("id")]
+		if !exists || !credentialFakeVisible(record, request) {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Missing credential"})
+			return
+		}
+		var body struct {
+			Payload map[string]any `json:"payload"`
+		}
+		decodeJSON(t, request, &body)
+		fake.rotations = append(fake.rotations, body.Payload)
+		rotatable := credentialFakeRotatable[record.provider]
+		if record.provider == "aws" {
+			rotatable = []string{"access_key_id", "secret_access_key"}
+			if record.authMethod == "role" {
+				rotatable = []string{"role_arn", "external_id"}
+			}
+		}
+		for field, value := range body.Payload {
+			if !slices.Contains(rotatable, field) {
+				writeJSON(t, writer, http.StatusBadRequest, map[string]any{"detail": "Field '" + field + "' cannot be rotated for this credential type."})
+				return
+			}
+			if value == credentialFakeRefusedSecret {
+				writeJSON(t, writer, http.StatusOK, map[string]any{"rotated": false, "result": map[string]any{
+					"ok": false, "code": "unauthorized", "message": "The provider refused the token.", "hints": []any{"Check the token's permissions."},
+				}})
+				return
+			}
+		}
+		for field, value := range body.Payload {
+			record.settings[field] = value
+		}
+		writeJSON(t, writer, http.StatusOK, map[string]any{"rotated": true, "result": map[string]any{"ok": true, "code": nil, "message": "Connected.", "hints": []any{}}})
+	})
+	fake.handle("PATCH /api/v1/org/credentials/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		record, exists := fake.records[request.PathValue("id")]
+		if !exists || !credentialFakeVisible(record, request) {
+			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Missing credential"})
+			return
+		}
+		var body map[string]json.RawMessage
+		decodeJSON(t, request, &body)
+		fake.displayNameUpdates = append(fake.displayNameUpdates, body)
+		raw, present := body["display_name"]
+		if !present {
+			writeJSON(t, writer, http.StatusUnprocessableEntity, map[string]any{"detail": "display_name is required"})
+			return
+		}
+		var displayName *string
+		_ = json.Unmarshal(raw, &displayName)
+		if displayName != nil {
+			trimmed := strings.TrimSpace(*displayName)
+			displayName = &trimmed
+			if trimmed == "" {
+				displayName = nil
+			}
+		}
+		record.displayName = displayName
+		writeJSON(t, writer, http.StatusOK, map[string]any{"id": record.id, "display_name": displayName})
 	})
 	fake.handle("POST /api/v1/credentials/hetzner/ssh-key", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
@@ -286,23 +404,29 @@ data "ankra_credential" "by_name" {
 				),
 			},
 			{
-				// The token API cannot rotate a token in place: a new token
-				// replaces the credential.
+				// A new token rotates the secret in place: same credential,
+				// one rotation carrying the new token, nothing deleted.
 				Config: configuration("token-two"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
-						plancheck.ExpectResourceAction("ankra_hetzner_credential.main", plancheck.ResourceActionDestroyBeforeCreate),
+						plancheck.ExpectResourceAction("ankra_hetzner_credential.main", plancheck.ResourceActionUpdate),
 					},
 				},
 				Check: resource.ComposeAggregateTestCheckFunc(
-					credentialExpectBody(fake, map[string]any{"api_token": "token-two", "name": "hetzner-main"}),
+					resource.TestCheckResourceAttr("ankra_hetzner_credential.main", "api_token", "token-two"),
 					func(state *terraform.State) error {
 						currentID := state.RootModule().Resources["ankra_hetzner_credential.main"].Primary.ID
-						if currentID == firstID {
-							return fmt.Errorf("token change kept credential %s", currentID)
+						if currentID != firstID {
+							return fmt.Errorf("token change replaced credential %s with %s", firstID, currentID)
 						}
-						if len(fake.deletes) != 1 || fake.deletes[0] != firstID {
-							return fmt.Errorf("deleted %v, want [%s]", fake.deletes, firstID)
+						if len(fake.deletes) != 0 || len(fake.creates) != 1 {
+							return fmt.Errorf("token change sent creates %v and deletes %v", fake.creates, fake.deletes)
+						}
+						if len(fake.rotations) != 1 || fake.rotations[0]["api_token"] != "token-two" || len(fake.rotations[0]) != 1 {
+							return fmt.Errorf("rotations %v, want one carrying only the new token", fake.rotations)
+						}
+						if fake.records[firstID].settings["api_token"] != "token-two" {
+							return fmt.Errorf("the platform holds token %v", fake.records[firstID].settings["api_token"])
 						}
 						return nil
 					},
@@ -335,8 +459,8 @@ data "ankra_credential" "by_name" {
 
 // TestAccHetznerCredentialImportAdopts imports a credential the platform
 // already holds: the platform never returns its token, so the first apply
-// must adopt the configured token rather than replace the credential, and a
-// later token change must replace it again.
+// must adopt the configured token rather than replace or rotate it, and a
+// later token change rotates it in place.
 func TestAccHetznerCredentialImportAdopts(t *testing.T) {
 	fake := newCredentialFake(t)
 	fake.records["00000000-0000-4000-8000-000000000099"] = &credentialFakeRecord{
@@ -379,8 +503,8 @@ resource "ankra_hetzner_credential" "existing" {
 					},
 				},
 				Check: func(_ *terraform.State) error {
-					if len(fake.creates) != 0 || len(fake.deletes) != 0 {
-						return fmt.Errorf("adopting an import sent creates %v and deletes %v", fake.creates, fake.deletes)
+					if len(fake.creates) != 0 || len(fake.deletes) != 0 || len(fake.rotations) != 0 {
+						return fmt.Errorf("adopting an import sent creates %v, deletes %v and rotations %v", fake.creates, fake.deletes, fake.rotations)
 					}
 					return nil
 				},
@@ -393,8 +517,14 @@ resource "ankra_hetzner_credential" "existing" {
 				Config: configuration("token-two"),
 				ConfigPlanChecks: resource.ConfigPlanChecks{
 					PreApply: []plancheck.PlanCheck{
-						plancheck.ExpectResourceAction("ankra_hetzner_credential.existing", plancheck.ResourceActionDestroyBeforeCreate),
+						plancheck.ExpectResourceAction("ankra_hetzner_credential.existing", plancheck.ResourceActionUpdate),
 					},
+				},
+				Check: func(_ *terraform.State) error {
+					if len(fake.rotations) != 1 || fake.rotations[0]["api_token"] != "token-two" {
+						return fmt.Errorf("rotations %v, want one carrying token-two", fake.rotations)
+					}
+					return nil
 				},
 			},
 		},

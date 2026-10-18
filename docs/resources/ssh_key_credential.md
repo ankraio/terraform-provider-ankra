@@ -4,7 +4,7 @@ page_title: "ankra_ssh_key_credential Resource - ankra"
 subcategory: ""
 description: |-
   An organisation-wide SSH key credential, referenced by a cluster's ssh_key_credential_id. The counterpart of ankra credentials <provider> ssh-key create and ankra credentials delete: every provider's ssh-key command creates the same organisation-wide credential.
-  Permissions. The API token needs credentials.read as well as credentials.write (and credentials.delete to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the terraform import to run, because the credential already exists.
+  Permissions. The API token needs credentials.read as well as credentials.write (and credentials.delete to destroy): the provider reads the credential listing right after a create to fill in the read-only attributes. If that read fails, the credential is kept in state and marked tainted, so run terraform untaint to keep it. (A platform from before 2026-10-18 does not answer a create with the credential's id; there the error names the terraform import to run.)
   Projects. A credential belongs to the provider's project. After the provider's project_id changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
   Refresh cost. Every refresh reads the credential listing for this provider. For AWS credentials the platform reads each AWS credential's secret to fill in scope and auth_method, so a refresh costs one secret read per AWS credential in the organisation.
 ---
@@ -13,7 +13,7 @@ description: |-
 
 An organisation-wide SSH key credential, referenced by a cluster's `ssh_key_credential_id`. The counterpart of `ankra credentials <provider> ssh-key create` and `ankra credentials delete`: every provider's `ssh-key` command creates the same organisation-wide credential.
 
-**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): the platform does not return a provider credential's id from its create, so the provider reads the credential listing right after. If that read fails, the error names the `terraform import` to run, because the credential already exists.
+**Permissions.** The API token needs `credentials.read` as well as `credentials.write` (and `credentials.delete` to destroy): the provider reads the credential listing right after a create to fill in the read-only attributes. If that read fails, the credential is kept in state and marked tainted, so run `terraform untaint` to keep it. (A platform from before 2026-10-18 does not answer a create with the credential's id; there the error names the `terraform import` to run.)
 
 **Projects.** A credential belongs to the provider's project. After the provider's `project_id` changes, a credential from the old project is reported as not visible in the current scope; it is neither recreated nor reported destroyed.
 
@@ -48,6 +48,7 @@ output "generated_private_key" {
 
 ### Optional
 
+- `display_name` (String) Label shown instead of the name in the Ankra portal. Changed in place. Left unset, the label set in the portal (if any) is kept and read back; removing it from the configuration does not clear it.
 - `generate` (Boolean) Have the platform generate an RSA keypair; the private key is returned once, in `private_key`. Defaults to `false`.
 - `ssh_public_key` (String) OpenSSH public key, such as `ssh-ed25519 AAAA... me@laptop`. Set it, or set `generate`. Leading and trailing whitespace is ignored. Changing it replaces the credential.
 
@@ -56,7 +57,6 @@ output "generated_private_key" {
 - `available` (Boolean) Whether the platform considers the credential usable.
 - `comment` (String) Comment after the key material.
 - `created_at` (String) When the credential was created.
-- `display_name` (String) Label shown instead of the name in the Ankra portal, when one was set there.
 - `fingerprint` (String) OpenSSH SHA256 fingerprint of the key.
 - `id` (String) Identifier of the credential: the value cluster resources take as `credential_id` or `ssh_key_credential_id`.
 - `key_type` (String) Key algorithm, such as `ssh-ed25519`.
