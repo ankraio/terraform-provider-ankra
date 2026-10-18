@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -77,9 +78,10 @@ func (poolResource *managedNodePoolResource) Schema(ctx context.Context, _ resou
 	}
 	attributes["name"] = schema.StringAttribute{
 		MarkdownDescription: "Name the pool is created with, unique within the cluster. It stays the resource's name when a " +
-			"size change replaces the pool; `current_pool_name` is the pool's name now. Changing it forces replacement.",
+			"size change replaces the pool; `current_pool_name` is the pool's name now. Changing it forces replacement, " +
+			"except to the name a pool imported by its replacement's name was created with.",
 		Required:      true,
-		PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()},
+		PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplaceIf(managedPoolNameRequiresReplace, managedPoolNameReplaceDescription, managedPoolNameReplaceDescription)},
 		Validators:    []validator.String{laneNameValidator{}},
 	}
 	attributes["current_pool_name"] = schema.StringAttribute{
@@ -95,7 +97,9 @@ func (poolResource *managedNodePoolResource) Schema(ctx context.Context, _ resou
 			"`node_count` and `autoscaling` change in place. A `size` change replaces the pool blue/green at the platform " +
 			"and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) " +
 			"is created, becomes ready, and the old pool is deleted; `current_pool_name` then names the new pool. Apply waits " +
-			"for this up to the `update` timeout (default 90 minutes). Every other argument replaces the resource. Pools " +
+			"for this up to the `update` timeout (default 90 minutes). Destroy also deletes a replacement pool of this " +
+			"resource that is still listed, so a size change still running is not left behind. Every other argument " +
+			"replaces the resource. Pools " +
 			"declared in `ankra_managed_cluster.node_pools` are managed there; use this resource for the others.",
 		Attributes: attributes,
 		Blocks: map[string]schema.Block{
@@ -211,10 +215,15 @@ func (poolResource *managedNodePoolResource) Update(ctx context.Context, request
 		waitContext, cancel := context.WithTimeout(ctx, wait)
 		defer cancel()
 		replacementName := managedReplacementPoolName(plan.Name.ValueString(), plan.Size.ValueString())
-		if err := replaceManagedPool(waitContext, apiClient, provider, clusterID, current, replacementName, plan.Size.ValueString()); err != nil {
+		if err := replaceManagedPool(waitContext, apiClient, provider, clusterID, plan.Name.ValueString(), current, replacementName,
+			plan.Size.ValueString(), &response.Diagnostics); err != nil {
 			state.CurrentPoolName = types.StringValue(current)
 			state.Timeouts = plan.Timeouts
 			response.Diagnostics.Append(response.State.Set(ctx, &state)...)
+			if errors.Is(err, errManagedPoolReplaceUnsupported) {
+				response.Diagnostics.AddError("Managed node pool size changes are not supported", err.Error())
+				return
+			}
 			response.Diagnostics.AddError("Unable to change the managed node pool's size",
 				fmt.Sprintf("Replacing pool %s with pool %s of size %s: %s. Terraform still records pool %s with its old size. "+
 					"Apply again to retry: it asks for the same replacement, which the platform resumes, and a replacement "+
@@ -240,11 +249,19 @@ func (poolResource *managedNodePoolResource) Delete(ctx context.Context, request
 	if response.Diagnostics.HasError() {
 		return
 	}
-	err := apiClient.DeleteManagedNodePool(ctx, state.Provider.ValueString(), state.ClusterID.ValueString(), managedPoolCurrentName(state))
-	if err == nil || deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) || response.Diagnostics.HasError() {
+	provider := state.Provider.ValueString()
+	clusterID := state.ClusterID.ValueString()
+	current := managedPoolCurrentName(state)
+	err := apiClient.DeleteManagedNodePool(ctx, provider, clusterID, current)
+	if err != nil && !deletedWhenNotFound(ctx, err, apiClient, request.Private, &response.Diagnostics) {
+		if !response.Diagnostics.HasError() {
+			response.Diagnostics.AddError("Unable to delete managed node pool", err.Error())
+		}
 		return
 	}
-	response.Diagnostics.AddError("Unable to delete managed node pool", err.Error())
+	if replacementError := deleteManagedPoolReplacements(ctx, apiClient, provider, clusterID, state.Name.ValueString(), current); replacementError != nil {
+		response.Diagnostics.AddError("Unable to delete the managed node pool's replacement", replacementError.Error())
+	}
 }
 
 // ImportState imports by `<provider_name>/<cluster_id>/<name>`. The name is

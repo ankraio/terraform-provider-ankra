@@ -8,13 +8,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -140,69 +140,26 @@ func isManagedPoolReplacementInProgress(err error) bool {
 		strings.Contains(strings.ToLower(apiError.Body), "in progress")
 }
 
-// replaceManagedPool replaces the pool current with one named
-// replacementName of the given size and waits until the platform has
-// finished: the replacement is listed and the replaced pool is gone. A
-// replacement already running for the same change is followed rather than
-// refused, and one the platform already finished is accepted.
-func replaceManagedPool(ctx context.Context, apiClient *client.Client, provider, clusterID, current, replacementName, size string) error {
-	operationID := ""
-	accepted, err := apiClient.ReplaceManagedNodePool(ctx, provider, clusterID, current,
-		client.ManagedNodePoolReplace{Size: size, ReplacementPoolName: &replacementName})
-	switch {
-	case err == nil:
-		operationID = accepted.OperationID
-	case isManagedPoolReplacementInProgress(err):
-	case client.IsNotFound(err):
-		if pool, getError := apiClient.GetManagedNodePool(ctx, provider, clusterID, replacementName); getError == nil && strings.EqualFold(pool.Size, size) {
-			return nil
-		}
-		return err
-	default:
-		return err
-	}
-	return awaitManagedPoolReplacement(ctx, apiClient, provider, clusterID, current, replacementName, operationID)
-}
+const managedPoolNameReplaceDescription = "Changing the name replaces the pool, except to the name a pool imported by " +
+	"its replacement's name was created with."
 
-// awaitManagedPoolReplacement polls the pool listing, and the replacement's
-// operation when it is known, until the replacement finishes, fails, or ctx
-// ends.
-func awaitManagedPoolReplacement(ctx context.Context, apiClient *client.Client, provider, clusterID, current, replacementName, operationID string) error {
-	for {
-		pools, listError := apiClient.ListManagedNodePools(ctx, provider, clusterID)
-		if listError == nil {
-			isCurrentListed, isReplacementListed := false, false
-			for _, pool := range pools {
-				isCurrentListed = isCurrentListed || pool.Name == current
-				isReplacementListed = isReplacementListed || pool.Name == replacementName
-			}
-			if isReplacementListed && !isCurrentListed {
-				return nil
-			}
-		}
-		if operationID != "" {
-			if execution, executionError := apiClient.GetExecution(ctx, operationID); executionError == nil {
-				if execution.Status == client.ExecutionStatusSuccess && listError == nil {
-					return nil
-				}
-				if client.IsExecutionFailed(execution.Status) {
-					detail := ""
-					if execution.ErrorExcerpt != nil && *execution.ErrorExcerpt != "" {
-						detail = ": " + *execution.ErrorExcerpt
-					}
-					return fmt.Errorf("the replacement of pool %s by %s ended %s%s", current, replacementName, execution.Status, detail)
-				}
-			}
-		}
-		select {
-		case <-ctx.Done():
-			operation := ""
-			if operationID != "" {
-				operation = " as operation " + operationID
-			}
-			return fmt.Errorf("the replacement of pool %s by %s was accepted but had not finished before the update timeout; "+
-				"it carries on at the platform%s", current, replacementName, operation)
-		case <-time.After(managedPoolPollInterval):
-		}
+// managedPoolNameRequiresReplace lets a pool imported by the name of a
+// replacement this resource created take the configured name in place: the
+// recorded pool is exactly the replacement the configured name derives for
+// its size.
+func managedPoolNameRequiresReplace(ctx context.Context, request planmodifier.StringRequest, response *stringplanmodifier.RequiresReplaceIfFuncResponse) {
+	response.RequiresReplace = true
+	if request.PlanValue.IsUnknown() || request.PlanValue.IsNull() {
+		return
 	}
+	var current, size types.String
+	response.Diagnostics.Append(request.State.GetAttribute(ctx, path.Root("current_pool_name"), &current)...)
+	response.Diagnostics.Append(request.State.GetAttribute(ctx, path.Root("size"), &size)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if current.IsNull() || current.IsUnknown() || current.ValueString() == "" {
+		current = request.StateValue
+	}
+	response.RequiresReplace = current.ValueString() != managedReplacementPoolName(request.PlanValue.ValueString(), size.ValueString())
 }

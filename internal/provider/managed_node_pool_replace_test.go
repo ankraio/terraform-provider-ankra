@@ -45,9 +45,21 @@ type poolReplaceFake struct {
 	failNext bool
 	// stalled keeps every operation running.
 	stalled bool
-	// answerInProgress makes the next replace a 409 while the operation
-	// already accepted keeps running.
-	answerInProgress bool
+	// failOnConflict makes the running replacement fail right after a
+	// replace was refused with 409 "already in progress".
+	failOnConflict bool
+	// dropOnConflict deletes the replaced pool, without listing its
+	// replacement, right after such a 409.
+	dropOnConflict bool
+	// replaceStatus, when set, is the answer of every replace, as from a
+	// platform without the route.
+	replaceStatus int
+	// executionStatus, when set, is the answer of every execution read.
+	executionStatus int
+	// listFailing makes the pool listing answer 500; failListingOnAccept
+	// sets it when a replacement is accepted.
+	listFailing         bool
+	failListingOnAccept bool
 }
 
 type poolReplaceOperation struct {
@@ -60,6 +72,10 @@ func newPoolReplaceFake(t *testing.T) *poolReplaceFake {
 	fake := &poolReplaceFake{routeFake: newRouteFake(t), pools: map[string]map[string]any{}, operations: map[string]*poolReplaceOperation{}}
 	base := "/api/v1/clusters/managed/doks/" + poolReplaceClusterID + "/node-pools"
 	fake.handle("GET "+base, func(writer http.ResponseWriter, _ *http.Request) {
+		if fake.listFailing {
+			writeJSON(t, writer, http.StatusInternalServerError, map[string]any{"detail": "Internal Server Error"})
+			return
+		}
 		fake.advance()
 		names := make([]string, 0, len(fake.pools))
 		for name := range fake.pools {
@@ -114,9 +130,23 @@ func newPoolReplaceFake(t *testing.T) *poolReplaceFake {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Cluster or node pool not found"})
 			return
 		}
-		if fake.answerInProgress {
-			fake.answerInProgress = false
+		if fake.replaceStatus != 0 {
+			writeJSON(t, writer, fake.replaceStatus, map[string]any{"detail": "Not Found"})
+			return
+		}
+		for _, running := range fake.operations {
+			if running.old != old || running.status != "running" {
+				continue
+			}
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "Node pool replacement is already in progress"})
+			if fake.failOnConflict {
+				running.status = "failed"
+				fake.stalled = false
+			}
+			if fake.dropOnConflict {
+				running.status = "lost"
+				delete(fake.pools, old)
+			}
 			return
 		}
 		if _, taken := fake.pools[replacement]; taken {
@@ -130,12 +160,18 @@ func newPoolReplaceFake(t *testing.T) *poolReplaceFake {
 			status = "failed"
 		}
 		fake.operations[operationID] = &poolReplaceOperation{old: old, replacement: replacement, size: size, readsLeft: 1, status: status}
+		fake.listFailing = fake.failListingOnAccept
 		writeJSON(t, writer, http.StatusAccepted, map[string]any{
 			"operation_id": operationID, "cluster_id": poolReplaceClusterID, "node_pool_name": old,
 			"replacement_pool_name": replacement, "old_size": fake.pools[old]["size"], "new_size": size,
 		})
 	})
 	fake.handle("GET /api/v1/org/executions/{id}", func(writer http.ResponseWriter, request *http.Request) {
+		if fake.executionStatus != 0 {
+			fake.advance()
+			writeJSON(t, writer, fake.executionStatus, map[string]any{"detail": "Forbidden"})
+			return
+		}
 		operation := fake.operations[request.PathValue("id")]
 		if operation == nil {
 			writeJSON(t, writer, http.StatusNotFound, map[string]any{"detail": "Execution not found"})
@@ -313,7 +349,7 @@ func TestAccManagedNodePoolSizeChangeOutlastingTimeout(t *testing.T) {
 				ExpectError: regexp.MustCompile(`(?s)had\s+not\s+finished\s+before\s+the\s+update\s+timeout`),
 			},
 			{
-				PreConfig: func() { fake.stalled, fake.answerInProgress = false, true },
+				PreConfig: func() { fake.stalled = false },
 				Config:    poolReplaceConfig(fake, "s-4vcpu-8gb", 1, ""),
 				Check: testresource.ComposeAggregateTestCheckFunc(
 					testresource.TestCheckResourceAttr(address, "current_pool_name", medium),
@@ -324,7 +360,6 @@ func TestAccManagedNodePoolSizeChangeOutlastingTimeout(t *testing.T) {
 				// This replacement outlasts the apply.
 				PreConfig: func() {
 					fake.stalled = true
-					fake.answerInProgress = false
 				},
 				Config:      poolReplaceConfig(fake, "S-8VCPU-16GB", 1, shortTimeoutBlock),
 				ExpectError: regexp.MustCompile(`(?s)had\s+not\s+finished`),

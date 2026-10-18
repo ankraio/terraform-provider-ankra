@@ -3,12 +3,12 @@
 page_title: "ankra_managed_node_pool Resource - ankra"
 subcategory: ""
 description: |-
-  A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of ankra cluster managed node-pool add|update|delete. node_count and autoscaling change in place. A size change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; current_pool_name then names the new pool. Apply waits for this up to the update timeout (default 90 minutes). Every other argument replaces the resource. Pools declared in ankra_managed_cluster.node_pools are managed there; use this resource for the others.
+  A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of ankra cluster managed node-pool add|update|delete. node_count and autoscaling change in place. A size change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; current_pool_name then names the new pool. Apply waits for this up to the update timeout (default 90 minutes). Destroy also deletes a replacement pool of this resource that is still listed, so a size change still running is not left behind. Every other argument replaces the resource. Pools declared in ankra_managed_cluster.node_pools are managed there; use this resource for the others.
 ---
 
 # ankra_managed_node_pool (Resource)
 
-A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of `ankra cluster managed node-pool add|update|delete`. `node_count` and `autoscaling` change in place. A `size` change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; `current_pool_name` then names the new pool. Apply waits for this up to the `update` timeout (default 90 minutes). Every other argument replaces the resource. Pools declared in `ankra_managed_cluster.node_pools` are managed there; use this resource for the others.
+A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of `ankra cluster managed node-pool add|update|delete`. `node_count` and `autoscaling` change in place. A `size` change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; `current_pool_name` then names the new pool. Apply waits for this up to the `update` timeout (default 90 minutes). Destroy also deletes a replacement pool of this resource that is still listed, so a size change still running is not left behind. Every other argument replaces the resource. Pools declared in `ankra_managed_cluster.node_pools` are managed there; use this resource for the others.
 
 ## Example Usage
 
@@ -36,7 +36,7 @@ resource "ankra_managed_node_pool" "batch" {
 ### Required
 
 - `cluster_id` (String) Managed cluster the pool belongs to. Changing it forces replacement.
-- `name` (String) Name the pool is created with, unique within the cluster. It stays the resource's name when a size change replaces the pool; `current_pool_name` is the pool's name now. Changing it forces replacement.
+- `name` (String) Name the pool is created with, unique within the cluster. It stays the resource's name when a size change replaces the pool; `current_pool_name` is the pool's name now. Changing it forces replacement, except to the name a pool imported by its replacement's name was created with.
 - `provider_name` (String) Managed Kubernetes provider of the cluster. One of `doks`, `uks`, `gke`, `ovh_mks`, `aks`, `eks`, `kapsule`, `ankracloud_k8s`. Changing it forces replacement.
 - `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan). Compared case-insensitively, since providers report sizes in their own case.
 
