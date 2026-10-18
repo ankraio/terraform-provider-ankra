@@ -293,6 +293,37 @@ func (client *Client) UpdateManagedNodePool(ctx context.Context, provider, clust
 	return client.doRequest(ctx, http.MethodPatch, path, request, nil)
 }
 
+// ManagedNodePoolReplace is the POST .../node-pools/{name}/replace body: a
+// blue/green replacement of the pool with another size. ReplacementPoolName
+// names the new pool; absent, the platform derives one.
+type ManagedNodePoolReplace struct {
+	Size                string  `json:"size"`
+	ReplacementPoolName *string `json:"replacement_pool_name,omitempty"`
+}
+
+// ManagedNodePoolReplacement is the platform's acceptance of a pool
+// replacement. OperationID is the execution that creates the new pool, waits
+// for it to be ready, and deletes the replaced one.
+type ManagedNodePoolReplacement struct {
+	OperationID         string `json:"operation_id"`
+	NodePoolName        string `json:"node_pool_name"`
+	ReplacementPoolName string `json:"replacement_pool_name"`
+	OldSize             string `json:"old_size"`
+	NewSize             string `json:"new_size"`
+}
+
+// ReplaceManagedNodePool asks for a blue/green replacement of a pool with a
+// new size. The platform answers 202 once it has accepted the intent; the
+// replacement itself runs as the returned operation.
+func (client *Client) ReplaceManagedNodePool(ctx context.Context, provider, clusterID, poolName string, request ManagedNodePoolReplace) (*ManagedNodePoolReplacement, error) {
+	path := managedClusterPath(provider, clusterID) + "/node-pools/" + url.PathEscape(poolName) + "/replace"
+	var accepted ManagedNodePoolReplacement
+	if err := client.doRequest(ctx, http.MethodPost, path, request, &accepted); err != nil {
+		return nil, err
+	}
+	return &accepted, nil
+}
+
 // DeleteManagedNodePool removes a pool. A 404 is returned to the caller.
 func (client *Client) DeleteManagedNodePool(ctx context.Context, provider, clusterID, poolName string) error {
 	path := managedClusterPath(provider, clusterID) + "/node-pools/" + url.PathEscape(poolName)

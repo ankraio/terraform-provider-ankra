@@ -3,12 +3,12 @@
 page_title: "ankra_managed_node_pool Resource - ankra"
 subcategory: ""
 description: |-
-  A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of ankra cluster managed node-pool add|update|delete. node_count and autoscaling change in place; every other argument replaces the pool. Pools declared in ankra_managed_cluster.node_pools are managed there; use this resource for the others.
+  A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of ankra cluster managed node-pool add|update|delete. node_count and autoscaling change in place. A size change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; current_pool_name then names the new pool. Apply waits for this up to the update timeout (default 90 minutes). Destroy also deletes a replacement pool of this resource that is still listed, so a size change still running is not left behind. Every other argument replaces the resource. Pools declared in ankra_managed_cluster.node_pools are managed there; use this resource for the others.
 ---
 
 # ankra_managed_node_pool (Resource)
 
-A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of `ankra cluster managed node-pool add|update|delete`. `node_count` and `autoscaling` change in place; every other argument replaces the pool. Pools declared in `ankra_managed_cluster.node_pools` are managed there; use this resource for the others.
+A node pool of a managed Kubernetes cluster (DOKS, UKS, GKE, AKS, EKS, OVHcloud MKS, Kapsule or Ankra Cloud Kubernetes). The counterpart of `ankra cluster managed node-pool add|update|delete`. `node_count` and `autoscaling` change in place. A `size` change replaces the pool blue/green at the platform and keeps the resource: a new pool of the new size (with the same count, labels, taints, zone and autoscaling) is created, becomes ready, and the old pool is deleted; `current_pool_name` then names the new pool. Apply waits for this up to the `update` timeout (default 90 minutes). Destroy also deletes a replacement pool of this resource that is still listed, so a size change still running is not left behind. Every other argument replaces the resource. Pools declared in `ankra_managed_cluster.node_pools` are managed there; use this resource for the others.
 
 ## Example Usage
 
@@ -36,7 +36,7 @@ resource "ankra_managed_node_pool" "batch" {
 ### Required
 
 - `cluster_id` (String) Managed cluster the pool belongs to. Changing it forces replacement.
-- `name` (String) Pool name, unique within the cluster. Changing it forces replacement.
+- `name` (String) Name the pool is created with, unique within the cluster. It stays the resource's name when a size change replaces the pool; `current_pool_name` is the pool's name now. Changing it forces replacement, except to the name a pool imported by its replacement's name was created with.
 - `provider_name` (String) Managed Kubernetes provider of the cluster. One of `doks`, `uks`, `gke`, `ovh_mks`, `aks`, `eks`, `kapsule`, `ankracloud_k8s`. Changing it forces replacement.
 - `size` (String) Node size in the provider's vocabulary (droplet size, machine type, VM size, plan). Compared case-insensitively, since providers report sizes in their own case.
 
@@ -49,10 +49,12 @@ resource "ankra_managed_node_pool" "batch" {
 - `root_volume_type` (String) Root volume type of the pool's nodes, where the provider offers a choice. When unset the provider's default is recorded.
 - `spot` (Attributes) Run the pool on spot or preemptible capacity, where the provider offers it. (see [below for nested schema](#nestedatt--spot))
 - `taints` (Attributes List) Kubernetes taints of the pool's nodes. (see [below for nested schema](#nestedatt--taints))
+- `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
 - `zone` (String) Zone the pool's nodes run in, where the provider places pools per zone. When unset the provider's choice is recorded.
 
 ### Read-Only
 
+- `current_pool_name` (String) Name of the pool at the provider now: `name` until a size change, then the name of the pool that replaced it, named from up to 8 letters and digits of `name` and a 4-character hash of `name` and the size (for example `batch3f2a`), short enough for every provider. Known at plan time.
 - `id` (String) `<provider_name>/<cluster_id>/<name>`.
 
 <a id="nestedatt--autoscaling"></a>
@@ -89,6 +91,14 @@ Optional:
 
 - `value` (String) Taint value. Defaults to empty.
 
+
+<a id="nestedblock--timeouts"></a>
+### Nested Schema for `timeouts`
+
+Optional:
+
+- `update` (String) A string that can be [parsed as a duration](https://pkg.go.dev/time#ParseDuration) consisting of numbers and unit suffixes, such as "30s" or "2h45m". Valid time units are "s" (seconds), "m" (minutes), "h" (hours).
+
 ## Import
 
 Import is supported using the following syntax:
@@ -96,6 +106,8 @@ Import is supported using the following syntax:
 The [`terraform import` command](https://developer.hashicorp.com/terraform/cli/commands/import) can be used, for example:
 
 ```shell
-# Managed node pools are imported by <provider_name>/<cluster_id>/<name>.
+# Managed node pools are imported by <provider_name>/<cluster_id>/<name>. A pool this
+# resource resized imports by the name it was created with; the first refresh finds the
+# pool that replaced it.
 terraform import ankra_managed_node_pool.batch aks/ef8cf93e-1d97-4494-9de4-12ced709ffde/batch
 ```
