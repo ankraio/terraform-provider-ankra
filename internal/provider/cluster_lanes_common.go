@@ -282,13 +282,6 @@ func deprovisionLaneClusterAndWait(ctx context.Context, apiClient *client.Client
 	if deprovision.clusterID == "" {
 		return
 	}
-	// The scope check compares against the resolved project ID, so a slug
-	// must be resolved first even when nothing else has sent a request in
-	// this run (a destroy without refresh).
-	if err := apiClient.ResolveProject(ctx); err != nil {
-		diagnostics.AddError("Unable to resolve the provider's project_id", err.Error())
-		return
-	}
 	if !requireUnmovedScope(ctx, apiClient, private, diagnostics) {
 		return
 	}
@@ -367,8 +360,14 @@ func removeMissingCluster(ctx context.Context, apiClient *client.Client, respons
 // requireUnmovedScope refuses a destroy when the provider's scope moved since
 // the object was tracked: the platform would answer 404, and the listing
 // would not show the object, for something that still exists in the old
-// scope.
+// scope. The recorded scope holds the resolved project ID, so a slug
+// project_id is resolved first, even when nothing else has sent a request
+// in this run (a destroy without refresh).
 func requireUnmovedScope(ctx context.Context, apiClient *client.Client, private privateStateReader, diagnostics *diag.Diagnostics) bool {
+	if err := apiClient.ResolveProject(ctx); err != nil {
+		diagnostics.AddError("Unable to resolve the provider's project_id", err.Error())
+		return false
+	}
 	if moved := scopeMoved(ctx, apiClient, private); moved != "" {
 		diagnostics.AddError("Object not visible in the provider's current scope", moved+". "+scopeMovedDetail)
 		return false

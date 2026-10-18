@@ -65,6 +65,43 @@ func TestDeprovisionResolvesProjectSlugBeforeScopeCheck(t *testing.T) {
 	}
 }
 
+// TestRequireUnmovedScopeResolvesProjectSlug pins the scope check every
+// destroy shares (node groups, managed clusters and the playground call it
+// directly): a fresh client with a slug project_id compares the recorded
+// project with the slug's ID, not with an unresolved "", and still refuses a
+// real move.
+func TestRequireUnmovedScopeResolvesProjectSlug(t *testing.T) {
+	fake := newRouteFake(t)
+	listings := 0
+	registerProjects(fake, map[string]string{"platform": lanesTestProject, "other": lanesOtherTestProject}, &listings)
+	recorded, err := json.Marshal(recordedScope{ProjectID: lanesTestProject})
+	if err != nil {
+		t.Fatal(err)
+	}
+	private := recordedPrivateState{scopePrivateKey: recorded}
+
+	sameProject := client.NewClient(fake.server.URL, "test-token", "test")
+	sameProject.ProjectSlug = "platform"
+	var diagnostics diag.Diagnostics
+	if !requireUnmovedScope(context.Background(), sameProject, private, &diagnostics) || diagnostics.HasError() {
+		t.Fatalf("the slug of the recorded project read as a scope move: %v", diagnostics)
+	}
+
+	otherProject := client.NewClient(fake.server.URL, "test-token", "test")
+	otherProject.ProjectSlug = "other"
+	diagnostics = nil
+	if requireUnmovedScope(context.Background(), otherProject, private, &diagnostics) {
+		t.Fatal("a slug of another project did not read as a scope move")
+	}
+
+	unknownProject := client.NewClient(fake.server.URL, "test-token", "test")
+	unknownProject.ProjectSlug = "missing"
+	diagnostics = nil
+	if requireUnmovedScope(context.Background(), unknownProject, private, &diagnostics) || !diagnostics.HasError() {
+		t.Fatal("an unknown slug passed the scope check")
+	}
+}
+
 // TestDeprovisionRefusesUnknownProjectSlug pins that a slug that resolves to
 // no project fails the destroy before anything is deleted.
 func TestDeprovisionRefusesUnknownProjectSlug(t *testing.T) {
