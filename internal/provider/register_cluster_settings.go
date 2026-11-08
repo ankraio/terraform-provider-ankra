@@ -24,6 +24,7 @@ func clusterSettingResources() []func() resource.Resource {
 		NewClusterMeshResource,
 		NewClusterMeshMemberResource,
 		NewClusterBastionAllowedIPsResource,
+		NewClusterOSPatchPolicyResource,
 	}
 }
 
