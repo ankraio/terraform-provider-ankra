@@ -1,3 +1,11 @@
+## 0.5.0 (Unreleased)
+
+FEATURES:
+
+* **New Resource:** `ankra_cloud_dns_zone_access` - the access gateway policy of an Ankra Cloud DNS zone (`ankra org access-gateway set`): `public`, or `organisation` limited to roles and to the members who can reach a project (by ID or slug), import by zone id. An unset `roles` or `project_id` removes that limit. Destroy leaves the zone's policy in force, so it never opens a gated zone.
+* **New Data Source:** `ankra_cloud_dns_zones` - the hosted zones of the organisation's Ankra Cloud account (`ankra org access-gateway zones`).
+* **New Resource:** `ankra_cluster_security_policy_mode` - a cluster's security baseline mode, `audit`, `enforce` or `off` (`ankra security policy-mode`), import by cluster id. `mode` reads back as the mode last asked for, so a change made elsewhere shows as drift; `policy_mode` is what the cluster stores now (`off` once the policy engine is gone, also after `audit` was asked for). Destroy leaves the mode as it is.
+
 ## 0.4.0 (2026-10-18)
 
 UPGRADE NOTES:
