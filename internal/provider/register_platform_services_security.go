@@ -8,13 +8,14 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// securityResources are finding dispositions, compliance frameworks and
-// per-cluster security report schedules.
+// securityResources are finding dispositions, compliance frameworks,
+// per-cluster security report schedules and security baseline modes.
 func securityResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewSecurityDispositionResource,
 		NewSecurityComplianceFrameworkResource,
 		NewSecurityReportScheduleResource,
+		NewClusterSecurityPolicyModeResource,
 	}
 }
 
