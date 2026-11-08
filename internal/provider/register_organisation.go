@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// organisationResources are the organisation itself, its members, tokens, secret slots, MCP servers and CI and AI review settings.
+// organisationResources are the organisation itself, its members, tokens, secret slots, projects, OIDC trust policies, MCP servers and CI and AI review settings.
 func organisationResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewOrganisationResource,
@@ -25,6 +25,8 @@ func organisationResources() []func() resource.Resource {
 		NewAIEnvironmentResource,
 		NewAIReviewBindingResource,
 		NewSecretSlotResource,
+		NewProjectResource,
+		NewOIDCTrustPolicyResource,
 	}
 }
 
@@ -36,5 +38,9 @@ func organisationDataSources() []func() datasource.DataSource {
 		NewOrganisationRolesDataSource,
 		NewAPITokensDataSource,
 		NewServiceTokensDataSource,
+		NewProjectDataSource,
+		NewProjectsDataSource,
+		NewOIDCTrustPoliciesDataSource,
+		NewClusterAccessPolicyDataSource,
 	}
 }

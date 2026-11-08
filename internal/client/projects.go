@@ -19,10 +19,12 @@ var projectIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-
 
 // Project is one project the token's user can reach in the organisation.
 type Project struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Slug      string `json:"slug"`
-	IsDefault bool   `json:"is_default"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Slug        string `json:"slug"`
+	Description string `json:"description"`
+	IsDefault   bool   `json:"is_default"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type projectListEnvelope struct {
