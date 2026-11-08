@@ -8,12 +8,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// alertAndDNSResources are alert destinations and routes, organisation DNS, and the access gateway
-// policies of Ankra Cloud DNS zones.
+// alertAndDNSResources are alert definitions, destinations and routes,
+// organisation DNS, and the access gateway policies of Ankra Cloud DNS zones.
 func alertAndDNSResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewAlertDestinationResource,
 		NewAlertRouteResource,
+		NewAlertRuleResource,
 		NewOrganisationDNSRecordResource,
 		NewOrganisationCustomDNSZoneResource,
 		NewOrganisationDomainResource,
