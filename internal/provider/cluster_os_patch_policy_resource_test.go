@@ -83,7 +83,9 @@ func newOSPatchFake(t *testing.T) *osPatchFake {
 		if days, set := body["window_days"].([]any); set {
 			fake.days = []string{}
 			for _, day := range days {
-				fake.days = append(fake.days, day.(string))
+				if name, isString := day.(string); isString {
+					fake.days = append(fake.days, name)
+				}
 			}
 			slices.SortFunc(fake.days, func(left, right string) int {
 				return slices.Index(osPatchWindowDays, left) - slices.Index(osPatchWindowDays, right)

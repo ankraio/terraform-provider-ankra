@@ -56,7 +56,9 @@ func newAlertRuleFake(t *testing.T) *alertRuleFake {
 		rules := []map[string]any{}
 		listed, _ := body["rules"].([]any)
 		for _, rule := range listed {
-			rules = append(rules, rule.(map[string]any))
+			if fields, isObject := rule.(map[string]any); isObject {
+				rules = append(rules, fields)
+			}
 		}
 		return rules
 	}
@@ -95,7 +97,8 @@ func newAlertRuleFake(t *testing.T) *alertRuleFake {
 		}
 		fake.created++
 		alertID := fmt.Sprintf("a1000000-0000-0000-0000-%012d", fake.created)
-		alert := &alertRuleFakeAlert{name: body["name"].(string), enabled: true, destinationIDs: destinationIDs, rules: rulesOf(body)}
+		name, _ := body["name"].(string)
+		alert := &alertRuleFakeAlert{name: name, enabled: true, destinationIDs: destinationIDs, rules: rulesOf(body)}
 		if description, set := body["description"].(string); set {
 			alert.description = description
 		}
@@ -204,7 +207,11 @@ func TestAccAlertRuleLifecycle(t *testing.T) {
 					resource.TestCheckResourceAttr("ankra_alert_rule.disk", "destination_names.#", "1"),
 					resource.TestCheckResourceAttr("ankra_alert_rule.disk", "rules.0.conditions.0.condition_value", "DiskPressure"),
 					func(_ *terraform.State) error {
-						rule := fake.lastCreate["rules"].([]any)[0].(map[string]any)
+						rules, _ := fake.lastCreate["rules"].([]any)
+						if len(rules) != 1 {
+							return fmt.Errorf("the create must send one rule: %v", fake.lastCreate)
+						}
+						rule, _ := rules[0].(map[string]any)
 						if _, sent := rule["cooldown_minutes"]; sent {
 							return fmt.Errorf("an unset rule member must be left to the platform default: %v", rule)
 						}
