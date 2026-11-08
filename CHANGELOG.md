@@ -1,3 +1,12 @@
+## 0.5.0 (Unreleased)
+
+FEATURES:
+
+* **New Resource:** `ankra_project` - a project of the organisation (`ankra project create`, `rename`, `delete`). `name` and `description` change in place; `slug` never changes on the platform, so changing it replaces the project. Destroy deletes the project, which the platform refuses while it still holds resources; the default project is never deleted. Import by ID or slug.
+* **New Resource:** `ankra_oidc_trust_policy` - a GitHub Actions OIDC trust policy (`ankra org oidc-trust create`), so a workflow signs in with `ankra login --github-oidc` and CI needs no stored Ankra secret. The platform has no update for a trust policy, so every change replaces it, which revokes the tokens the old policy minted. Managing one needs `members.manage` on a person's own, unpinned token. Import by ID.
+* **New Data Sources:** `ankra_projects` and `ankra_project` (by ID or slug), `ankra_oidc_trust_policies`, and `ankra_cluster_access_policy` - the organisation's Kubernetes access policy (`ankra org access-policy get`). The policy is read-only from Terraform: changing it needs the human-only `kube_access.policy` permission, which no API token can carry, so propose a change with `ankra org access-policy set` and have an owner or admin apply it.
+* provider: projects, OIDC trust policies and the cluster access policy belong to the organisation, so their resources and data sources do not demand a provider `project_id` when the organisation has several projects.
+
 ## 0.4.0 (2026-10-18)
 
 UPGRADE NOTES:
