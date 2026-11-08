@@ -38,6 +38,35 @@ func (holder *configuredClient) Configure(_ context.Context, request resource.Co
 // and returns nil so the caller sends no request: no token, or an
 // organisation_id / project_id that is not known until apply.
 func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *client.Client {
+	apiClient := holder.requireOrganisationClient(diagnostics)
+	if apiClient == nil {
+		return nil
+	}
+	lookupContext, cancel := context.WithTimeout(context.Background(), client.DefaultTimeout)
+	defer cancel()
+	projectCount, countError := apiClient.FloatingProjectCount(lookupContext)
+	if countError != nil {
+		diagnostics.AddError("Unable to read the organisation's projects", countError.Error())
+		return nil
+	}
+	if projectCount > 1 {
+		diagnostics.AddError("Provider project_id is required",
+			fmt.Sprintf("This organisation has %d projects and the provider sets no project_id, so the platform would scope every request to "+
+				"the project the token's user last selected in the portal. Objects in another project would then read as deleted, and "+
+				"destroy would report success while they live on. Set project_id on the provider (or ANKRA_PROJECT_ID) to the project these resources belong in.",
+				projectCount))
+		return nil
+	}
+	return apiClient
+}
+
+// requireOrganisationClient is requireClient for objects that belong to the
+// organisation rather than to a project (projects themselves, OIDC trust
+// policies, the cluster access policy). The platform does not scope them by
+// project, so they need no provider project_id however many projects the
+// organisation has: managing the second project must not make the next plan
+// demand one.
+func (holder *configuredClient) requireOrganisationClient(diagnostics *diag.Diagnostics) *client.Client {
 	if holder.client == nil || holder.client.Token == "" {
 		diagnostics.AddError("Missing API token", providerTokenDetail)
 		return nil
@@ -51,21 +80,8 @@ func (holder *configuredClient) requireClient(diagnostics *diag.Diagnostics) *cl
 	}
 	lookupContext, cancel := context.WithTimeout(context.Background(), client.DefaultTimeout)
 	defer cancel()
-	if err := holder.client.ResolveProject(lookupContext); err != nil {
-		diagnostics.AddError("Unable to resolve the provider's project_id", err.Error())
-		return nil
-	}
-	projectCount, err := holder.client.FloatingProjectCount(lookupContext)
-	if err != nil {
-		diagnostics.AddError("Unable to read the organisation's projects", err.Error())
-		return nil
-	}
-	if projectCount > 1 {
-		diagnostics.AddError("Provider project_id is required",
-			fmt.Sprintf("This organisation has %d projects and the provider sets no project_id, so the platform would scope every request to "+
-				"the project the token's user last selected in the portal. Objects in another project would then read as deleted, and "+
-				"destroy would report success while they live on. Set project_id on the provider (or ANKRA_PROJECT_ID) to the project these resources belong in.",
-				projectCount))
+	if resolveError := holder.client.ResolveProject(lookupContext); resolveError != nil {
+		diagnostics.AddError("Unable to resolve the provider's project_id", resolveError.Error())
 		return nil
 	}
 	return holder.client
