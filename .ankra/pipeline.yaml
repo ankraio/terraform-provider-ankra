@@ -101,13 +101,17 @@ stages:
       # other provider setting from the environment.
       env -u ANKRA_ORGANISATION_ID -u ANKRA_PROJECT_ID -u ANKRA_TOKEN -u ANKRA_BASE_URL \
         TF_ACC=1 go test -cover -timeout 30m ./internal/...
+    # GOMAXPROCS follows the CPU limit: the acceptance tests use ~560 CPU-s and
+    # were throttled at a 2-core limit.
+    env:
+      GOMAXPROCS: "4"
     cache:
       - key: "go-${{ hashFiles('go.sum') }}"
         paths:
           - "/workspace/.ci-cache/go"
           - "/workspace/.ci-cache/go-build"
     resources:
-      cpu: "2"
+      cpu: "4"
       memory: "4Gi"
 
   - name: "lint"
@@ -163,6 +167,11 @@ stages:
         paths:
           - "/workspace/.ci-cache/go-tools"
           - "/workspace/.ci-cache/go-build-tools"
+    # On the 500m default, make generate (~115 CPU-s) was throttled for four
+    # times its CPU time and filled its 1Gi memory limit.
+    resources:
+      cpu: "2"
+      memory: "2Gi"
 
   - name: "release"
     kind: "run"
