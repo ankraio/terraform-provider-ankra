@@ -21,6 +21,16 @@ resource "ankra_security_disposition" "frontend_net" {
   reason        = "Not reachable from outside the cluster"
 }
 
+# Accept a transitive dependency's CVE in your own application: the namespace
+# scope keeps covering it after rollouts and image rebuilds.
+resource "ankra_security_disposition" "crewai_chromadb" {
+  occurrence_id = "6a1d2e3f-4b5c-4d6e-8f70-819a2b3c4d5e"
+  scope         = "namespace"
+  disposition   = "accepted_risk"
+  reason        = "ChromaDB arrives via CrewAI; the feature that uses it is not enabled"
+  expires_at    = "2026-12-31"
+}
+
 # Accept the risk of a finding across every cluster running the add-on.
 # An accepted risk needs a review deadline within a year.
 resource "ankra_security_disposition" "ingress_cve" {
@@ -48,7 +58,7 @@ resource "ankra_security_disposition" "ingress_cve" {
 - `expire_when_fix_available` (Boolean) End the disposition the moment a fixed version appears. Defaults to `false`.
 - `expires_at` (String) Review deadline, an RFC 3339 timestamp or a `YYYY-MM-DD` date; it must be in the future, and within a year for an accepted risk. It can be moved in place, but removing it replaces the disposition because the platform cannot clear a deadline.
 - `revoke_reason` (String) Reason recorded when Terraform revokes the policy on destroy. Changing it only changes what a later destroy records. Defaults to `Revoked by Terraform`.
-- `scope` (String) Selector scope: `organisation_addon` (the default: the occurrence's add-on across the organisation, which needs a confident add-on attribution), `workload` (the one workload the occurrence was seen in) or `image` (the image digest, wherever it runs). Changing it replaces the disposition.
+- `scope` (String) Selector scope: `organisation_addon` (the default: the occurrence's add-on across the organisation, which needs a confident add-on attribution), `namespace` (every workload in the occurrence's namespace on its cluster, across rollouts and image rebuilds), `workload` (the one workload the occurrence was seen in; a Deployment's ReplicaSet pins the Deployment, so it survives rollouts) or `image` (the image digest, wherever it runs; it lapses when the image is rebuilt). Changing it replaces the disposition.
 
 ### Read-Only
 
@@ -67,14 +77,14 @@ resource "ankra_security_disposition" "ingress_cve" {
 Read-Only:
 
 - `addon_slug` (String) Add-on the policy is pinned to (scope `organisation_addon`).
-- `cluster_id` (String) Cluster of the pinned workload (scope `workload`).
+- `cluster_id` (String) Cluster of the pinned namespace or workload (scope `namespace` or `workload`).
 - `cve_id` (String) CVE identifier.
 - `image_digest` (String) Pinned image digest (scope `image`).
 - `package_name` (String) Package name.
 - `package_type` (String) Package ecosystem.
 - `workload_kind` (String) Kind of the pinned workload (scope `workload`).
 - `workload_name` (String) Name of the pinned workload (scope `workload`).
-- `workload_namespace` (String) Namespace of the pinned workload (scope `workload`).
+- `workload_namespace` (String) Pinned namespace (scope `namespace`), or namespace of the pinned workload (scope `workload`).
 
 ## Import
 
