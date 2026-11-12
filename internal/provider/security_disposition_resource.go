@@ -26,6 +26,7 @@ import (
 
 const (
 	securityScopeOrganisationAddon = "organisation_addon"
+	securityScopeNamespace         = "namespace"
 	securityScopeWorkload          = "workload"
 	securityScopeImage             = "image"
 	securityDefaultRevokeReason    = "Revoked by Terraform"
@@ -135,11 +136,13 @@ func (dispositionResource *securityDispositionResource) Schema(_ context.Context
 			},
 			"scope": schema.StringAttribute{
 				MarkdownDescription: "Selector scope: `organisation_addon` (the default: the occurrence's add-on across the organisation, which needs a confident add-on attribution), " +
-					"`workload` (the one workload the occurrence was seen in) or `image` (the image digest, wherever it runs). Changing it replaces the disposition.",
+					"`namespace` (every workload in the occurrence's namespace on its cluster, across rollouts and image rebuilds), " +
+					"`workload` (the one workload the occurrence was seen in; a Deployment's ReplicaSet pins the Deployment, so it survives rollouts) or " +
+					"`image` (the image digest, wherever it runs; it lapses when the image is rebuilt). Changing it replaces the disposition.",
 				Optional: true,
 				Computed: true,
 				Validators: []validator.String{
-					securityOneOf(securityScopeOrganisationAddon, securityScopeWorkload, securityScopeImage),
+					securityOneOf(securityScopeOrganisationAddon, securityScopeNamespace, securityScopeWorkload, securityScopeImage),
 				},
 				PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown(), stringplanmodifier.RequiresReplace()},
 			},
@@ -189,9 +192,9 @@ func (dispositionResource *securityDispositionResource) Schema(_ context.Context
 					"package_type":       computedString("Package ecosystem."),
 					"package_name":       computedString("Package name."),
 					"addon_slug":         computedString("Add-on the policy is pinned to (scope `organisation_addon`)."),
-					"cluster_id":         computedString("Cluster of the pinned workload (scope `workload`)."),
+					"cluster_id":         computedString("Cluster of the pinned namespace or workload (scope `namespace` or `workload`)."),
 					"workload_kind":      computedString("Kind of the pinned workload (scope `workload`)."),
-					"workload_namespace": computedString("Namespace of the pinned workload (scope `workload`)."),
+					"workload_namespace": computedString("Pinned namespace (scope `namespace`), or namespace of the pinned workload (scope `workload`)."),
 					"workload_name":      computedString("Name of the pinned workload (scope `workload`)."),
 					"image_digest":       computedString("Pinned image digest (scope `image`)."),
 				},
@@ -464,14 +467,17 @@ func securityApplyDisposition(model *securityDispositionModel, policy *client.Se
 }
 
 // securityScopeOfSelector names the scope a selector was built with: an image
-// scope pins only the digest, a workload scope pins the workload, and the
-// add-on scope pins the add-on.
+// scope pins only the digest, a workload scope pins the workload, a namespace
+// scope pins a namespace with no workload name, and the add-on scope pins the
+// add-on.
 func securityScopeOfSelector(selector client.SecurityDispositionSelector) string {
 	switch {
 	case selector.ImageDigest != "":
 		return securityScopeImage
 	case selector.WorkloadName != "":
 		return securityScopeWorkload
+	case selector.WorkloadNamespace != "":
+		return securityScopeNamespace
 	default:
 		return securityScopeOrganisationAddon
 	}

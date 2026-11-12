@@ -1,3 +1,9 @@
+## Unreleased
+
+ENHANCEMENTS:
+
+* resource/ankra_security_disposition: `scope = "namespace"` covers a vulnerability in every workload of the occurrence's namespace on its cluster, so an accepted risk in your own application keeps holding across rollouts and image rebuilds. A `workload` disposition created from a Deployment's pods now pins the Deployment rather than its ReplicaSet, so it survives rollouts. Needs an Ankra platform with ankraio/cluster#6395.
+
 ## 0.5.0 (2026-11-08)
 
 FEATURES:
