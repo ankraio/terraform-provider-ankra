@@ -12,6 +12,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
+	"github.com/hashicorp/terraform-plugin-testing/tfversion"
 )
 
 const (
@@ -145,6 +146,7 @@ resource "ankra_datasource_credential" "mimir" {
 `, version)
 	}
 	resource.Test(t, resource.TestCase{
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_11_0)},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
 			if stored != nil {
@@ -229,6 +231,7 @@ resource "ankra_security_evidence_destination" "siem" {
 `, url)
 	}
 	resource.Test(t, resource.TestCase{
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_11_0)},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
 			if destination == nil || destination["revoked_at"] == nil {
@@ -350,6 +353,7 @@ resource "ankra_service_package_share" "partner" {
 `, version, credentialFakeDigest, credentialFakeVersionID, credentialFakeRecipientID)
 	}
 	resource.Test(t, resource.TestCase{
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_11_0)},
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		CheckDestroy: func(_ *terraform.State) error {
 			if len(shares) != 0 {
