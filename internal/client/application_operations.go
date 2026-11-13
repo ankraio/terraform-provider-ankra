@@ -82,9 +82,9 @@ func (client *Client) SetApplicationEnvironmentAutonomyLayer(ctx context.Context
 	return &stored, nil
 }
 
-// autonomyLayersUnreadError is answered when the platform could not read the
-// stored layers: no write may be built from them then.
-var autonomyLayersUnreadError = errors.New("the platform could not read the stored autonomy layers, so no write can be built from them; try again")
+// autonomyLayersUnreadMessage is answered when the platform could not read
+// the stored layers: no write may be built from them then.
+const autonomyLayersUnreadMessage = "the platform could not read the stored autonomy layers, so no write can be built from them; try again"
 
 // GetApplicationAutonomyLayer reads the application's own stored layer; nil
 // when none is stored.
@@ -94,7 +94,7 @@ func (client *Client) GetApplicationAutonomyLayer(ctx context.Context, applicati
 		return nil, readError
 	}
 	if layers == nil {
-		return nil, autonomyLayersUnreadError
+		return nil, errors.New(autonomyLayersUnreadMessage)
 	}
 	return layers.Application, nil
 }
@@ -107,7 +107,7 @@ func (client *Client) GetApplicationEnvironmentAutonomyLayer(ctx context.Context
 		return nil, readError
 	}
 	if layers == nil {
-		return nil, autonomyLayersUnreadError
+		return nil, errors.New(autonomyLayersUnreadMessage)
 	}
 	layer, isStored := layers.Environments[environmentID]
 	if !isStored {
