@@ -32,15 +32,17 @@ var (
 // applicationSettingIDAttributes are the id and application_id of a
 // resource that manages one setting of an application.
 func applicationSettingIDAttributes() (schema.StringAttribute, schema.StringAttribute) {
-	return schema.StringAttribute{
+	idAttribute := schema.StringAttribute{
 		MarkdownDescription: "The application id.",
 		Computed:            true,
 		PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
-	}, schema.StringAttribute{
+	}
+	applicationIDAttribute := schema.StringAttribute{
 		MarkdownDescription: "Identifier of the application. Changing it replaces the resource.",
 		Required:            true,
 		PlanModifiers:       []planmodifier.String{stringplanmodifier.RequiresReplace()},
 	}
+	return idAttribute, applicationIDAttribute
 }
 
 // importApplicationSetting imports a per-application setting by its
