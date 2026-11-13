@@ -31,13 +31,17 @@ func aiDataSources() []func() datasource.DataSource {
 	}
 }
 
-// targetResources are host deploy targets' join tokens and the managed services with their placement policies and consumer bindings.
+// targetResources are host deploy targets' join tokens and the managed services with their placement policies, consumer bindings,
+// credentials, credential grants and package shares.
 func targetResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewDeployHostJoinTokenResource,
 		NewServicePlacementPolicyResource,
 		NewServiceConsumerResource,
 		NewManagedServiceResource,
+		NewServiceCredentialResource,
+		NewServiceCredentialGrantResource,
+		NewServicePackageShareResource,
 	}
 }
 

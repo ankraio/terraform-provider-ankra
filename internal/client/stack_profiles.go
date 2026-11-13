@@ -343,7 +343,7 @@ func (client *Client) stackProfileLogoRequest(ctx context.Context, method, path 
 			lastError = err
 		} else {
 			responseBytes = response.body
-			lastError = &APIError{Method: method, Path: path, StatusCode: statusCode, Body: string(responseBytes)}
+			lastError = &APIError{Method: method, Path: path, StatusCode: statusCode, Body: redactErrorBody(statusCode, responseBytes)}
 		}
 		if attempt == attempts || !isRetryable(method, statusCode, err) {
 			return nil, lastError

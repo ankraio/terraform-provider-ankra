@@ -9,13 +9,15 @@ import (
 )
 
 // securityResources are finding dispositions, compliance frameworks,
-// per-cluster security report schedules and security baseline modes.
+// per-cluster security report schedules, security baseline modes and
+// compliance evidence destinations.
 func securityResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewSecurityDispositionResource,
 		NewSecurityComplianceFrameworkResource,
 		NewSecurityReportScheduleResource,
 		NewClusterSecurityPolicyModeResource,
+		NewSecurityEvidenceDestinationResource,
 	}
 }
 

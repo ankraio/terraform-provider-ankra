@@ -8,9 +8,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// credentialResources are cloud provider and SSH key credentials.
+// credentialResources are cloud provider, SSH key and data source credentials.
 func credentialResources() []func() resource.Resource {
-	resources := []func() resource.Resource{NewSSHKeyCredentialResource}
+	resources := []func() resource.Resource{NewSSHKeyCredentialResource, NewDatasourceCredentialResource}
 	for _, kind := range providerCredentialKinds {
 		resources = append(resources, newProviderCredentialResource(kind))
 	}
