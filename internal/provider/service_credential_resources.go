@@ -6,6 +6,7 @@ package provider
 import (
 	"context"
 	"regexp"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -27,6 +28,13 @@ var (
 
 const serviceCredentialRotationSummary = "Writing a new value retires the previous one, revokes its grants and reissues them on the new value."
 
+// serviceCredentialValuePendingKey marks, in private state, a family whose
+// first value could not be written; the next apply writes it.
+const serviceCredentialValuePendingKey = "service_credential_value_pending"
+
+// serviceCredentialZeroUUID is refused as a value id: it names no value.
+const serviceCredentialZeroUUID = "00000000-0000-0000-0000-000000000000"
+
 var (
 	_ resource.ResourceWithImportState = (*serviceCredentialResource)(nil)
 	_ resource.ResourceWithImportState = (*serviceCredentialGrantResource)(nil)
@@ -34,6 +42,7 @@ var (
 	_ resource.ResourceWithConfigure   = (*serviceCredentialResource)(nil)
 	_ resource.ResourceWithConfigure   = (*serviceCredentialGrantResource)(nil)
 	_ resource.ResourceWithConfigure   = (*servicePackageShareResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*serviceCredentialResource)(nil)
 )
 
 type serviceCredentialResource struct {
@@ -116,16 +125,32 @@ func (credential *serviceCredentialResource) Create(ctx context.Context, request
 	plan.ValueWO = types.StringNull()
 	rotation, writeError := apiClient.WriteServiceCredentialValue(ctx, family.ID, value, family.ActiveValueID)
 	if writeError != nil {
-		plan.ValueWOVersion = types.Int64Null()
 		plan.ActiveValueID = types.StringPointerValue(family.ActiveValueID)
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
-		response.Diagnostics.AddError("Unable to write the service credential's value",
-			writeError.Error()+"\n\nThe credential family was created; the next apply writes the value.")
+		response.Diagnostics.Append(response.Private.SetKey(ctx, serviceCredentialValuePendingKey, []byte("true"))...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+		response.Diagnostics.AddWarning("Service credential created without a value",
+			"The credential family "+family.ID+" was created, but its value could not be written: "+writeError.Error()+
+				"\n\nThe family is kept in state and the next plan shows an update that writes the value; run apply again.")
 		return
 	}
 	plan.ActiveValueID = types.StringValue(rotation.Value.ID)
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+}
+
+// ModifyPlan plans an update that writes the value when the first write
+// after create failed.
+func (credential *serviceCredentialResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	pending, diagnostics := request.Private.GetKey(ctx, serviceCredentialValuePendingKey)
+	response.Diagnostics.Append(diagnostics...)
+	if len(pending) == 0 {
+		return
+	}
+	response.Diagnostics.Append(response.Plan.SetAttribute(ctx, path.Root("active_value_id"), types.StringUnknown())...)
 }
 
 func (credential *serviceCredentialResource) Read(ctx context.Context, request resource.ReadRequest, response *resource.ReadResponse) {
@@ -165,8 +190,11 @@ func (credential *serviceCredentialResource) Update(ctx context.Context, request
 	}
 	plan.ID = state.ID
 	plan.ActiveValueID = state.ActiveValueID
+	pending, diagnostics := request.Private.GetKey(ctx, serviceCredentialValuePendingKey)
+	response.Diagnostics.Append(diagnostics...)
+	isPending := len(pending) > 0
 	isImportRecord := state.ValueWOVersion.IsNull() && !state.ActiveValueID.IsNull()
-	if !isImportRecord && !plan.ValueWOVersion.Equal(state.ValueWOVersion) {
+	if isPending || (!isImportRecord && !plan.ValueWOVersion.Equal(state.ValueWOVersion)) {
 		value := writeOnlyString(ctx, request.Config, "value_wo", &response.Diagnostics)
 		if response.Diagnostics.HasError() {
 			return
@@ -179,6 +207,9 @@ func (credential *serviceCredentialResource) Update(ctx context.Context, request
 		plan.ActiveValueID = types.StringValue(rotation.Value.ID)
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	if isPending {
+		response.Diagnostics.Append(response.Private.SetKey(ctx, serviceCredentialValuePendingKey, nil)...)
+	}
 }
 
 // Delete only stops managing the family: the platform has no route that
@@ -232,8 +263,10 @@ func (grant *serviceCredentialGrantResource) Schema(_ context.Context, _ resourc
 	response.Schema = schema.Schema{
 		MarkdownDescription: "A purpose-bound reference to a managed-service credential value (`ankra services credentials grants`): it lets " +
 			"one input of one service package digest read the value, in the given mode. It carries no secret. The platform cannot " +
-			"change a grant, so any change replaces it. A grant revoked outside Terraform, or by a rotation of its credential, is " +
-			"planned again. Destroy revokes it.",
+			"change a grant, so any change replaces it. A rotation of the credential revokes the grant and reissues it on the new " +
+			"value; the resource follows that replacement, and a create adopts an identical active grant (such as the one a " +
+			"rotation reissued) instead of issuing a second. A grant revoked outside Terraform otherwise is planned again. " +
+			"Destroy revokes it.",
 		Attributes: map[string]schema.Attribute{
 			"id": schema.StringAttribute{
 				MarkdownDescription: "Identifier of the grant.",
@@ -241,7 +274,8 @@ func (grant *serviceCredentialGrantResource) Schema(_ context.Context, _ resourc
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"family_id": serviceCredentialReplacedString("Identifier of the credential family (`ankra_service_credential`)."),
-			"value_id":  serviceCredentialReplacedString("Identifier of the credential value granted, normally the family's `active_value_id`."),
+			"value_id": serviceCredentialReplacedString("Identifier of the credential value granted, normally the family's `active_value_id`.",
+				notZeroUUIDValidator{}),
 			"package_digest": serviceCredentialReplacedString("Digest of the service package, `sha256:` and 64 hex digits.",
 				deployPatternValidator{pattern: serviceCredentialDigestPattern, subject: "package_digest"}),
 			"input_name": serviceCredentialReplacedString("Package input the value is bound to: upper-case letters, digits and underscores, starting with a letter.",
@@ -260,6 +294,17 @@ func (grant *serviceCredentialGrantResource) Create(ctx context.Context, request
 	var plan serviceCredentialGrantModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	if response.Diagnostics.HasError() {
+		return
+	}
+	grants, listError := apiClient.ListServiceCredentialGrants(ctx, plan.FamilyID.ValueString())
+	if listError != nil {
+		response.Diagnostics.AddError("Unable to read the service credential grants", listError.Error())
+		return
+	}
+	if existing := serviceCredentialIdenticalGrant(grants, plan); existing != nil {
+		plan.ID = types.StringValue(existing.ID)
+		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 		return
 	}
 	issued, issueError := apiClient.IssueServiceCredentialGrant(ctx, client.ServiceCredentialGrantCreate{
@@ -298,7 +343,16 @@ func (grant *serviceCredentialGrantResource) Read(ctx context.Context, request r
 			continue
 		}
 		if listed.RevokedAt != nil {
-			break
+			replacement, replacementError := serviceCredentialReplacementGrant(ctx, apiClient, state.FamilyID.ValueString(), grants, listed)
+			if replacementError != nil {
+				response.Diagnostics.AddError("Unable to read the service credential", replacementError.Error())
+				return
+			}
+			if replacement == nil {
+				break
+			}
+			listed = *replacement
+			state.ID = types.StringValue(listed.ID)
 		}
 		state.ValueID = types.StringValue(listed.ValueID)
 		state.PackageDigest = types.StringValue(listed.PackageDigest)
@@ -465,4 +519,75 @@ func (share *servicePackageShareResource) ImportState(ctx context.Context, reque
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("version_id"), parts[0])...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("organisation_id"), parts[1])...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)
+}
+
+// serviceCredentialIdenticalGrant finds an active grant identical to the
+// planned one, such as the replacement a rotation reissued, so a create
+// adopts it instead of issuing a duplicate that nothing would revoke.
+func serviceCredentialIdenticalGrant(grants []client.ServiceCredentialGrant, plan serviceCredentialGrantModel) *client.ServiceCredentialGrant {
+	for index := range grants {
+		candidate := grants[index]
+		if candidate.RevokedAt == nil && candidate.ValueID == plan.ValueID.ValueString() && candidate.PackageDigest == plan.PackageDigest.ValueString() &&
+			candidate.InputName == plan.InputName.ValueString() && candidate.Mode == plan.Mode.ValueString() {
+			return &grants[index]
+		}
+	}
+	return nil
+}
+
+// serviceCredentialReplacementGrant finds the grant a rotation reissued for
+// a revoked one: active, on the family's active value, for the same package
+// digest, input and mode, and created no earlier than the revoked grant. It
+// returns nil when there is none.
+func serviceCredentialReplacementGrant(ctx context.Context, apiClient *client.Client, familyID string, grants []client.ServiceCredentialGrant,
+	revoked client.ServiceCredentialGrant) (*client.ServiceCredentialGrant, error) {
+	family, familyError := apiClient.GetServiceCredentialFamily(ctx, familyID)
+	if familyError != nil {
+		return nil, familyError
+	}
+	if family.ActiveValueID == nil {
+		return nil, nil
+	}
+	revokedCreated, _ := time.Parse(time.RFC3339Nano, revoked.CreatedAt)
+	var replacement *client.ServiceCredentialGrant
+	for index := range grants {
+		candidate := grants[index]
+		if candidate.ID == revoked.ID || candidate.RevokedAt != nil || candidate.ValueID != *family.ActiveValueID ||
+			candidate.PackageDigest != revoked.PackageDigest || candidate.InputName != revoked.InputName || candidate.Mode != revoked.Mode {
+			continue
+		}
+		created, _ := time.Parse(time.RFC3339Nano, candidate.CreatedAt)
+		if created.Before(revokedCreated) {
+			continue
+		}
+		if replacement == nil || created.Before(serviceCredentialCreatedAt(*replacement)) {
+			replacement = &grants[index]
+		}
+	}
+	return replacement, nil
+}
+
+func serviceCredentialCreatedAt(grant client.ServiceCredentialGrant) time.Time {
+	created, _ := time.Parse(time.RFC3339Nano, grant.CreatedAt)
+	return created
+}
+
+// notZeroUUIDValidator refuses the all-zero UUID, which names nothing.
+type notZeroUUIDValidator struct{}
+
+func (notZeroUUIDValidator) Description(_ context.Context) string {
+	return "value must not be the all-zero UUID"
+}
+
+func (zeroValidator notZeroUUIDValidator) MarkdownDescription(ctx context.Context) string {
+	return zeroValidator.Description(ctx)
+}
+
+func (notZeroUUIDValidator) ValidateString(_ context.Context, request validator.StringRequest, response *validator.StringResponse) {
+	if request.ConfigValue.IsNull() || request.ConfigValue.IsUnknown() {
+		return
+	}
+	if request.ConfigValue.ValueString() == serviceCredentialZeroUUID {
+		response.Diagnostics.AddAttributeError(request.Path, "Invalid value_id", "The all-zero UUID names no credential value.")
+	}
 }

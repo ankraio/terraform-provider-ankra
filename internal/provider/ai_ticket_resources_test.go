@@ -165,8 +165,19 @@ resource "ankra_ai_ticket_settings" "desk" {
 				),
 			},
 			{
-				Config: config("C0456"),
-				Check:  resource.TestCheckResourceAttr("ankra_ai_ticket_settings.desk", "slack_channel_id", "C0456"),
+				PreConfig: func() { fake.settings["notify_mode"] = "mentions" },
+				Config:    config("C0456"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_ai_ticket_settings.desk", "slack_channel_id", "C0456"),
+					resource.TestCheckResourceAttr("ankra_ai_ticket_settings.desk", "notify_mode", "mentions"),
+					func(_ *terraform.State) error {
+						last := fake.settingsPuts[len(fake.settingsPuts)-1]
+						if _, sent := last["notify_mode"]; sent || len(last) != 2 {
+							return fmt.Errorf("an update must write only the configured keys, wrote %v", last)
+						}
+						return nil
+					},
+				),
 			},
 			{
 				ResourceName:      "ankra_ai_ticket_settings.desk",

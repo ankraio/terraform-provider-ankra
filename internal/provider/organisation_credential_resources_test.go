@@ -272,7 +272,26 @@ func TestAccServiceCredentialRotatesInPlace(t *testing.T) {
 	var activeValueID any
 	var values []map[string]any
 	var grants []map[string]any
+	issued := 0
+	issuedBeforeRotation := 0
 	shares := []string{}
+	// rotate is the platform's rotation: a new active value, every active
+	// grant revoked and reissued on it.
+	rotate := func() {
+		values = append(values, map[string]any{"value": "rotated outside Terraform"})
+		activeValueID = fmt.Sprintf("9a000000-0000-4000-8000-00000000000%d", len(values))
+		for _, grant := range append([]map[string]any(nil), grants...) {
+			if grant["revoked_at"] != nil {
+				continue
+			}
+			grant["revoked_at"] = fmt.Sprintf("2026-11-13T1%d:00:00Z", len(values))
+			grants = append(grants, map[string]any{
+				"id": fmt.Sprintf("%s-%d", credentialFakeGrantID[:30], len(grants)), "value_id": activeValueID,
+				"package_digest": grant["package_digest"], "input_name": grant["input_name"], "mode": grant["mode"],
+				"created_at": fmt.Sprintf("2026-11-13T1%d:00:00Z", len(values)), "revoked_at": nil,
+			})
+		}
+	}
 	fake.handle("POST /api/v1/org/service-admission/credentials", func(writer http.ResponseWriter, request *http.Request) {
 		var body map[string]any
 		decodeJSON(t, request, &body)
@@ -288,11 +307,8 @@ func TestAccServiceCredentialRotatesInPlace(t *testing.T) {
 			writeJSON(t, writer, http.StatusConflict, map[string]any{"detail": "expected_value_id is stale"})
 			return
 		}
-		values = append(values, body)
-		activeValueID = fmt.Sprintf("9a000000-0000-4000-8000-00000000000%d", len(values))
-		for _, grant := range grants {
-			grant["revoked_at"] = "2026-11-13T11:00:00Z"
-		}
+		rotate()
+		values[len(values)-1] = body
 		writeJSON(t, writer, http.StatusCreated, map[string]any{
 			"value":    map[string]any{"id": activeValueID, "state": "active", "created_at": "2026-11-13T10:00:00Z", "activated_at": nil, "retired_at": nil, "retained": false},
 			"replaced": []any{}, "granted": []any{},
@@ -309,6 +325,7 @@ func TestAccServiceCredentialRotatesInPlace(t *testing.T) {
 		body["revoked_at"] = nil
 		delete(body, "family_id")
 		grants = append(grants, body)
+		issued++
 		writeJSON(t, writer, http.StatusCreated, body)
 	})
 	fake.handle("DELETE /api/v1/org/service-admission/credential-grants/{id}", func(writer http.ResponseWriter, request *http.Request) {
@@ -386,6 +403,21 @@ resource "ankra_service_package_share" "partner" {
 						}
 						return nil
 					},
+					serviceCredentialOneActiveGrant(&grants),
+				),
+			},
+			{
+				PreConfig: func() { issuedBeforeRotation = issued; rotate() },
+				Config:    config(2),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_service_credential_grant.billing", "value_id", "9a000000-0000-4000-8000-000000000003"),
+					serviceCredentialOneActiveGrant(&grants),
+					func(_ *terraform.State) error {
+						if issued != issuedBeforeRotation {
+							return fmt.Errorf("a rotation outside Terraform must be followed, not answered with a new grant: %d issued, %d before", issued, issuedBeforeRotation)
+						}
+						return nil
+					},
 				),
 			},
 			{
@@ -408,6 +440,80 @@ resource "ankra_service_credential_grant" "bad" {
 			},
 			{
 				Config: config(2),
+			},
+		},
+	})
+}
+
+// serviceCredentialOneActiveGrant checks that exactly one grant is active
+// and that Terraform tracks it, so destroy revokes every grant it caused.
+func serviceCredentialOneActiveGrant(grants *[]map[string]any) resource.TestCheckFunc {
+	return func(state *terraform.State) error {
+		tracked := state.RootModule().Resources["ankra_service_credential_grant.billing"].Primary.ID
+		var active []any
+		for _, grant := range *grants {
+			if grant["revoked_at"] == nil {
+				active = append(active, grant["id"])
+			}
+		}
+		if len(active) != 1 || active[0] != tracked {
+			return fmt.Errorf("want one active grant, the tracked %s; active: %v", tracked, active)
+		}
+		return nil
+	}
+}
+
+func TestAccServiceCredentialValueWriteRecovers(t *testing.T) {
+	fake := newRouteFake(t)
+	var activeValueID any
+	writes := 0
+	failing := true
+	fake.handle("POST /api/v1/org/service-admission/credentials", func(writer http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, writer, http.StatusCreated, map[string]any{"id": credentialFakeFamilyID, "name": "billing-db", "created_at": "2026-11-13T10:00:00Z", "active_value_id": nil})
+	})
+	fake.handle("GET /api/v1/org/service-admission/credentials/{id}", func(writer http.ResponseWriter, _ *http.Request) {
+		writeJSON(t, writer, http.StatusOK, map[string]any{"id": credentialFakeFamilyID, "name": "billing-db", "created_at": "2026-11-13T10:00:00Z", "active_value_id": activeValueID})
+	})
+	fake.handle("POST /api/v1/org/service-admission/credentials/{id}/values", func(writer http.ResponseWriter, _ *http.Request) {
+		if failing {
+			writeJSON(t, writer, http.StatusServiceUnavailable, map[string]any{"detail": "The secret store is unavailable."})
+			return
+		}
+		writes++
+		activeValueID = "9a000000-0000-4000-8000-000000000001"
+		writeJSON(t, writer, http.StatusCreated, map[string]any{
+			"value":    map[string]any{"id": activeValueID, "state": "active", "created_at": "2026-11-13T10:00:00Z", "activated_at": nil, "retired_at": nil, "retained": false},
+			"replaced": []any{}, "granted": []any{},
+		})
+	})
+	config := fake.providerBlock() + `
+resource "ankra_service_credential" "billing" {
+  name             = "billing-db"
+  value_wo         = "postgres://billing"
+  value_wo_version = 1
+}
+`
+	resource.Test(t, resource.TestCase{
+		TerraformVersionChecks:   []tfversion.TerraformVersionCheck{tfversion.SkipBelow(tfversion.Version1_11_0)},
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:             config,
+				ExpectNonEmptyPlan: true,
+				Check:              resource.TestCheckResourceAttr("ankra_service_credential.billing", "id", credentialFakeFamilyID),
+			},
+			{
+				PreConfig: func() { failing = false },
+				Config:    config,
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_service_credential.billing", "active_value_id", "9a000000-0000-4000-8000-000000000001"),
+					func(_ *terraform.State) error {
+						if writes != 1 {
+							return fmt.Errorf("the next apply must write the value once, wrote %d times", writes)
+						}
+						return nil
+					},
+				),
 			},
 		},
 	})

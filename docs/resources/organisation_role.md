@@ -33,7 +33,7 @@ resource "ankra_organisation_role" "deployer" {
 ### Required
 
 - `name` (String) Display name of the role.
-- `permissions` (Set of String) Permissions the role grants, such as `clusters.read` or `applications.write`.
+- `permissions` (Set of String) Permissions the role grants, such as `clusters.read` or `applications.write`. An apply keeps the configured set; a refresh reports the set the platform stores.
 - `slug` (String) Slug members are assigned the role by, unique in the organisation. The platform never changes it, so changing it replaces the role.
 
 ### Optional

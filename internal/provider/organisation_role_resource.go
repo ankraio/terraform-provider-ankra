@@ -95,9 +95,10 @@ func (role *organisationRoleResource) Schema(_ context.Context, _ resource.Schem
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
 			"permissions": schema.SetAttribute{
-				MarkdownDescription: "Permissions the role grants, such as `clusters.read` or `applications.write`.",
-				Required:            true,
-				ElementType:         types.StringType,
+				MarkdownDescription: "Permissions the role grants, such as `clusters.read` or `applications.write`. An apply keeps the " +
+					"configured set; a refresh reports the set the platform stores.",
+				Required:    true,
+				ElementType: types.StringType,
 			},
 			"kube_grants": schema.SetNestedAttribute{
 				MarkdownDescription: "Kubernetes access the role grants through the kube gateway.",
@@ -142,7 +143,9 @@ func (role *organisationRoleResource) Create(ctx context.Context, request resour
 		response.Diagnostics.AddError("Unable to create the organisation role", createError.Error())
 		return
 	}
+	configuredPermissions := plan.Permissions
 	organisationRoleApply(&plan, created)
+	plan.Permissions = configuredPermissions
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 }
@@ -193,7 +196,9 @@ func (role *organisationRoleResource) Update(ctx context.Context, request resour
 		response.Diagnostics.AddError("Unable to update the organisation role", updateError.Error())
 		return
 	}
+	configuredPermissions := plan.Permissions
 	organisationRoleApply(&plan, updated)
+	plan.Permissions = configuredPermissions
 	response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 }
 

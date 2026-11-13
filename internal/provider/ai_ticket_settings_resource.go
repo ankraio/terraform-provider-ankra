@@ -10,10 +10,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/boolplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/setplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
@@ -64,6 +64,18 @@ func aiTicketOptionalString(description string) schema.StringAttribute {
 	}
 }
 
+// settingsComputedString is an optional attribute of a settings singleton
+// that reports the stored value when unset. It plans unknown on every
+// update, so a change made by others meanwhile is read back, not reverted.
+func settingsComputedString(description string) schema.StringAttribute {
+	return schema.StringAttribute{MarkdownDescription: description, Optional: true, Computed: true}
+}
+
+// settingsComputedSet is settingsComputedString for a set of strings.
+func settingsComputedSet(description string) schema.SetAttribute {
+	return schema.SetAttribute{MarkdownDescription: description, Optional: true, Computed: true, ElementType: types.StringType}
+}
+
 func aiTicketOptionalSet(description string) schema.SetAttribute {
 	return schema.SetAttribute{
 		MarkdownDescription: description,
@@ -87,21 +99,20 @@ func (settings *aiTicketSettingsResource) Schema(_ context.Context, _ resource.S
 				Computed:            true,
 				PlanModifiers:       []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 			},
-			"slack_channel_id":       aiTicketOptionalString("Slack channel tickets are announced in."),
-			"teams_conversation_id":  aiTicketOptionalString("Microsoft Teams conversation tickets are announced in."),
-			"reviewer_agent_task_id": aiTicketOptionalString("Agent task that reviews tickets."),
+			"slack_channel_id":       settingsComputedString("Slack channel tickets are announced in."),
+			"teams_conversation_id":  settingsComputedString("Microsoft Teams conversation tickets are announced in."),
+			"reviewer_agent_task_id": settingsComputedString("Agent task that reviews tickets."),
 			"require_agent_review": schema.BoolAttribute{
 				MarkdownDescription: "Whether a ticket needs the reviewing agent's review.",
 				Optional:            true,
 				Computed:            true,
-				PlanModifiers:       []planmodifier.Bool{boolplanmodifier.UseStateForUnknown()},
 			},
-			"auto_file_insight_severities": aiTicketOptionalSet("Insight severities filed as tickets automatically."),
-			"notify_mode":                  aiTicketOptionalString("When the channels are notified about tickets."),
-			"notify_min_priority":          aiTicketOptionalString("Lowest ticket priority the channels are notified about."),
-			"notify_source_kinds":          aiTicketOptionalSet("Ticket sources the channels are notified about."),
-			"notify_event_scope":           aiTicketOptionalString("Which ticket events the channels are notified about."),
-			"notify_cluster_environments":  aiTicketOptionalSet("Cluster environments whose tickets the channels are notified about."),
+			"auto_file_insight_severities": settingsComputedSet("Insight severities filed as tickets automatically."),
+			"notify_mode":                  settingsComputedString("When the channels are notified about tickets."),
+			"notify_min_priority":          settingsComputedString("Lowest ticket priority the channels are notified about."),
+			"notify_source_kinds":          settingsComputedSet("Ticket sources the channels are notified about."),
+			"notify_event_scope":           settingsComputedString("Which ticket events the channels are notified about."),
+			"notify_cluster_environments":  settingsComputedSet("Cluster environments whose tickets the channels are notified about."),
 		},
 	}
 }
@@ -109,7 +120,7 @@ func (settings *aiTicketSettingsResource) Schema(_ context.Context, _ resource.S
 func (settings *aiTicketSettingsResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var plan aiTicketSettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if settings.write(ctx, &plan, &response.Diagnostics) {
+	if settings.write(ctx, &plan, request.Config, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 		response.Diagnostics.Append(trackScope(ctx, settings.client, response.Private)...)
 	}
@@ -118,29 +129,31 @@ func (settings *aiTicketSettingsResource) Create(ctx context.Context, request re
 func (settings *aiTicketSettingsResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var plan aiTicketSettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if settings.write(ctx, &plan, &response.Diagnostics) {
+	if settings.write(ctx, &plan, request.Config, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	}
 }
 
-func (settings *aiTicketSettingsResource) write(ctx context.Context, plan *aiTicketSettingsModel, diagnostics *diag.Diagnostics) bool {
+func (settings *aiTicketSettingsResource) write(ctx context.Context, plan *aiTicketSettingsModel, config tfsdk.Config, diagnostics *diag.Diagnostics) bool {
 	apiClient := settings.requireOrganisationClient(diagnostics)
 	if apiClient == nil || diagnostics.HasError() {
 		return false
 	}
+	var configured aiTicketSettingsModel
+	diagnostics.Append(config.Get(ctx, &configured)...)
 	update := client.AITicketDeskSettingsUpdate{}
-	aiTicketPutString(update, "slack_channel_id", plan.SlackChannelID)
-	aiTicketPutString(update, "teams_conversation_id", plan.TeamsConversationID)
-	aiTicketPutString(update, "reviewer_agent_task_id", plan.ReviewerAgentTaskID)
-	if flag := boolPointer(plan.RequireAgentReview); flag != nil {
+	aiTicketPutString(update, "slack_channel_id", configured.SlackChannelID)
+	aiTicketPutString(update, "teams_conversation_id", configured.TeamsConversationID)
+	aiTicketPutString(update, "reviewer_agent_task_id", configured.ReviewerAgentTaskID)
+	if flag := boolPointer(configured.RequireAgentReview); flag != nil {
 		update["require_agent_review"] = *flag
 	}
-	aiTicketPutSet(ctx, update, "auto_file_insight_severities", plan.AutoFileInsightSeverities, diagnostics)
-	aiTicketPutString(update, "notify_mode", plan.NotifyMode)
-	aiTicketPutString(update, "notify_min_priority", plan.NotifyMinPriority)
-	aiTicketPutSet(ctx, update, "notify_source_kinds", plan.NotifySourceKinds, diagnostics)
-	aiTicketPutString(update, "notify_event_scope", plan.NotifyEventScope)
-	aiTicketPutSet(ctx, update, "notify_cluster_environments", plan.NotifyClusterEnvironments, diagnostics)
+	aiTicketPutSet(ctx, update, "auto_file_insight_severities", configured.AutoFileInsightSeverities, diagnostics)
+	aiTicketPutString(update, "notify_mode", configured.NotifyMode)
+	aiTicketPutString(update, "notify_min_priority", configured.NotifyMinPriority)
+	aiTicketPutSet(ctx, update, "notify_source_kinds", configured.NotifySourceKinds, diagnostics)
+	aiTicketPutString(update, "notify_event_scope", configured.NotifyEventScope)
+	aiTicketPutSet(ctx, update, "notify_cluster_environments", configured.NotifyClusterEnvironments, diagnostics)
 	if diagnostics.HasError() {
 		return false
 	}

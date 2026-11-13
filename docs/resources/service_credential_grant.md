@@ -3,12 +3,12 @@
 page_title: "ankra_service_credential_grant Resource - ankra"
 subcategory: ""
 description: |-
-  A purpose-bound reference to a managed-service credential value (ankra services credentials grants): it lets one input of one service package digest read the value, in the given mode. It carries no secret. The platform cannot change a grant, so any change replaces it. A grant revoked outside Terraform, or by a rotation of its credential, is planned again. Destroy revokes it.
+  A purpose-bound reference to a managed-service credential value (ankra services credentials grants): it lets one input of one service package digest read the value, in the given mode. It carries no secret. The platform cannot change a grant, so any change replaces it. A rotation of the credential revokes the grant and reissues it on the new value; the resource follows that replacement, and a create adopts an identical active grant (such as the one a rotation reissued) instead of issuing a second. A grant revoked outside Terraform otherwise is planned again. Destroy revokes it.
 ---
 
 # ankra_service_credential_grant (Resource)
 
-A purpose-bound reference to a managed-service credential value (`ankra services credentials grants`): it lets one input of one service package digest read the value, in the given mode. It carries no secret. The platform cannot change a grant, so any change replaces it. A grant revoked outside Terraform, or by a rotation of its credential, is planned again. Destroy revokes it.
+A purpose-bound reference to a managed-service credential value (`ankra services credentials grants`): it lets one input of one service package digest read the value, in the given mode. It carries no secret. The platform cannot change a grant, so any change replaces it. A rotation of the credential revokes the grant and reissues it on the new value; the resource follows that replacement, and a create adopts an identical active grant (such as the one a rotation reissued) instead of issuing a second. A grant revoked outside Terraform otherwise is planned again. Destroy revokes it.
 
 ## Example Usage
 
