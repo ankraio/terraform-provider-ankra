@@ -1,5 +1,14 @@
 ## Unreleased
 
+FEATURES:
+
+* **New Resources:** `ankra_application_autonomy` (an application's own "who runs it" layer: level, per-area levels and limits, written as a whole from the stored layer so a concurrent change is refused, plus automatic build fixing and setup pull request auto-merge, each written only when it changes) and `ankra_application_environment` (adopts one environment of an application: its name, its own layer and its operating expectations, adopted as a new revision over the current one). Destroy leaves both as they are; pausing Ankra and cloning an environment stay imperative.
+* **New Resources:** `ankra_application_database_backup` (the database backup default) and `ankra_application_provenance_policy` (an application's own deploy provenance mode). Destroy leaves both as they are.
+* **New Resource:** `ankra_pipeline_workspace_profiles` - a pipeline repository's workspace profiles as JSON (`profiles_json`, written with `jsonencode`); destroy clears them.
+* **New Resources:** `ankra_cluster_environment` (a cluster's environment label and criticality), `ankra_cluster_state_snapshot_retention` (the etcd backup retention window), `ankra_cluster_dns_zone` (a cluster's generated DNS zone, destroy hands it back), `ankra_cluster_gateway_api` (turns the Gateway API on; the platform cannot turn it off, so destroy leaves it on) and `ankra_cluster_k3s_disabled_components`.
+* **New Resources:** `ankra_upcloud_cluster_settings` (ingress load balancer plan, NAT gateway plan and the zone pool, which can only grow) and `ankra_ovh_cluster_settings` (the managed gateway model).
+* **New Data Source:** `ankra_cluster_metrics_source` - a cluster's metrics and log sources and the credentials they resolve to.
+
 ENHANCEMENTS:
 
 * resource/ankra_security_disposition: `scope = "namespace"` covers a vulnerability in every workload of the occurrence's namespace on its cluster, so an accepted risk in your own application keeps holding across rollouts and image rebuilds. A `workload` disposition created from a Deployment's pods now pins the Deployment rather than its ReplicaSet, so it survives rollouts. Needs an Ankra platform with ankraio/cluster#6395.
