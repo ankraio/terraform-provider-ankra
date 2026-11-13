@@ -47,6 +47,7 @@ Read-Only:
 - `state` (String) State of the source.
 - `verify_ssl` (Boolean) Whether the backend's TLS certificate is verified.
 
+
 <a id="nestedatt--metrics"></a>
 ### Nested Schema for `metrics`
 

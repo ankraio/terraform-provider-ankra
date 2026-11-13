@@ -62,6 +62,7 @@ Optional:
 - `non_production_downtime_seconds` (Number) Most downtime a change may cause outside production, in seconds.
 - `production_downtime_seconds` (Number) Most downtime a change may cause in production, in seconds.
 
+
 <a id="nestedatt--operating_expectations"></a>
 ### Nested Schema for `operating_expectations`
 
