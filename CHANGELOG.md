@@ -1,5 +1,16 @@
 ## Unreleased
 
+FEATURES:
+
+* **New Resource:** `ankra_organisation_role` - a custom organisation role (`ankra org roles`): permissions and Kubernetes access grants, changed in place; destroy retires it, which the platform refuses while anyone holds it. Import by ID or slug.
+* **New Resources:** `ankra_ai_ticket_settings` (the organisation's ticket desk settings, only configured keys written, destroy leaves them), `ankra_ai_ticket_project_channels` (a project's own Slack channel and Teams conversation, destroy sends it back to the organisation's) and `ankra_ai_ticket_sync_connection` (a Jira, Linear or webhook sync connection whose tracker credential is write-only: `credential_wo` with `credential_wo_version`, Terraform 1.11 or later).
+* **New Resource:** `ankra_alert_ingest_credential` - an alert ingest credential for an external Alertmanager. The token is returned only when minted, so it is kept in state marked sensitive and is null after an import; pinning and scope change in place; destroy revokes it.
+* **New Resources:** `ankra_pipeline_policy` (the organisation's pipeline authority ceiling, only configured settings written; the authority inbox stays a human decision) and `ankra_provenance_policy` (the organisation's default deploy provenance mode; key rotation stays imperative). Destroy leaves both as they are.
+* **New Resource:** `ankra_addon_definition` - an organisation add-on definition with its match rules and include or exclude chart links, changed in place; Ankra's global definitions cannot be managed. Import by name.
+* **New Resource:** `ankra_datasource_credential` - the credential a cluster's metrics or log source authenticates with. The password and token are write-only (`password_wo`, `token_wo`, `secret_wo_version`); the platform has no update for it, so any change replaces it.
+* **New Resource:** `ankra_security_evidence_destination` - a Vanta, Wazuh or webhook evidence destination with a write-only credential; any change replaces it and destroy revokes it.
+* **New Resources:** `ankra_service_credential` (a managed-service credential family whose write-only value rotates in place with `value_wo_version`; the platform cannot delete a family, so destroy only stops managing it), `ankra_service_credential_grant` (a purpose-bound grant of a value to one package input, destroy revokes it) and `ankra_service_package_share` (shares a package version with another organisation, destroy revokes the share).
+
 ENHANCEMENTS:
 
 * resource/ankra_security_disposition: `scope = "namespace"` covers a vulnerability in every workload of the occurrence's namespace on its cluster, so an accepted risk in your own application keeps holding across rollouts and image rebuilds. A `workload` disposition created from a Deployment's pods now pins the Deployment rather than its ReplicaSet, so it survives rollouts. Needs an Ankra platform with ankraio/cluster#6395.

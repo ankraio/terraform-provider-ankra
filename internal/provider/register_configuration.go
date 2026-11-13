@@ -8,12 +8,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// configurationResources are Helm registries, their credentials, and organisation, cluster and stack variables.
+// configurationResources are Helm registries, their credentials, add-on definitions, and organisation, cluster and stack variables.
 func configurationResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewOrganisationVariableResource,
 		NewHelmRegistryResource,
 		NewHelmRegistryCredentialResource,
+		NewAddonDefinitionResource,
 		NewClusterVariableResource,
 		NewClusterStackVariableResource,
 	}
