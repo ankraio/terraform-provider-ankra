@@ -173,6 +173,7 @@ resource "ankra_provenance_policy" "default" {
 				},
 			},
 			{Config: config("strict"), ExpectError: regexp.MustCompile("Invalid value")},
+			{Config: config("enforce")},
 		},
 	})
 }

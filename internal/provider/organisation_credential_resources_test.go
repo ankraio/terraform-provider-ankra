@@ -406,6 +406,9 @@ resource "ankra_service_credential_grant" "bad" {
 `,
 				ExpectError: regexp.MustCompile(`package_digest`),
 			},
+			{
+				Config: config(2),
+			},
 		},
 	})
 }
