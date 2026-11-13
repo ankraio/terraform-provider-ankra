@@ -25,6 +25,13 @@ func clusterSettingResources() []func() resource.Resource {
 		NewClusterMeshMemberResource,
 		NewClusterBastionAllowedIPsResource,
 		NewClusterOSPatchPolicyResource,
+		NewClusterEnvironmentResource,
+		NewClusterStateSnapshotRetentionResource,
+		NewClusterDNSZoneResource,
+		NewClusterGatewayAPIResource,
+		NewClusterK3sDisabledComponentsResource,
+		NewUpcloudClusterSettingsResource,
+		NewOVHClusterSettingsResource,
 	}
 }
 
@@ -35,5 +42,6 @@ func clusterSettingDataSources() []func() datasource.DataSource {
 		NewClusterCustomDNSZonesDataSource,
 		NewClusterPowerSchedulesDataSource,
 		NewClusterMeshesDataSource,
+		NewClusterMetricsSourceDataSource,
 	}
 }

@@ -159,7 +159,7 @@ func (client *Client) doRequest(ctx context.Context, method, path string, reques
 		if err != nil {
 			lastError = err
 		} else {
-			lastError = &APIError{Method: method, Path: path, StatusCode: statusCode, Body: string(responseBytes)}
+			lastError = &APIError{Method: method, Path: path, StatusCode: statusCode, Body: redactErrorBody(statusCode, responseBytes)}
 		}
 
 		if attempt == attempts || !isRetryable(method, statusCode, err) {

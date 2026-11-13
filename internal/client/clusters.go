@@ -25,6 +25,8 @@ type Cluster struct {
 	Name  string `json:"name"`
 	Kind  string `json:"kind"`
 	State string `json:"state"`
+	// Environment is the cluster's environment label; nil when none is set.
+	Environment *string `json:"environment,omitempty"`
 	// LatestStepError is the newest unrepaired step failure of a cluster
 	// that is still creating; nil otherwise.
 	LatestStepError *ClusterStepError `json:"latest_step_error,omitempty"`
