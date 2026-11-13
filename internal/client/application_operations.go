@@ -6,6 +6,7 @@ package client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/url"
 )
@@ -60,14 +61,59 @@ func (client *Client) GetApplicationAutonomyLayers(ctx context.Context, applicat
 	return view.Layers, nil
 }
 
-// SetApplicationAutonomyLayer replaces the application's own layer.
-func (client *Client) SetApplicationAutonomyLayer(ctx context.Context, applicationID string, write AutonomyLayerWrite) error {
-	return client.doRequest(ctx, http.MethodPut, applicationPath(applicationID, "/autonomy"), write, nil)
+// SetApplicationAutonomyLayer replaces the application's own layer and
+// answers the layer now stored.
+func (client *Client) SetApplicationAutonomyLayer(ctx context.Context, applicationID string, write AutonomyLayerWrite) (*AutonomyLayer, error) {
+	var stored AutonomyLayer
+	if requestError := client.doRequest(ctx, http.MethodPut, applicationPath(applicationID, "/autonomy"), write, &stored); requestError != nil {
+		return nil, requestError
+	}
+	return &stored, nil
 }
 
-// SetApplicationEnvironmentAutonomyLayer replaces one environment's layer.
-func (client *Client) SetApplicationEnvironmentAutonomyLayer(ctx context.Context, applicationID, environmentID string, write AutonomyLayerWrite) error {
-	return client.doRequest(ctx, http.MethodPut, applicationPath(applicationID, "/environments/"+url.PathEscape(environmentID)+"/autonomy"), write, nil)
+// SetApplicationEnvironmentAutonomyLayer replaces one environment's layer
+// and answers the layer now stored.
+func (client *Client) SetApplicationEnvironmentAutonomyLayer(ctx context.Context, applicationID, environmentID string, write AutonomyLayerWrite) (*AutonomyLayer, error) {
+	var stored AutonomyLayer
+	requestPath := applicationPath(applicationID, "/environments/"+url.PathEscape(environmentID)+"/autonomy")
+	if requestError := client.doRequest(ctx, http.MethodPut, requestPath, write, &stored); requestError != nil {
+		return nil, requestError
+	}
+	return &stored, nil
+}
+
+// autonomyLayersUnreadError is answered when the platform could not read the
+// stored layers: no write may be built from them then.
+var autonomyLayersUnreadError = errors.New("the platform could not read the stored autonomy layers, so no write can be built from them; try again")
+
+// GetApplicationAutonomyLayer reads the application's own stored layer; nil
+// when none is stored.
+func (client *Client) GetApplicationAutonomyLayer(ctx context.Context, applicationID string) (*AutonomyLayer, error) {
+	layers, readError := client.GetApplicationAutonomyLayers(ctx, applicationID)
+	if readError != nil {
+		return nil, readError
+	}
+	if layers == nil {
+		return nil, autonomyLayersUnreadError
+	}
+	return layers.Application, nil
+}
+
+// GetApplicationEnvironmentAutonomyLayer reads one environment's own stored
+// layer; nil when none is stored.
+func (client *Client) GetApplicationEnvironmentAutonomyLayer(ctx context.Context, applicationID, environmentID string) (*AutonomyLayer, error) {
+	layers, readError := client.GetApplicationAutonomyLayers(ctx, applicationID)
+	if readError != nil {
+		return nil, readError
+	}
+	if layers == nil {
+		return nil, autonomyLayersUnreadError
+	}
+	layer, isStored := layers.Environments[environmentID]
+	if !isStored {
+		return nil, nil
+	}
+	return &layer, nil
 }
 
 type applicationEnabledFlag struct {

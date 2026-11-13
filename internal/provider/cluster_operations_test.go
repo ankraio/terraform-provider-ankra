@@ -400,3 +400,68 @@ data "ankra_cluster_metrics_source" "prod" {
 		},
 	})
 }
+
+func TestAccProviderClusterSettingsImportRecordsWithoutSending(t *testing.T) {
+	fake := newClusterOperationsFake(t)
+	fake.loadBalancer = "production-small"
+	config := fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_upcloud_cluster_settings" "prod" {
+  cluster_id         = %[1]q
+  load_balancer_plan = "production-small"
+  gateway_plan       = "standard"
+  zones              = ["fi-hel1", "fi-hel2", "de-fra1"]
+}
+
+resource "ankra_ovh_cluster_settings" "prod" {
+  cluster_id    = %[2]q
+  gateway_model = "m"
+}
+`, operationsFakeUpcloudID, operationsFakeOVHID)
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				ResourceName:       "ankra_upcloud_cluster_settings.prod",
+				ImportState:        true,
+				ImportStateId:      operationsFakeUpcloudID,
+				ImportStatePersist: true,
+				Config:             config,
+			},
+			{
+				ResourceName:       "ankra_ovh_cluster_settings.prod",
+				ImportState:        true,
+				ImportStateId:      operationsFakeOVHID,
+				ImportStatePersist: true,
+				Config:             config,
+			},
+			{
+				Config: config,
+				Check: func(_ *terraform.State) error {
+					if len(fake.gatewayPlans) != 0 || len(fake.ovhModels) != 0 || len(fake.zones) != 3 {
+						return fmt.Errorf("the first apply after an import must record, not send: gateway plans %v, models %v, zones %v",
+							fake.gatewayPlans, fake.ovhModels, fake.zones)
+					}
+					return nil
+				},
+			},
+		},
+	})
+}
+
+func TestAccClusterDNSZoneRefusesAnExistingZone(t *testing.T) {
+	fake := newClusterOperationsFake(t)
+	fake.zoneState = "ready"
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_cluster_dns_zone" "prod" {
+  cluster_id = %q
+}
+`, operationsFakeHetznerID),
+				ExpectError: regexp.MustCompile(`(?s)Cluster already has a DNS zone.*terraform import`),
+			},
+		},
+	})
+}

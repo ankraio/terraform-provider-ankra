@@ -31,7 +31,7 @@ resource "ankra_pipeline_workspace_profiles" "web" {
 
 ### Required
 
-- `profiles_json` (String) The profiles as a JSON object keyed by workspace kind, each with `image`, `resources` (`cpu`, `memory`), `volume_size`, `setup`, `tools` and `services`. Write it with `jsonencode`.
+- `profiles_json` (String, Sensitive) The profiles as a JSON object keyed by workspace kind, each with `image`, `resources` (`cpu`, `memory`), `volume_size`, `setup`, `tools` and `services`. Write it with `jsonencode`. Marked sensitive: service sidecars carry environment variables.
 - `repository_id` (String) Identifier of the pipeline repository. Changing it replaces the resource.
 
 ### Read-Only

@@ -3,12 +3,12 @@
 page_title: "ankra_upcloud_cluster_settings Resource - ankra"
 subcategory: ""
 description: |-
-  Day-2 network settings of an UpCloud cluster Ankra provisions: the plan of its ingress load balancer, the plan of its NAT gateways and its zone pool. Each is written only when it changes. Changing gateway_plan interrupts the cluster's outbound internet access for several minutes while UpCloud rebuilds the gateway, so plan it for a quiet time. The platform cannot read the gateway plan back, so gateway_plan keeps the configured value. Zones can only be added (the cluster must run the wireguard_mesh network mode and keep at least 3 zones), so removing one fails the plan. Destroy leaves every setting as it is.
+  Day-2 network settings of an UpCloud cluster Ankra provisions: the plan of its ingress load balancer, the plan of its NAT gateways and its zone pool. Each is written only when it changes, and the plan warns before a gateway_plan is sent: that interrupts the cluster's outbound internet access for several minutes while UpCloud rebuilds the gateway. The platform cannot read the gateway plan or the zone pool back, so both keep the configured value, and the first apply after an import records them without sending them. Zones can only be added (the cluster must run the wireguard_mesh network mode and keep at least 3 zones), so removing one fails the plan. Destroy leaves every setting as it is.
 ---
 
 # ankra_upcloud_cluster_settings (Resource)
 
-Day-2 network settings of an UpCloud cluster Ankra provisions: the plan of its ingress load balancer, the plan of its NAT gateways and its zone pool. Each is written only when it changes. Changing `gateway_plan` interrupts the cluster's outbound internet access for several minutes while UpCloud rebuilds the gateway, so plan it for a quiet time. The platform cannot read the gateway plan back, so `gateway_plan` keeps the configured value. Zones can only be added (the cluster must run the `wireguard_mesh` network mode and keep at least 3 zones), so removing one fails the plan. Destroy leaves every setting as it is.
+Day-2 network settings of an UpCloud cluster Ankra provisions: the plan of its ingress load balancer, the plan of its NAT gateways and its zone pool. Each is written only when it changes, and the plan warns before a `gateway_plan` is sent: that interrupts the cluster's outbound internet access for several minutes while UpCloud rebuilds the gateway. The platform cannot read the gateway plan or the zone pool back, so both keep the configured value, and the first apply after an import records them without sending them. Zones can only be added (the cluster must run the `wireguard_mesh` network mode and keep at least 3 zones), so removing one fails the plan. Destroy leaves every setting as it is.
 
 ## Example Usage
 
@@ -31,7 +31,7 @@ resource "ankra_upcloud_cluster_settings" "prod" {
 
 - `gateway_plan` (String) UpCloud plan of the cluster's NAT gateways. A stopped cluster's gateways take it at the next start.
 - `load_balancer_plan` (String) UpCloud plan of the cluster's ingress load balancer, checked against UpCloud's catalogue. Unset leaves it to the platform.
-- `zones` (Set of String) The cluster's zone pool. Zones can only be added; every new zone gets its own router, private network and NAT gateway.
+- `zones` (Set of String) Zones the cluster's pool must hold. Zones can only be added; every new zone gets its own router, private network and NAT gateway.
 
 ### Read-Only
 

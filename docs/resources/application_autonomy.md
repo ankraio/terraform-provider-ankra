@@ -3,12 +3,12 @@
 page_title: "ankra_application_autonomy Resource - ankra"
 subcategory: ""
 description: |-
-  Who runs an application (ankra application autonomy set): the application's own "who runs it" layer, a level for every area, per-area levels and limits on what Ankra may do unasked, plus automatic build fixing and setup pull request auto-merge. The layer is managed only when level, areas or limits is set, and is then replaced as a whole, starting from the stored layer so a change made meanwhile is refused rather than overwritten. Asking for more than the organisation allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra for an application stays imperative (ankra application autonomy pause). Destroy leaves every setting as it is.
+  Who runs an application (ankra application autonomy set): the application's own "who runs it" layer, a level for every area, per-area levels and limits on what Ankra may do unasked, plus automatic build fixing and setup pull request auto-merge. level, areas and limits always report the stored layer. A change replaces the layer as a whole and sends the layer the last refresh saw as the expected one, so a layer changed between plan and apply is refused rather than overwritten. Creating the resource over a stored layer that holds parts the configuration does not set is refused: import it first, so the plan shows what would change. Asking for more than the organisation allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra for an application stays imperative (ankra application autonomy pause). Destroy leaves every setting as it is.
 ---
 
 # ankra_application_autonomy (Resource)
 
-Who runs an application (`ankra application autonomy set`): the application's own "who runs it" layer, a level for every area, per-area levels and limits on what Ankra may do unasked, plus automatic build fixing and setup pull request auto-merge. The layer is managed only when `level`, `areas` or `limits` is set, and is then replaced as a whole, starting from the stored layer so a change made meanwhile is refused rather than overwritten. Asking for more than the organisation allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra for an application stays imperative (`ankra application autonomy pause`). Destroy leaves every setting as it is.
+Who runs an application (`ankra application autonomy set`): the application's own "who runs it" layer, a level for every area, per-area levels and limits on what Ankra may do unasked, plus automatic build fixing and setup pull request auto-merge. `level`, `areas` and `limits` always report the stored layer. A change replaces the layer as a whole and sends the layer the last refresh saw as the expected one, so a layer changed between plan and apply is refused rather than overwritten. Creating the resource over a stored layer that holds parts the configuration does not set is refused: import it first, so the plan shows what would change. Asking for more than the organisation allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra for an application stays imperative (`ankra application autonomy pause`). Destroy leaves every setting as it is.
 
 ## Example Usage
 
@@ -39,7 +39,7 @@ resource "ankra_application_autonomy" "web" {
 
 - `areas` (Map of String) Per-area levels, keyed by area: `keep_it_up`, `ship_changes`, `keep_it_safe`, `keep_costs_down`, `keep_it_current` or `fix_my_code`.
 - `auto_fix_builds` (Boolean) Whether Ankra fixes a failed build of the application's tracked branch on its own, opening a pull request. On by default.
-- `level` (String) Who runs every area of the application unless `areas` says otherwise: `you_run_it`, `together` or `ankra_runs_it`. Unset leaves it to the layer below.
+- `level` (String) Who runs every area of the application unless `areas` says otherwise: `you_run_it`, `together` or `ankra_runs_it`. Unset reports what is stored; a layer with no level leaves it to the layer below.
 - `limits` (Attributes) Limits on what Ankra may do unasked. (see [below for nested schema](#nestedatt--limits))
 - `setup_pull_request_auto_merge` (String) Whether Ankra may merge the application's setup pull requests on its own once every check is green: `on`, `off`, or `organisation` to follow the organisation's setting. Changing it needs an organisation administrator.
 

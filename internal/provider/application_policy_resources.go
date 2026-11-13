@@ -321,8 +321,10 @@ func (profiles *pipelineWorkspaceProfilesResource) Schema(_ context.Context, _ r
 			},
 			"profiles_json": schema.StringAttribute{
 				MarkdownDescription: "The profiles as a JSON object keyed by workspace kind, each with `image`, `resources` (`cpu`, " +
-					"`memory`), `volume_size`, `setup`, `tools` and `services`. Write it with `jsonencode`.",
+					"`memory`), `volume_size`, `setup`, `tools` and `services`. Write it with `jsonencode`. Marked sensitive: " +
+					"service sidecars carry environment variables.",
 				Required:   true,
+				Sensitive:  true,
 				CustomType: jsontypes.NormalizedType{},
 			},
 		},

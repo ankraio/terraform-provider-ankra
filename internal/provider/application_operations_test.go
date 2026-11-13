@@ -250,11 +250,10 @@ resource "ankra_application_autonomy" "web" {
 				},
 			},
 			{
-				ResourceName:            "ankra_application_autonomy.web",
-				ImportState:             true,
-				ImportStateId:           operationsFakeApplicationID,
-				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"level", "areas", "limits"},
+				ResourceName:      "ankra_application_autonomy.web",
+				ImportState:       true,
+				ImportStateId:     operationsFakeApplicationID,
+				ImportStateVerify: true,
 			},
 			{
 				PreConfig:   func() { fake.notAdmin = true },
@@ -327,7 +326,7 @@ resource "ankra_application_environment" "production" {
 				ImportState:             true,
 				ImportStateId:           operationsFakeApplicationID + "/" + operationsFakeEnvironmentID,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"level", "areas", "limits", "operating_expectations"},
+				ImportStateVerifyIgnore: []string{"operating_expectations"},
 			},
 			{
 				PreConfig: func() { fake.environmentMissing = true },
@@ -397,6 +396,43 @@ resource "ankra_pipeline_workspace_profiles" "web" {
 					}
 					return nil
 				},
+			},
+		},
+	})
+}
+
+func TestAccApplicationAutonomyRefusesToDropAStoredLayer(t *testing.T) {
+	fake := newApplicationOperationsFake(t)
+	fake.applicationLayer = map[string]any{"level": "together", "areas": map[string]any{}, "limits": map[string]any{"may_change_data": false},
+		"widened_by_admin": false}
+	config := func(limits string) string {
+		return fake.providerBlock() + fmt.Sprintf(`
+resource "ankra_application_autonomy" "web" {
+  application_id = %q
+  level          = "ankra_runs_it"
+%s
+}
+`, operationsFakeApplicationID, limits)
+	}
+	resource.Test(t, resource.TestCase{
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config:      config(""),
+				ExpectError: regexp.MustCompile(`(?s)A stored autonomy layer already exists.*terraform import`),
+			},
+			{
+				Config: config("  limits = { may_change_data = false }"),
+				Check: resource.ComposeAggregateTestCheckFunc(
+					resource.TestCheckResourceAttr("ankra_application_autonomy.web", "limits.may_change_data", "false"),
+					resource.TestCheckNoResourceAttr("ankra_application_autonomy.web", "areas"),
+					func(_ *terraform.State) error {
+						if len(fake.layerWrites) != 1 || fake.layerWrites[0]["expected"] == nil {
+							return fmt.Errorf("the create must start from the stored layer, wrote %v", fake.layerWrites)
+						}
+						return nil
+					},
+				),
 			},
 		},
 	})

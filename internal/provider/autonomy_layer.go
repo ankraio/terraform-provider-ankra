@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -12,8 +13,13 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/mapplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
 
 	"ankra.io/terraform-provider-ankra/internal/client"
 )
@@ -23,6 +29,18 @@ var (
 	autonomyAreas  = []string{"keep_it_up", "ship_changes", "keep_it_safe", "keep_costs_down", "keep_it_current", "fix_my_code"}
 )
 
+// autonomyLayerPrivateKey holds, in private state, the stored layer as the
+// last refresh or write saw it. A write sends it as the expected layer, so a
+// layer changed between plan and apply is refused instead of overwritten.
+const autonomyLayerPrivateKey = "autonomy_layer"
+
+var autonomyLimitsAttributeTypes = map[string]attr.Type{
+	"monthly_cost_increase_cents":     types.Int64Type,
+	"production_downtime_seconds":     types.Int64Type,
+	"non_production_downtime_seconds": types.Int64Type,
+	"may_change_data":                 types.BoolType,
+}
+
 // autonomyLimitsModel is the limits block of a "who runs it" layer.
 type autonomyLimitsModel struct {
 	MonthlyCostIncreaseCents     types.Int64 `tfsdk:"monthly_cost_increase_cents"`
@@ -31,27 +49,48 @@ type autonomyLimitsModel struct {
 	MayChangeData                types.Bool  `tfsdk:"may_change_data"`
 }
 
+// autonomyLayerParts are the level, areas and limits of one stored layer as
+// a resource holds them.
+type autonomyLayerParts struct {
+	Level  *types.String
+	Areas  *types.Map
+	Limits *types.Object
+}
+
+// autonomyLayerStore reads and replaces one stored layer: an application's
+// or one of its environments'.
+type autonomyLayerStore struct {
+	read  func(ctx context.Context) (*client.AutonomyLayer, error)
+	write func(ctx context.Context, write client.AutonomyLayerWrite) (*client.AutonomyLayer, error)
+}
+
 // autonomyLayerAttributes are the level, areas and limits attributes of a
-// resource that manages one stored layer.
+// resource that manages one stored layer. Unset, each reports what is stored.
 func autonomyLayerAttributes(subject string) map[string]schema.Attribute {
 	nonNegative := []validator.Int64{alertDNSRangeValidator{minimum: 0, maximum: 1 << 53}}
 	return map[string]schema.Attribute{
 		"level": schema.StringAttribute{
 			MarkdownDescription: "Who runs every area of " + subject + " unless `areas` says otherwise: `you_run_it`, `together` or `ankra_runs_it`. " +
-				"Unset leaves it to the layer below.",
-			Optional:   true,
-			Validators: []validator.String{organisationStringOneOf{values: autonomyLevels}},
+				"Unset reports what is stored; a layer with no level leaves it to the layer below.",
+			Optional:      true,
+			Computed:      true,
+			Validators:    []validator.String{organisationStringOneOf{values: autonomyLevels}},
+			PlanModifiers: []planmodifier.String{stringplanmodifier.UseStateForUnknown()},
 		},
 		"areas": schema.MapAttribute{
 			MarkdownDescription: "Per-area levels, keyed by area: `keep_it_up`, `ship_changes`, `keep_it_safe`, `keep_costs_down`, " +
 				"`keep_it_current` or `fix_my_code`.",
-			Optional:    true,
-			ElementType: types.StringType,
-			Validators:  []validator.Map{autonomyAreasValidator{}},
+			Optional:      true,
+			Computed:      true,
+			ElementType:   types.StringType,
+			Validators:    []validator.Map{autonomyAreasValidator{}},
+			PlanModifiers: []planmodifier.Map{mapplanmodifier.UseStateForUnknown()},
 		},
 		"limits": schema.SingleNestedAttribute{
 			MarkdownDescription: "Limits on what Ankra may do unasked.",
 			Optional:            true,
+			Computed:            true,
+			PlanModifiers:       []planmodifier.Object{objectplanmodifier.UseStateForUnknown()},
 			Attributes: map[string]schema.Attribute{
 				"monthly_cost_increase_cents": schema.Int64Attribute{
 					MarkdownDescription: "Most a change may add to the monthly cost, in cents.", Optional: true, Validators: nonNegative,
@@ -70,33 +109,100 @@ func autonomyLayerAttributes(subject string) map[string]schema.Attribute {
 	}
 }
 
-// autonomyLayerIsManaged reports whether configuration sets any part of the
-// layer; an unmanaged layer is neither written nor read.
-func autonomyLayerIsManaged(level types.String, areas types.Map, limits *autonomyLimitsModel) bool {
-	return !level.IsNull() || !areas.IsNull() || limits != nil
+// autonomyLayerCreate adopts or writes the layer on create. Unset parts are
+// unknown in the plan. A stored layer that holds a part the configuration
+// does not set is refused, because writing the configured layer would
+// silently drop that part: the user imports it instead.
+func autonomyLayerCreate(ctx context.Context, store autonomyLayerStore, parts autonomyLayerParts, importCommand string, private privateStateWriter,
+	diagnostics *diag.Diagnostics) bool {
+	stored, readError := store.read(ctx)
+	if readError != nil {
+		diagnostics.AddError("Unable to read the stored autonomy layer", readError.Error())
+		return false
+	}
+	isConfigured := !parts.Level.IsUnknown() || !parts.Areas.IsUnknown() || !parts.Limits.IsUnknown()
+	if stored != nil && autonomyLayerHasUnsetParts(parts, stored) {
+		diagnostics.AddError("A stored autonomy layer already exists",
+			"The platform already stores a \"who runs it\" layer here with parts this configuration does not set, and creating the "+
+				"resource would replace the whole layer and drop them. Import it first ("+importCommand+") so the plan shows every "+
+				"part, or set level, areas and limits explicitly.")
+		return false
+	}
+	result := stored
+	if isConfigured {
+		write := autonomyLayerWrite(ctx, parts, stored, diagnostics)
+		if diagnostics.HasError() {
+			return false
+		}
+		written, writeError := store.write(ctx, write)
+		if writeError != nil {
+			diagnostics.AddError("Unable to set who runs it", writeError.Error())
+			return false
+		}
+		result = written
+	}
+	autonomyLayerApply(ctx, parts, result, diagnostics)
+	autonomyLayerRemember(ctx, private, result, diagnostics)
+	return !diagnostics.HasError()
 }
 
-// autonomyLayerChanged reports whether the planned layer differs from the
-// one in state.
-func autonomyLayerChanged(plannedLevel, stateLevel types.String, plannedAreas, stateAreas types.Map, plannedLimits, stateLimits *autonomyLimitsModel) bool {
-	if !plannedLevel.Equal(stateLevel) || !plannedAreas.Equal(stateAreas) {
+// autonomyLayerUpdate replaces the layer when a part changed, expecting the
+// layer the last refresh saw.
+func autonomyLayerUpdate(ctx context.Context, store autonomyLayerStore, plan, state autonomyLayerParts, seen privateStateReader,
+	private privateStateWriter, diagnostics *diag.Diagnostics) bool {
+	if plan.Level.Equal(*state.Level) && plan.Areas.Equal(*state.Areas) && plan.Limits.Equal(*state.Limits) {
 		return true
 	}
-	if (plannedLimits == nil) != (stateLimits == nil) {
-		return true
+	expected, isRemembered := autonomyLayerRemembered(ctx, seen)
+	if !isRemembered {
+		stored, readError := store.read(ctx)
+		if readError != nil {
+			diagnostics.AddError("Unable to read the stored autonomy layer", readError.Error())
+			return false
+		}
+		expected = stored
 	}
-	return plannedLimits != nil && *plannedLimits != *stateLimits
+	write := autonomyLayerWrite(ctx, plan, expected, diagnostics)
+	if diagnostics.HasError() {
+		return false
+	}
+	written, writeError := store.write(ctx, write)
+	if writeError != nil {
+		diagnostics.AddError("Unable to set who runs it", writeError.Error())
+		return false
+	}
+	autonomyLayerApply(ctx, plan, written, diagnostics)
+	autonomyLayerRemember(ctx, private, written, diagnostics)
+	return !diagnostics.HasError()
 }
 
-// autonomyLayerWrite builds the full replacement of a layer from
-// configuration, starting from the stored layer.
-func autonomyLayerWrite(ctx context.Context, level types.String, areas types.Map, limits *autonomyLimitsModel, stored *client.AutonomyLayer,
-	diagnostics *diag.Diagnostics) client.AutonomyLayerWrite {
-	write := client.AutonomyLayerWrite{Level: stringPointer(level), Areas: map[string]string{}, Expected: stored}
-	for key, value := range applicationStringMap(ctx, areas, diagnostics) {
+// autonomyLayerRefresh reads the stored layer into parts and remembers it.
+func autonomyLayerRefresh(ctx context.Context, store autonomyLayerStore, parts autonomyLayerParts, private privateStateWriter, diagnostics *diag.Diagnostics) bool {
+	stored, readError := store.read(ctx)
+	if readError != nil {
+		diagnostics.AddError("Unable to read the stored autonomy layer", readError.Error())
+		return false
+	}
+	autonomyLayerApply(ctx, parts, stored, diagnostics)
+	autonomyLayerRemember(ctx, private, stored, diagnostics)
+	return !diagnostics.HasError()
+}
+
+func autonomyLayerHasUnsetParts(parts autonomyLayerParts, stored *client.AutonomyLayer) bool {
+	return (parts.Level.IsUnknown() && stored.Level != nil) || (parts.Areas.IsUnknown() && len(stored.Areas) > 0) ||
+		(parts.Limits.IsUnknown() && stored.Limits != (client.AutonomyLayerLimits{}))
+}
+
+// autonomyLayerWrite builds the full replacement of a layer; an unset part
+// is written empty.
+func autonomyLayerWrite(ctx context.Context, parts autonomyLayerParts, expected *client.AutonomyLayer, diagnostics *diag.Diagnostics) client.AutonomyLayerWrite {
+	write := client.AutonomyLayerWrite{Level: stringPointer(*parts.Level), Areas: map[string]string{}, Expected: expected}
+	for key, value := range applicationStringMap(ctx, *parts.Areas, diagnostics) {
 		write.Areas[key] = value
 	}
-	if limits != nil {
+	if !parts.Limits.IsNull() && !parts.Limits.IsUnknown() {
+		var limits autonomyLimitsModel
+		diagnostics.Append(parts.Limits.As(ctx, &limits, basetypes.ObjectAsOptions{})...)
 		write.Limits = client.AutonomyLayerLimits{
 			MonthlyCostIncreaseCents:     int64Pointer(limits.MonthlyCostIncreaseCents),
 			ProductionDowntimeSeconds:    int64Pointer(limits.ProductionDowntimeSeconds),
@@ -107,33 +213,55 @@ func autonomyLayerWrite(ctx context.Context, level types.String, areas types.Map
 	return write
 }
 
-// autonomyLayerState maps a stored layer to state; a nil layer clears every
-// part, which plans the configured layer again.
-func autonomyLayerState(stored *client.AutonomyLayer, stateAreas types.Map, stateLimits *autonomyLimitsModel) (types.String, types.Map, *autonomyLimitsModel) {
+// autonomyLayerApply sets parts from a stored layer: an empty part is null.
+func autonomyLayerApply(ctx context.Context, parts autonomyLayerParts, stored *client.AutonomyLayer, diagnostics *diag.Diagnostics) {
+	*parts.Level = types.StringNull()
+	*parts.Areas = types.MapNull(types.StringType)
+	*parts.Limits = types.ObjectNull(autonomyLimitsAttributeTypes)
 	if stored == nil {
-		return types.StringNull(), types.MapNull(types.StringType), nil
+		return
 	}
-	areas := types.MapNull(types.StringType)
-	if len(stored.Areas) > 0 || !stateAreas.IsNull() {
+	*parts.Level = types.StringPointerValue(stored.Level)
+	if len(stored.Areas) > 0 {
 		elements := make(map[string]attr.Value, len(stored.Areas))
 		for key, value := range stored.Areas {
 			elements[key] = types.StringValue(value)
 		}
-		areas = types.MapValueMust(types.StringType, elements)
+		*parts.Areas = types.MapValueMust(types.StringType, elements)
 	}
-	limits := &autonomyLimitsModel{
-		MonthlyCostIncreaseCents:     types.Int64PointerValue(stored.Limits.MonthlyCostIncreaseCents),
-		ProductionDowntimeSeconds:    types.Int64PointerValue(stored.Limits.ProductionDowntimeSeconds),
-		NonProductionDowntimeSeconds: types.Int64PointerValue(stored.Limits.NonProductionDowntimeSeconds),
-		MayChangeData:                types.BoolPointerValue(stored.Limits.MayChangeData),
+	if stored.Limits != (client.AutonomyLayerLimits{}) {
+		limits, limitsDiagnostics := types.ObjectValueFrom(ctx, autonomyLimitsAttributeTypes, autonomyLimitsModel{
+			MonthlyCostIncreaseCents:     types.Int64PointerValue(stored.Limits.MonthlyCostIncreaseCents),
+			ProductionDowntimeSeconds:    types.Int64PointerValue(stored.Limits.ProductionDowntimeSeconds),
+			NonProductionDowntimeSeconds: types.Int64PointerValue(stored.Limits.NonProductionDowntimeSeconds),
+			MayChangeData:                types.BoolPointerValue(stored.Limits.MayChangeData),
+		})
+		diagnostics.Append(limitsDiagnostics...)
+		*parts.Limits = limits
 	}
-	if stateLimits == nil && *limits == (autonomyLimitsModel{
-		MonthlyCostIncreaseCents: types.Int64Null(), ProductionDowntimeSeconds: types.Int64Null(),
-		NonProductionDowntimeSeconds: types.Int64Null(), MayChangeData: types.BoolNull(),
-	}) {
-		limits = nil
+}
+
+func autonomyLayerRemember(ctx context.Context, private privateStateWriter, stored *client.AutonomyLayer, diagnostics *diag.Diagnostics) {
+	encoded, encodeError := json.Marshal(stored)
+	if encodeError != nil {
+		diagnostics.AddError("Unable to remember the stored autonomy layer", encodeError.Error())
+		return
 	}
-	return types.StringPointerValue(stored.Level), areas, limits
+	diagnostics.Append(private.SetKey(ctx, autonomyLayerPrivateKey, encoded)...)
+}
+
+// autonomyLayerRemembered returns the layer the last refresh or write saw;
+// the second result is false when none was remembered.
+func autonomyLayerRemembered(ctx context.Context, private privateStateReader) (*client.AutonomyLayer, bool) {
+	encoded, diagnostics := private.GetKey(ctx, autonomyLayerPrivateKey)
+	if diagnostics.HasError() || len(encoded) == 0 {
+		return nil, false
+	}
+	var stored *client.AutonomyLayer
+	if json.Unmarshal(encoded, &stored) != nil {
+		return nil, false
+	}
+	return stored, true
 }
 
 // autonomyAreasValidator refuses an unknown area or level at plan time.

@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_state_snapshot_retention Resource - ankra"
 subcategory: ""
 description: |-
-  The retention window of a provisioned cluster's scheduled etcd backups (ankra cluster state-snapshots retention). Ankra backs up the etcd state every six hours to the organisation's backup vault and keeps the newest backups plus the newest one of each UTC day within the window. A shorter window deletes the daily backups that fall outside it, and a longer one cannot bring back backups already deleted. Every change is audited. Destroy leaves the window as it is.
+  The retention window of a provisioned cluster's scheduled etcd backups (ankra cluster state-snapshots retention). Ankra backs up the etcd state every six hours to the organisation's backup vault and keeps the newest backups plus the newest one of each UTC day within the window. A shorter window deletes the daily backups that fall outside it, and a longer one cannot bring back backups already deleted, so the plan warns when the window shrinks. Every change is audited. Destroy leaves the window as it is.
 ---
 
 # ankra_cluster_state_snapshot_retention (Resource)
 
-The retention window of a provisioned cluster's scheduled etcd backups (`ankra cluster state-snapshots retention`). Ankra backs up the etcd state every six hours to the organisation's backup vault and keeps the newest backups plus the newest one of each UTC day within the window. A shorter window deletes the daily backups that fall outside it, and a longer one cannot bring back backups already deleted. Every change is audited. Destroy leaves the window as it is.
+The retention window of a provisioned cluster's scheduled etcd backups (`ankra cluster state-snapshots retention`). Ankra backs up the etcd state every six hours to the organisation's backup vault and keeps the newest backups plus the newest one of each UTC day within the window. A shorter window deletes the daily backups that fall outside it, and a longer one cannot bring back backups already deleted, so the plan warns when the window shrinks. Every change is audited. Destroy leaves the window as it is.
 
 ## Example Usage
 

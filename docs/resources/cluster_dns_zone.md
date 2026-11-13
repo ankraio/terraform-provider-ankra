@@ -3,12 +3,12 @@
 page_title: "ankra_cluster_dns_zone Resource - ankra"
 subcategory: ""
 description: |-
-  A cluster's generated public DNS zone under the organisation's Ankra root domain (ankra cluster domain). The zone is provisioned asynchronously, after which Ankra installs external-dns on the cluster to publish hostnames in it; an existing zone keeps its FQDN and a failed one is retried. Rotating the zone's DNS write token stays imperative (ankra cluster dns-token rotate). Destroy hands the zone back for teardown; the cluster itself is not changed.
+  A cluster's generated public DNS zone under the organisation's Ankra root domain (ankra cluster domain). The zone is provisioned asynchronously, after which Ankra installs external-dns on the cluster to publish hostnames in it; an existing zone keeps its FQDN and a failed one is retried. Rotating the zone's DNS write token stays imperative (ankra cluster dns-token rotate). A cluster that already has a zone is refused on create: import it instead. Destroy hands the zone back for teardown; the cluster itself is not changed.
 ---
 
 # ankra_cluster_dns_zone (Resource)
 
-A cluster's generated public DNS zone under the organisation's Ankra root domain (`ankra cluster domain`). The zone is provisioned asynchronously, after which Ankra installs external-dns on the cluster to publish hostnames in it; an existing zone keeps its FQDN and a failed one is retried. Rotating the zone's DNS write token stays imperative (`ankra cluster dns-token rotate`). Destroy hands the zone back for teardown; the cluster itself is not changed.
+A cluster's generated public DNS zone under the organisation's Ankra root domain (`ankra cluster domain`). The zone is provisioned asynchronously, after which Ankra installs external-dns on the cluster to publish hostnames in it; an existing zone keeps its FQDN and a failed one is retried. Rotating the zone's DNS write token stays imperative (`ankra cluster dns-token rotate`). A cluster that already has a zone is refused on create: import it instead. Destroy hands the zone back for teardown; the cluster itself is not changed.
 
 ## Example Usage
 

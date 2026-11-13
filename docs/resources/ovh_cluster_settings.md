@@ -3,12 +3,12 @@
 page_title: "ankra_ovh_cluster_settings Resource - ankra"
 subcategory: ""
 description: |-
-  Day-2 settings of an OVHcloud cluster Ankra provisions (ankra cluster ovh gateway-model): the model of its managed gateway. The platform cannot read the model back, so gateway_model keeps the configured value. Destroy leaves the gateway as it is.
+  Day-2 settings of an OVHcloud cluster Ankra provisions (ankra cluster ovh gateway-model): the model of its managed gateway. The plan warns before the model is sent. The platform cannot read the model back, so gateway_model keeps the configured value, and the first apply after an import records it without sending it. Destroy leaves the gateway as it is.
 ---
 
 # ankra_ovh_cluster_settings (Resource)
 
-Day-2 settings of an OVHcloud cluster Ankra provisions (`ankra cluster ovh gateway-model`): the model of its managed gateway. The platform cannot read the model back, so `gateway_model` keeps the configured value. Destroy leaves the gateway as it is.
+Day-2 settings of an OVHcloud cluster Ankra provisions (`ankra cluster ovh gateway-model`): the model of its managed gateway. The plan warns before the model is sent. The platform cannot read the model back, so `gateway_model` keeps the configured value, and the first apply after an import records it without sending it. Destroy leaves the gateway as it is.
 
 ## Example Usage
 

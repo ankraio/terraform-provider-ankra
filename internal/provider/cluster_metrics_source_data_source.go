@@ -5,6 +5,7 @@ package provider
 
 import (
 	"context"
+	"net/url"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -110,7 +111,7 @@ func (source *clusterMetricsSourceDataSource) Read(ctx context.Context, request 
 	switch {
 	case metricsError == nil:
 		model.Metrics = &clusterMetricsSourceModel{
-			Provider: types.StringValue(metrics.Provider), Endpoint: types.StringValue(metrics.Endpoint), State: types.StringValue(metrics.State),
+			Provider: types.StringValue(metrics.Provider), Endpoint: types.StringValue(endpointWithoutUserinfo(metrics.Endpoint)), State: types.StringValue(metrics.State),
 			Flavor: types.StringPointerValue(metrics.Flavor), CredentialName: dataSourceCredentialName(metrics.CredentialName, metrics.Credential),
 		}
 	case !client.IsNotFound(metricsError) || clusterSettingsScopeError(metricsError, clusterID) != nil:
@@ -121,7 +122,7 @@ func (source *clusterMetricsSourceDataSource) Read(ctx context.Context, request 
 	switch {
 	case logsError == nil:
 		model.Logs = &clusterLogSourceModel{
-			Provider: types.StringValue(logs.Provider), Endpoint: types.StringValue(logs.Endpoint), State: types.StringValue(logs.State),
+			Provider: types.StringValue(logs.Provider), Endpoint: types.StringValue(endpointWithoutUserinfo(logs.Endpoint)), State: types.StringValue(logs.State),
 			VerifySSL: types.BoolValue(logs.VerifySSL), IndexPattern: types.StringPointerValue(logs.IndexPattern),
 			CredentialName: dataSourceCredentialName(logs.CredentialName, logs.Credential),
 		}
@@ -140,4 +141,15 @@ func dataSourceCredentialName(storedName *string, credential *client.ClusterData
 		return types.StringValue(credential.Name)
 	}
 	return types.StringPointerValue(storedName)
+}
+
+// endpointWithoutUserinfo drops a user name or password from a backend
+// address, which the platform should already strip, so none reaches state.
+func endpointWithoutUserinfo(endpoint string) string {
+	parsed, parseError := url.Parse(endpoint)
+	if parseError != nil || parsed.User == nil {
+		return endpoint
+	}
+	parsed.User = nil
+	return parsed.String()
 }

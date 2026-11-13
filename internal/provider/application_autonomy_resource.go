@@ -32,14 +32,14 @@ type applicationAutonomyResource struct {
 }
 
 type applicationAutonomyModel struct {
-	ID                          types.String         `tfsdk:"id"`
-	ApplicationID               types.String         `tfsdk:"application_id"`
-	Level                       types.String         `tfsdk:"level"`
-	Areas                       types.Map            `tfsdk:"areas"`
-	Limits                      *autonomyLimitsModel `tfsdk:"limits"`
-	AutoFixBuilds               types.Bool           `tfsdk:"auto_fix_builds"`
-	SetupPullRequestAutoMerge   types.String         `tfsdk:"setup_pull_request_auto_merge"`
-	SetupPullRequestAutoMergeOn types.Bool           `tfsdk:"setup_pull_request_auto_merge_effective"`
+	ID                          types.String `tfsdk:"id"`
+	ApplicationID               types.String `tfsdk:"application_id"`
+	Level                       types.String `tfsdk:"level"`
+	Areas                       types.Map    `tfsdk:"areas"`
+	Limits                      types.Object `tfsdk:"limits"`
+	AutoFixBuilds               types.Bool   `tfsdk:"auto_fix_builds"`
+	SetupPullRequestAutoMerge   types.String `tfsdk:"setup_pull_request_auto_merge"`
+	SetupPullRequestAutoMergeOn types.Bool   `tfsdk:"setup_pull_request_auto_merge_effective"`
 }
 
 // NewApplicationAutonomyResource returns the ankra_application_autonomy
@@ -87,63 +87,63 @@ func (autonomy *applicationAutonomyResource) Schema(_ context.Context, _ resourc
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Who runs an application (`ankra application autonomy set`): the application's own \"who runs it\" layer, a " +
 			"level for every area, per-area levels and limits on what Ankra may do unasked, plus automatic build fixing and setup " +
-			"pull request auto-merge. The layer is managed only when `level`, `areas` or `limits` is set, and is then replaced as " +
-			"a whole, starting from the stored layer so a change made meanwhile is refused rather than overwritten. Asking for more " +
-			"than the organisation allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra " +
-			"for an application stays imperative (`ankra application autonomy pause`). Destroy leaves every setting as it is.",
+			"pull request auto-merge. `level`, `areas` and `limits` always report the stored layer. A change replaces the layer as " +
+			"a whole and sends the layer the last refresh saw as the expected one, so a layer changed between plan and apply is " +
+			"refused rather than overwritten. Creating the resource over a stored layer that holds parts the configuration does " +
+			"not set is refused: import it first, so the plan shows what would change. Asking for more than the organisation " +
+			"allows needs an organisation admin. Each setting is written only when it changes. Pausing Ankra for an application " +
+			"stays imperative (`ankra application autonomy pause`). Destroy leaves every setting as it is.",
 		Attributes: attributes,
 	}
 }
 
 func (autonomy *applicationAutonomyResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
+	apiClient := autonomy.requireClient(&response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 	var plan applicationAutonomyModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if autonomy.write(ctx, &plan, nil, &response.Diagnostics) {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	applicationID := plan.ApplicationID.ValueString()
+	importCommand := "terraform import <address> " + applicationID
+	if !autonomyLayerCreate(ctx, applicationAutonomyStore(apiClient, applicationID), applicationAutonomyParts(&plan), importCommand,
+		response.Private, &response.Diagnostics) {
+		return
+	}
+	if autonomy.writeSettings(ctx, apiClient, &plan, nil, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
-		response.Diagnostics.Append(trackScope(ctx, autonomy.client, response.Private)...)
+		response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
 	}
 }
 
 func (autonomy *applicationAutonomyResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
+	apiClient := autonomy.requireClient(&response.Diagnostics)
+	if apiClient == nil {
+		return
+	}
 	var plan, state applicationAutonomyModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
-	if autonomy.write(ctx, &plan, &state, &response.Diagnostics) {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	store := applicationAutonomyStore(apiClient, plan.ApplicationID.ValueString())
+	if !autonomyLayerUpdate(ctx, store, applicationAutonomyParts(&plan), applicationAutonomyParts(&state), request.Private, response.Private, &response.Diagnostics) {
+		return
+	}
+	if autonomy.writeSettings(ctx, apiClient, &plan, &state, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	}
 }
 
-// write applies each setting that changed from state (every configured one
-// on create) and reads the result back.
-func (autonomy *applicationAutonomyResource) write(ctx context.Context, plan, state *applicationAutonomyModel, diagnostics *diag.Diagnostics) bool {
-	apiClient := autonomy.requireClient(diagnostics)
-	if apiClient == nil || diagnostics.HasError() {
-		return false
-	}
+// writeSettings applies the build-fixing and setup auto-merge settings that
+// changed from state (every configured one on create) and reads them back.
+func (autonomy *applicationAutonomyResource) writeSettings(ctx context.Context, apiClient *client.Client, plan, state *applicationAutonomyModel,
+	diagnostics *diag.Diagnostics) bool {
 	applicationID := plan.ApplicationID.ValueString()
-	isLayerChanged := autonomyLayerIsManaged(plan.Level, plan.Areas, plan.Limits)
-	if state != nil {
-		isLayerChanged = autonomyLayerChanged(plan.Level, state.Level, plan.Areas, state.Areas, plan.Limits, state.Limits)
-	}
-	if isLayerChanged {
-		layers, readError := apiClient.GetApplicationAutonomyLayers(ctx, applicationID)
-		if readError != nil {
-			diagnostics.AddError("Unable to read the application's autonomy", readError.Error())
-			return false
-		}
-		if layers == nil {
-			diagnostics.AddError("Unable to read the application's autonomy", "The platform could not read the stored layers, so no write can be built from them. Try again.")
-			return false
-		}
-		write := autonomyLayerWrite(ctx, plan.Level, plan.Areas, plan.Limits, layers.Application, diagnostics)
-		if diagnostics.HasError() {
-			return false
-		}
-		if setError := apiClient.SetApplicationAutonomyLayer(ctx, applicationID, write); setError != nil {
-			diagnostics.AddError("Unable to set who runs the application", setError.Error())
-			return false
-		}
-	}
 	if !plan.AutoFixBuilds.IsUnknown() && (state == nil || !plan.AutoFixBuilds.Equal(state.AutoFixBuilds)) {
 		if setError := apiClient.SetApplicationAutoFixBuilds(ctx, applicationID, plan.AutoFixBuilds.ValueBool()); setError != nil {
 			diagnostics.AddError("Unable to set automatic build fixing", setError.Error())
@@ -157,12 +157,12 @@ func (autonomy *applicationAutonomyResource) write(ctx context.Context, plan, st
 		}
 	}
 	plan.ID = plan.ApplicationID
-	return autonomy.readSettings(ctx, apiClient, plan, false, diagnostics)
+	return autonomy.readSettings(ctx, apiClient, plan, diagnostics)
 }
 
-// readSettings reads every setting into model. The layer is read only when
-// it is managed, or when refreshLayer asks for it.
-func (autonomy *applicationAutonomyResource) readSettings(ctx context.Context, apiClient *client.Client, model *applicationAutonomyModel, refreshLayer bool,
+// readSettings reads the build-fixing and setup auto-merge settings into
+// model.
+func (autonomy *applicationAutonomyResource) readSettings(ctx context.Context, apiClient *client.Client, model *applicationAutonomyModel,
 	diagnostics *diag.Diagnostics) bool {
 	applicationID := model.ApplicationID.ValueString()
 	autoFix, autoFixError := apiClient.GetApplicationAutoFixBuilds(ctx, applicationID)
@@ -178,16 +178,6 @@ func (autonomy *applicationAutonomyResource) readSettings(ctx context.Context, a
 	}
 	model.SetupPullRequestAutoMerge = types.StringValue(setupAutoMergeName(autoMerge.Enabled))
 	model.SetupPullRequestAutoMergeOn = types.BoolValue(autoMerge.Effective)
-	if refreshLayer && autonomyLayerIsManaged(model.Level, model.Areas, model.Limits) {
-		layers, readError := apiClient.GetApplicationAutonomyLayers(ctx, applicationID)
-		if readError != nil {
-			diagnostics.AddError("Unable to read the application's autonomy", readError.Error())
-			return false
-		}
-		if layers != nil {
-			model.Level, model.Areas, model.Limits = autonomyLayerState(layers.Application, model.Areas, model.Limits)
-		}
-	}
 	return true
 }
 
@@ -206,11 +196,30 @@ func (autonomy *applicationAutonomyResource) Read(ctx context.Context, request r
 		return
 	}
 	state.ID = state.ApplicationID
-	if !autonomy.readSettings(ctx, apiClient, &state, true, &response.Diagnostics) {
+	store := applicationAutonomyStore(apiClient, state.ApplicationID.ValueString())
+	if !autonomyLayerRefresh(ctx, store, applicationAutonomyParts(&state), response.Private, &response.Diagnostics) {
+		return
+	}
+	if !autonomy.readSettings(ctx, apiClient, &state, &response.Diagnostics) {
 		return
 	}
 	response.Diagnostics.Append(response.State.Set(ctx, &state)...)
 	response.Diagnostics.Append(trackScope(ctx, apiClient, response.Private)...)
+}
+
+func applicationAutonomyParts(model *applicationAutonomyModel) autonomyLayerParts {
+	return autonomyLayerParts{Level: &model.Level, Areas: &model.Areas, Limits: &model.Limits}
+}
+
+func applicationAutonomyStore(apiClient *client.Client, applicationID string) autonomyLayerStore {
+	return autonomyLayerStore{
+		read: func(ctx context.Context) (*client.AutonomyLayer, error) {
+			return apiClient.GetApplicationAutonomyLayer(ctx, applicationID)
+		},
+		write: func(ctx context.Context, write client.AutonomyLayerWrite) (*client.AutonomyLayer, error) {
+			return apiClient.SetApplicationAutonomyLayer(ctx, applicationID, write)
+		},
+	}
 }
 
 // Delete leaves every setting as it is: resetting the layer or the flags
@@ -218,8 +227,7 @@ func (autonomy *applicationAutonomyResource) Read(ctx context.Context, request r
 func (autonomy *applicationAutonomyResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState imports by application id. The layer is adopted on the first
-// apply that configures it.
+// ImportState imports by application id; the read records the stored layer.
 func (autonomy *applicationAutonomyResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("application_id"), request.ID)...)
 	response.Diagnostics.Append(response.State.SetAttribute(ctx, path.Root("id"), request.ID)...)

@@ -41,7 +41,7 @@ type applicationEnvironmentModel struct {
 	Role                          types.String                `tfsdk:"role"`
 	Level                         types.String                `tfsdk:"level"`
 	Areas                         types.Map                   `tfsdk:"areas"`
-	Limits                        *autonomyLimitsModel        `tfsdk:"limits"`
+	Limits                        types.Object                `tfsdk:"limits"`
 	OperatingExpectations         *operatingExpectationsModel `tfsdk:"operating_expectations"`
 	OperatingExpectationsRevision types.Int64                 `tfsdk:"operating_expectations_revision"`
 }
@@ -128,9 +128,11 @@ func (environment *applicationEnvironmentResource) Schema(_ context.Context, _ r
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Settings of one environment of an application (`ankra application environments set`): its name, its own " +
 			"\"who runs it\" layer, which applies over the application's, and its operating expectations. Environments come from " +
-			"where the application is deployed, so this resource adopts an existing one and never creates or deletes it. The layer " +
-			"is managed only when `level`, `areas` or `limits` is set, and is replaced as a whole, starting from the stored layer " +
-			"so a change made meanwhile is refused. Operating expectations are adopted as a new revision over the current one. " +
+			"where the application is deployed, so this resource adopts an existing one and never creates or deletes it. `level`, " +
+			"`areas` and `limits` always report the stored layer; a change replaces it as a whole and sends the layer the last " +
+			"refresh saw as the expected one, so a layer changed between plan and apply is refused. Creating the resource over a " +
+			"stored layer with parts the configuration does not set is refused: import it first. Operating expectations are " +
+			"adopted as a new revision over the current one. " +
 			"Each part is written only when it changes. A caller confined to a project manages only environments placed in it. " +
 			"Cloning an environment onto another cluster stays imperative. Destroy leaves the environment's settings as they are.",
 		Attributes: attributes,
@@ -140,7 +142,7 @@ func (environment *applicationEnvironmentResource) Schema(_ context.Context, _ r
 func (environment *applicationEnvironmentResource) Create(ctx context.Context, request resource.CreateRequest, response *resource.CreateResponse) {
 	var plan applicationEnvironmentModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if environment.write(ctx, &plan, nil, &response.Diagnostics) {
+	if environment.write(ctx, &plan, nil, nil, response.Private, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 		response.Diagnostics.Append(trackScope(ctx, environment.client, response.Private)...)
 	}
@@ -150,12 +152,13 @@ func (environment *applicationEnvironmentResource) Update(ctx context.Context, r
 	var plan, state applicationEnvironmentModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
-	if environment.write(ctx, &plan, &state, &response.Diagnostics) {
+	if environment.write(ctx, &plan, &state, request.Private, response.Private, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
 	}
 }
 
-func (environment *applicationEnvironmentResource) write(ctx context.Context, plan, state *applicationEnvironmentModel, diagnostics *diag.Diagnostics) bool {
+func (environment *applicationEnvironmentResource) write(ctx context.Context, plan, state *applicationEnvironmentModel, seen privateStateReader,
+	private privateStateWriter, diagnostics *diag.Diagnostics) bool {
 	apiClient := environment.requireClient(diagnostics)
 	if apiClient == nil || diagnostics.HasError() {
 		return false
@@ -180,43 +183,19 @@ func (environment *applicationEnvironmentResource) write(ctx context.Context, pl
 		plan.Name = types.StringValue(current.Name)
 	}
 	plan.Role = types.StringValue(current.Role)
-	isLayerChanged := autonomyLayerIsManaged(plan.Level, plan.Areas, plan.Limits)
-	if state != nil {
-		isLayerChanged = autonomyLayerChanged(plan.Level, state.Level, plan.Areas, state.Areas, plan.Limits, state.Limits)
-	}
-	if isLayerChanged && !environment.writeLayer(ctx, apiClient, plan, diagnostics) {
+	store := applicationEnvironmentStore(apiClient, applicationID, environmentID)
+	if state == nil {
+		importCommand := "terraform import <address> " + applicationID + "/" + environmentID
+		if !autonomyLayerCreate(ctx, store, applicationEnvironmentParts(plan), importCommand, private, diagnostics) {
+			return false
+		}
+	} else if !autonomyLayerUpdate(ctx, store, applicationEnvironmentParts(plan), applicationEnvironmentParts(state), seen, private, diagnostics) {
 		return false
 	}
 	if !environment.writeExpectations(ctx, apiClient, plan, state, diagnostics) {
 		return false
 	}
 	plan.ID = types.StringValue(applicationID + "/" + environmentID)
-	return true
-}
-
-func (environment *applicationEnvironmentResource) writeLayer(ctx context.Context, apiClient *client.Client, plan *applicationEnvironmentModel, diagnostics *diag.Diagnostics) bool {
-	applicationID, environmentID := plan.ApplicationID.ValueString(), plan.EnvironmentID.ValueString()
-	layers, readError := apiClient.GetApplicationAutonomyLayers(ctx, applicationID)
-	if readError != nil {
-		diagnostics.AddError("Unable to read the application's autonomy", readError.Error())
-		return false
-	}
-	if layers == nil {
-		diagnostics.AddError("Unable to read the application's autonomy", "The platform could not read the stored layers, so no write can be built from them. Try again.")
-		return false
-	}
-	var stored *client.AutonomyLayer
-	if layer, isStored := layers.Environments[environmentID]; isStored {
-		stored = &layer
-	}
-	write := autonomyLayerWrite(ctx, plan.Level, plan.Areas, plan.Limits, stored, diagnostics)
-	if diagnostics.HasError() {
-		return false
-	}
-	if setError := apiClient.SetApplicationEnvironmentAutonomyLayer(ctx, applicationID, environmentID, write); setError != nil {
-		diagnostics.AddError("Unable to set who runs the environment", setError.Error())
-		return false
-	}
 	return true
 }
 
@@ -291,19 +270,9 @@ func (environment *applicationEnvironmentResource) Read(ctx context.Context, req
 	state.ID = types.StringValue(applicationID + "/" + environmentID)
 	state.Name = types.StringValue(current.Name)
 	state.Role = types.StringValue(current.Role)
-	if autonomyLayerIsManaged(state.Level, state.Areas, state.Limits) {
-		layers, readError := apiClient.GetApplicationAutonomyLayers(ctx, applicationID)
-		if readError != nil {
-			response.Diagnostics.AddError("Unable to read the application's autonomy", readError.Error())
-			return
-		}
-		if layers != nil {
-			var stored *client.AutonomyLayer
-			if layer, isStored := layers.Environments[environmentID]; isStored {
-				stored = &layer
-			}
-			state.Level, state.Areas, state.Limits = autonomyLayerState(stored, state.Areas, state.Limits)
-		}
+	if !autonomyLayerRefresh(ctx, applicationEnvironmentStore(apiClient, applicationID, environmentID), applicationEnvironmentParts(&state),
+		response.Private, &response.Diagnostics) {
+		return
 	}
 	expectations, readError := apiClient.GetOperatingExpectations(ctx, applicationID, environmentID)
 	if readError != nil {
@@ -366,4 +335,19 @@ func operatingExpectationsEqual(left, right operatingExpectationsModel) bool {
 	return left.AvailabilityPercent.Equal(right.AvailabilityPercent) && left.DataRegion.Equal(right.DataRegion) &&
 		left.RecoveryMinutes.Equal(right.RecoveryMinutes) && left.DataLossMinutes.Equal(right.DataLossMinutes) &&
 		left.RetentionDays.Equal(right.RetentionDays) && left.MonthlyBudgetCents.Equal(right.MonthlyBudgetCents)
+}
+
+func applicationEnvironmentParts(model *applicationEnvironmentModel) autonomyLayerParts {
+	return autonomyLayerParts{Level: &model.Level, Areas: &model.Areas, Limits: &model.Limits}
+}
+
+func applicationEnvironmentStore(apiClient *client.Client, applicationID, environmentID string) autonomyLayerStore {
+	return autonomyLayerStore{
+		read: func(ctx context.Context) (*client.AutonomyLayer, error) {
+			return apiClient.GetApplicationEnvironmentAutonomyLayer(ctx, applicationID, environmentID)
+		},
+		write: func(ctx context.Context, write client.AutonomyLayerWrite) (*client.AutonomyLayer, error) {
+			return apiClient.SetApplicationEnvironmentAutonomyLayer(ctx, applicationID, environmentID, write)
+		},
+	}
 }

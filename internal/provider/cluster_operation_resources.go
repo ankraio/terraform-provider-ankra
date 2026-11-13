@@ -5,9 +5,11 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -36,6 +38,7 @@ var (
 	_ resource.ResourceWithConfigure   = (*clusterDNSZoneResource)(nil)
 	_ resource.ResourceWithConfigure   = (*clusterGatewayAPIResource)(nil)
 	_ resource.ResourceWithConfigure   = (*clusterK3sDisabledComponentsResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*clusterStateSnapshotRetentionResource)(nil)
 )
 
 // clusterKindAttribute is the computed kind a lane-scoped resource resolves.
@@ -212,8 +215,8 @@ func (retention *clusterStateSnapshotRetentionResource) Schema(_ context.Context
 		MarkdownDescription: "The retention window of a provisioned cluster's scheduled etcd backups (`ankra cluster state-snapshots " +
 			"retention`). Ankra backs up the etcd state every six hours to the organisation's backup vault and keeps the newest " +
 			"backups plus the newest one of each UTC day within the window. A shorter window deletes the daily backups that fall " +
-			"outside it, and a longer one cannot bring back backups already deleted. Every change is audited. Destroy leaves the " +
-			"window as it is.",
+			"outside it, and a longer one cannot bring back backups already deleted, so the plan warns when the window shrinks. " +
+			"Every change is audited. Destroy leaves the window as it is.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -231,6 +234,25 @@ func (retention *clusterStateSnapshotRetentionResource) Schema(_ context.Context
 				Computed:            true,
 			},
 		},
+	}
+}
+
+// ModifyPlan warns when the window shrinks: the platform then deletes the
+// daily backups that fall outside it.
+func (retention *clusterStateSnapshotRetentionResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+		return
+	}
+	var plan, state clusterStateSnapshotRetentionModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() || plan.RetentionDays.IsUnknown() || state.RetentionDays.IsNull() {
+		return
+	}
+	if plan.RetentionDays.ValueInt64() < state.RetentionDays.ValueInt64() {
+		response.Diagnostics.AddAttributeWarning(path.Root("retention_days"), "Shorter retention deletes backups",
+			fmt.Sprintf("Shrinking the window from %d to %d days deletes the daily etcd backups older than %d days from the backup vault; "+
+				"they cannot be brought back.", state.RetentionDays.ValueInt64(), plan.RetentionDays.ValueInt64(), plan.RetentionDays.ValueInt64()))
 	}
 }
 
@@ -332,7 +354,8 @@ func (zone *clusterDNSZoneResource) Schema(_ context.Context, _ resource.SchemaR
 		MarkdownDescription: "A cluster's generated public DNS zone under the organisation's Ankra root domain (`ankra cluster domain`). " +
 			"The zone is provisioned asynchronously, after which Ankra installs external-dns on the cluster to publish hostnames in " +
 			"it; an existing zone keeps its FQDN and a failed one is retried. Rotating the zone's DNS write token stays imperative " +
-			"(`ankra cluster dns-token rotate`). Destroy hands the zone back for teardown; the cluster itself is not changed.",
+			"(`ankra cluster dns-token rotate`). A cluster that already has a zone is refused on create: import it instead. Destroy " +
+			"hands the zone back for teardown; the cluster itself is not changed.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -360,6 +383,17 @@ func (zone *clusterDNSZoneResource) Create(ctx context.Context, request resource
 		return
 	}
 	clusterID := plan.ClusterID.ValueString()
+	existing, readError := apiClient.GetClusterGeneratedDNSZone(ctx, clusterID)
+	if readError != nil {
+		response.Diagnostics.AddError("Unable to read the cluster's DNS zone", clusterSettingsErrorText(readError, clusterID))
+		return
+	}
+	if existing.State != "none" && existing.FQDN != "" {
+		response.Diagnostics.AddError("Cluster already has a DNS zone",
+			fmt.Sprintf("Cluster %s already has the DNS zone %s. Import it (terraform import <address> %s) so destroy does not hand back a "+
+				"zone Terraform did not create without that showing in the plan.", clusterID, existing.FQDN, clusterID))
+		return
+	}
 	enabled, enableError := apiClient.EnableClusterGeneratedDNSZone(ctx, clusterID)
 	if enableError != nil {
 		response.Diagnostics.AddError("Unable to enable the cluster's DNS zone", clusterSettingsErrorText(enableError, clusterID))

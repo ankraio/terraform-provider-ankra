@@ -21,12 +21,25 @@ import (
 
 var ovhGatewayModels = []string{"s", "m", "l", "xl", "2xl", "3xl"}
 
+// providerSettingsImportedKey marks, in private state, settings imported
+// but not applied yet. The platform cannot read the UpCloud gateway plan,
+// the zone pool or the OVH gateway model back, so the first apply after an
+// import records the configured values without sending them: sending would
+// rebuild a gateway that may already run them.
+const providerSettingsImportedKey = "provider_settings_imported"
+
+const upcloudGatewayPlanOutage = "Changing the UpCloud NAT gateway plan interrupts the cluster's outbound internet access for several " +
+	"minutes while UpCloud rebuilds the gateway. Apply it at a quiet time."
+
+const ovhGatewayModelChange = "Changing the OVH gateway model replaces the cluster's managed gateway, which can interrupt its outbound access."
+
 var (
 	_ resource.ResourceWithImportState = (*upcloudClusterSettingsResource)(nil)
 	_ resource.ResourceWithImportState = (*ovhClusterSettingsResource)(nil)
 	_ resource.ResourceWithModifyPlan  = (*upcloudClusterSettingsResource)(nil)
 	_ resource.ResourceWithConfigure   = (*upcloudClusterSettingsResource)(nil)
 	_ resource.ResourceWithConfigure   = (*ovhClusterSettingsResource)(nil)
+	_ resource.ResourceWithModifyPlan  = (*ovhClusterSettingsResource)(nil)
 )
 
 type upcloudClusterSettingsResource struct {
@@ -55,11 +68,12 @@ func (settings *upcloudClusterSettingsResource) Metadata(_ context.Context, requ
 func (settings *upcloudClusterSettingsResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Day-2 network settings of an UpCloud cluster Ankra provisions: the plan of its ingress load balancer, the " +
-			"plan of its NAT gateways and its zone pool. Each is written only when it changes. Changing `gateway_plan` interrupts " +
-			"the cluster's outbound internet access for several minutes while UpCloud rebuilds the gateway, so plan it for a quiet " +
-			"time. The platform cannot read the gateway plan back, so `gateway_plan` keeps the configured value. Zones can only be " +
-			"added (the cluster must run the `wireguard_mesh` network mode and keep at least 3 zones), so removing one fails the " +
-			"plan. Destroy leaves every setting as it is.",
+			"plan of its NAT gateways and its zone pool. Each is written only when it changes, and the plan warns before a " +
+			"`gateway_plan` is sent: that interrupts the cluster's outbound internet access for several minutes while UpCloud " +
+			"rebuilds the gateway. The platform cannot read the gateway plan or the zone pool back, so both keep the configured " +
+			"value, and the first apply after an import records them without sending them. Zones can only be added (the cluster " +
+			"must run the `wireguard_mesh` network mode and keep at least 3 zones), so removing one fails the plan. Destroy " +
+			"leaves every setting as it is.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -72,7 +86,7 @@ func (settings *upcloudClusterSettingsResource) Schema(_ context.Context, _ reso
 				Optional:            true,
 			},
 			"zones": schema.SetAttribute{
-				MarkdownDescription: "The cluster's zone pool. Zones can only be added; every new zone gets its own router, private network and NAT gateway.",
+				MarkdownDescription: "Zones the cluster's pool must hold. Zones can only be added; every new zone gets its own router, private network and NAT gateway.",
 				Optional:            true,
 				ElementType:         types.StringType,
 			},
@@ -80,15 +94,34 @@ func (settings *upcloudClusterSettingsResource) Schema(_ context.Context, _ reso
 	}
 }
 
-// ModifyPlan refuses removing a zone: the platform can only grow the pool.
+// ModifyPlan warns before a gateway plan change, which interrupts egress,
+// and refuses removing a zone: the platform can only grow the pool.
 func (settings *upcloudClusterSettingsResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
-	if request.State.Raw.IsNull() || request.Plan.Raw.IsNull() {
+	if request.Plan.Raw.IsNull() {
 		return
 	}
-	var state, plan upcloudClusterSettingsModel
-	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	var plan upcloudClusterSettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
-	if response.Diagnostics.HasError() || plan.Zones.IsUnknown() || state.Zones.IsNull() {
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if request.State.Raw.IsNull() {
+		if !plan.GatewayPlan.IsNull() {
+			response.Diagnostics.AddAttributeWarning(path.Root("gateway_plan"), "NAT gateway plan will be sent", upcloudGatewayPlanOutage)
+		}
+		return
+	}
+	var state upcloudClusterSettingsModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	imported, diagnostics := request.Private.GetKey(ctx, providerSettingsImportedKey)
+	response.Diagnostics.Append(diagnostics...)
+	if len(imported) == 0 && !plan.GatewayPlan.IsNull() && !plan.GatewayPlan.Equal(state.GatewayPlan) {
+		response.Diagnostics.AddAttributeWarning(path.Root("gateway_plan"), "NAT gateway plan will change", upcloudGatewayPlanOutage)
+	}
+	if plan.Zones.IsUnknown() || state.Zones.IsNull() {
 		return
 	}
 	planned := organisationStringsFromSet(ctx, plan.Zones, &response.Diagnostics)
@@ -117,8 +150,18 @@ func (settings *upcloudClusterSettingsResource) Update(ctx context.Context, requ
 	var plan, state upcloudClusterSettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
 	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	imported, diagnostics := request.Private.GetKey(ctx, providerSettingsImportedKey)
+	response.Diagnostics.Append(diagnostics...)
+	if len(imported) > 0 {
+		state.GatewayPlan = plan.GatewayPlan
+		state.Zones = plan.Zones
+		response.Diagnostics.AddWarning("Imported settings recorded",
+			"The platform cannot read the NAT gateway plan or the zone pool back, so the configured values were recorded without being "+
+				"sent or checked. Make sure they match what the cluster runs.")
+	}
 	if settings.write(ctx, &plan, &state, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(response.Private.SetKey(ctx, providerSettingsImportedKey, nil)...)
 	}
 }
 
@@ -157,12 +200,10 @@ func (settings *upcloudClusterSettingsResource) write(ctx context.Context, plan,
 		if diagnostics.HasError() {
 			return false
 		}
-		pool, extendError := apiClient.ExtendUpcloudZonePool(ctx, clusterID, zones)
-		if extendError != nil {
+		if _, extendError := apiClient.ExtendUpcloudZonePool(ctx, clusterID, zones); extendError != nil {
 			diagnostics.AddError("Unable to extend the zone pool", clusterSettingsErrorText(extendError, clusterID))
 			return false
 		}
-		plan.Zones = organisationSetFromStrings(organisationNonNilStrings(pool))
 	}
 	plan.ID = plan.ClusterID
 	return true
@@ -200,10 +241,11 @@ func (settings *upcloudClusterSettingsResource) Read(ctx context.Context, reques
 func (settings *upcloudClusterSettingsResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState imports by cluster id. The gateway plan and zones are adopted
-// from configuration on the first apply.
+// ImportState imports by cluster id. The first apply records the configured
+// gateway plan and zones without sending them.
 func (settings *upcloudClusterSettingsResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	clusterSettingsImportClusterID(ctx, request, response)
+	response.Diagnostics.Append(response.Private.SetKey(ctx, providerSettingsImportedKey, []byte("true"))...)
 }
 
 type ovhClusterSettingsResource struct {
@@ -229,8 +271,9 @@ func (settings *ovhClusterSettingsResource) Metadata(_ context.Context, request 
 func (settings *ovhClusterSettingsResource) Schema(_ context.Context, _ resource.SchemaRequest, response *resource.SchemaResponse) {
 	response.Schema = schema.Schema{
 		MarkdownDescription: "Day-2 settings of an OVHcloud cluster Ankra provisions (`ankra cluster ovh gateway-model`): the model of " +
-			"its managed gateway. The platform cannot read the model back, so `gateway_model` keeps the configured value. Destroy " +
-			"leaves the gateway as it is.",
+			"its managed gateway. The plan warns before the model is sent. The platform cannot read the model back, so " +
+			"`gateway_model` keeps the configured value, and the first apply after an import records it without sending it. " +
+			"Destroy leaves the gateway as it is.",
 		Attributes: map[string]schema.Attribute{
 			"id":         clusterSettingsIDAttribute("The cluster id."),
 			"cluster_id": clusterSettingsClusterIDAttribute(),
@@ -255,8 +298,43 @@ func (settings *ovhClusterSettingsResource) Create(ctx context.Context, request 
 func (settings *ovhClusterSettingsResource) Update(ctx context.Context, request resource.UpdateRequest, response *resource.UpdateResponse) {
 	var plan ovhClusterSettingsModel
 	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	imported, diagnostics := request.Private.GetKey(ctx, providerSettingsImportedKey)
+	response.Diagnostics.Append(diagnostics...)
+	if len(imported) > 0 {
+		plan.ID = plan.ClusterID
+		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+		response.Diagnostics.Append(response.Private.SetKey(ctx, providerSettingsImportedKey, nil)...)
+		response.Diagnostics.AddWarning("Imported gateway model recorded",
+			"The platform cannot read the gateway model back, so the configured model was recorded without being sent or checked. "+
+				"Make sure it matches what the cluster runs.")
+		return
+	}
 	if settings.write(ctx, &plan, false, &response.Diagnostics) {
 		response.Diagnostics.Append(response.State.Set(ctx, &plan)...)
+	}
+}
+
+// ModifyPlan warns before the gateway model is sent, which replaces the
+// managed gateway; the first apply after an import sends nothing.
+func (settings *ovhClusterSettingsResource) ModifyPlan(ctx context.Context, request resource.ModifyPlanRequest, response *resource.ModifyPlanResponse) {
+	if request.Plan.Raw.IsNull() {
+		return
+	}
+	var plan ovhClusterSettingsModel
+	response.Diagnostics.Append(request.Plan.Get(ctx, &plan)...)
+	if response.Diagnostics.HasError() {
+		return
+	}
+	if request.State.Raw.IsNull() {
+		response.Diagnostics.AddAttributeWarning(path.Root("gateway_model"), "Gateway model will be sent", ovhGatewayModelChange)
+		return
+	}
+	var state ovhClusterSettingsModel
+	response.Diagnostics.Append(request.State.Get(ctx, &state)...)
+	imported, diagnostics := request.Private.GetKey(ctx, providerSettingsImportedKey)
+	response.Diagnostics.Append(diagnostics...)
+	if len(imported) == 0 && !plan.GatewayModel.Equal(state.GatewayModel) {
+		response.Diagnostics.AddAttributeWarning(path.Root("gateway_model"), "Gateway model will change", ovhGatewayModelChange)
 	}
 }
 
@@ -307,8 +385,9 @@ func (settings *ovhClusterSettingsResource) Read(ctx context.Context, request re
 func (settings *ovhClusterSettingsResource) Delete(_ context.Context, _ resource.DeleteRequest, _ *resource.DeleteResponse) {
 }
 
-// ImportState imports by cluster id; the first apply writes the configured
-// model.
+// ImportState imports by cluster id; the first apply records the configured
+// model without sending it.
 func (settings *ovhClusterSettingsResource) ImportState(ctx context.Context, request resource.ImportStateRequest, response *resource.ImportStateResponse) {
 	clusterSettingsImportClusterID(ctx, request, response)
+	response.Diagnostics.Append(response.Private.SetKey(ctx, providerSettingsImportedKey, []byte("true"))...)
 }
