@@ -8,7 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 )
 
-// applicationResources are applications and Ankra Pipelines.
+// applicationResources are applications, their alerts, and Ankra Pipelines.
 func applicationResources() []func() resource.Resource {
 	return []func() resource.Resource{
 		NewApplicationResource,
@@ -18,6 +18,7 @@ func applicationResources() []func() resource.Resource {
 		NewApplicationDemoConfigResource,
 		NewApplicationEnvSecretResource,
 		NewApplicationDeploymentResource,
+		NewApplicationAlertResource,
 		NewPipelineRepositoryResource,
 		NewPipelineDefinitionResource,
 		NewPipelineScheduleResource,
