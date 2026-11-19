@@ -36,12 +36,12 @@ type applicationAlertFakeAlert struct {
 	severity      string
 }
 
-// applicationAlertFake mirrors the application alert routes
-// (go/internal/alertsapi/handlers_application_alerts.go): the list carries
-// the application's own alerts first and an organisation rule after them,
-// a create stores warning when the body has no severity and answers 201, an
-// update keeps the stored severity when the body has none, and an unknown
-// application or alert is a 404.
+// applicationAlertFake mirrors the application alert routes of the
+// published API contract: the list carries the application's own alerts
+// first and an organisation rule after them, a create stores warning when
+// the body has no severity and answers 201, an update keeps the stored
+// severity when the body has none, and an unknown application or alert is a
+// 404.
 type applicationAlertFake struct {
 	*routeFake
 	alerts     map[string]*applicationAlertFakeAlert

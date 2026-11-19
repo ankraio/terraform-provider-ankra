@@ -24,9 +24,8 @@ import (
 	"ankra.io/terraform-provider-ankra/internal/client"
 )
 
-// The platform's bounds on an application alert
-// (enginekit/alertdefinition ParseApplicationCondition and
-// usecase/alerts ParseApplicationAlertBody).
+// The platform's bounds on an application alert, as its create and update
+// routes refuse them.
 const (
 	applicationAlertConditionType       = "app_metric"
 	applicationAlertOperator            = "gt"
