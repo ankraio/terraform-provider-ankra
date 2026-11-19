@@ -1,5 +1,9 @@
 ## Unreleased
 
+FEATURES:
+
+* **New Resource:** `ankra_application_alert` - an alert of one application on one of its environments (`ankra application alerts`): it fires when `failed_share_pct`, `p95_ms` or `restarts` reads above a threshold for 1 to 60 minutes in a row, and notifies 1 to 5 alert destinations by id. Every member except `application_id` changes in place, including the environment. `severity` is `warning` when created without one; leaving it out later keeps the stored severity, so the plan shows no change the platform would not make. A failed read is an error; only the platform's answer that the alert or its application is gone plans it again. Import as `<application_id>/<alert_id>`. Destroy deletes the alert and its rule.
+
 ENHANCEMENTS:
 
 * resource/ankra_security_disposition: `scope = "namespace"` covers a vulnerability in every workload of the occurrence's namespace on its cluster, so an accepted risk in your own application keeps holding across rollouts and image rebuilds. A `workload` disposition created from a Deployment's pods now pins the Deployment rather than its ReplicaSet, so it survives rollouts. Needs an Ankra platform with ankraio/cluster#6395.
