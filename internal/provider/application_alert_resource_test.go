@@ -434,10 +434,12 @@ resource "ankra_application_alert" "refused" {
 	}
 	steps := make([]resource.TestStep, 0, len(planRefusals)+1)
 	for _, refusal := range planRefusals {
+		// Terraform wraps a long diagnostic, so any run of whitespace
+		// matches a space of the message.
 		steps = append(steps, resource.TestStep{
 			Config:      with(refusal.overrides),
 			PlanOnly:    true,
-			ExpectError: regexp.MustCompile(regexp.QuoteMeta(refusal.message)),
+			ExpectError: regexp.MustCompile(strings.ReplaceAll(regexp.QuoteMeta(refusal.message), " ", `\s+`)),
 		})
 	}
 	// A destination the platform does not know is refused at apply, in the
